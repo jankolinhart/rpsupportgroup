@@ -1,0 +1,12 @@
+# Local developer profile — runs on your Mac.
+# Activate with: SPRING_PROFILES_ACTIVE=local mvn spring-boot:run
+server:
+  port: 9083
+
+rp:
+  stage: dev
+
+logging:
+  level:
+    root: INFO
+    com.reelypops: DEBUG

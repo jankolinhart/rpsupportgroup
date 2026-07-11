@@ -1,0 +1,7 @@
+# DEV environment profile — applied in DEV ECS containers.
+# SPRING_PROFILES_ACTIVE=dev is set by the ECS task definition.
+# SERVER_PORT, RP_STAGE are also injected by the task definition.
+logging:
+  level:
+    root: INFO
+    com.reelypops: DEBUG
