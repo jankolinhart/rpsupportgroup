@@ -1,0 +1,7 @@
+# TEST environment profile — applied in TEST ECS containers.
+# SPRING_PROFILES_ACTIVE=test is set by the ECS task definition.
+# SERVER_PORT, RP_STAGE are also injected by the task definition.
+logging:
+  level:
+    root: WARN
+    com.reelypops: INFO
