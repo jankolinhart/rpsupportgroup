@@ -1,0 +1,25 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: rpsupportgroup
+  jackson:
+    default-property-inclusion: non_null
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+
+rp:
+  stage: ${RP_STAGE:prod}
+
+logging:
+  level:
+    root: ${LOG_LEVEL:WARN}
+    com.reelypops: ${LOG_LEVEL:INFO}
