@@ -109,7 +109,8 @@ jobs:
 
   # ── RELEASE branch → PROMOTE the TEST-vetted RC image to clean x.x.x (build once) ─
   #    Registry-side retag of the EXACT image running in TEST — no rebuild.
-  #    PROD deploy stays manual (workflow_dispatch stage=prod in rpdeploy).
+  #    PROD then deploys via MERGE only: set the clean tag as imageRef in rpdeploy
+  #    stages/prod/<service>/deployment.yml and merge to main (deploy.yml → Deploy → PROD).
   push-ghcr-release:
     name: Promote RC → RELEASE
     needs: build-test
