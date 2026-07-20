@@ -79,6 +79,7 @@ class InternalGroupControllerTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.igAccount").value("int-create"))
                 .andExpect(jsonPath("$.status").value("UNCLAIMED"))
+                .andExpect(jsonPath("$.vetted").value(false))
                 .andExpect(jsonPath("$.adminAttributed").value(false));
     }
 
@@ -98,6 +99,34 @@ class InternalGroupControllerTest {
     void attributeUnknownConfigIsNotFound() throws Exception {
         mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/attribute", "int-attr-none").header(KEY_HEADER, KEY)
                         .contentType(MediaType.APPLICATION_JSON).content("{\"ownerId\":\"" + UUID.randomUUID() + "\"}"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void withKeyVetsConfig() throws Exception {
+        createConfig("int-vet");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vet", "int-vet").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.igAccount").value("int-vet"))
+                .andExpect(jsonPath("$.vetted").value(true))
+                .andExpect(jsonPath("$.version").value(2));
+    }
+
+    @Test
+    void vetIsIdempotent() throws Exception {
+        createConfig("int-vet-idem");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vet", "int-vet-idem").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.version").value(2));
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vet", "int-vet-idem").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.vetted").value(true))
+                .andExpect(jsonPath("$.version").value(2)); // re-vet does not bump the version
+    }
+
+    @Test
+    void vetUnknownConfigIsNotFound() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vet", "int-vet-none").header(KEY_HEADER, KEY))
                 .andExpect(status().isNotFound());
     }
 

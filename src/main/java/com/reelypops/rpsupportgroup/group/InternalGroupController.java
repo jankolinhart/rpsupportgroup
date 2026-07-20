@@ -52,6 +52,12 @@ public class InternalGroupController {
         return GroupResponse.of(service.attribute(igAccount, req.ownerId()));
     }
 
+    /** Operator vetting (Cycle 10): approve a config so it becomes publicly browsable and the creator's copy locks. */
+    @PostMapping("/{igAccount}/vet")
+    public GroupResponse vet(@PathVariable String igAccount) {
+        return GroupResponse.of(service.vet(igAccount));
+    }
+
     /** Admin: remove a config. */
     @DeleteMapping("/{igAccount}")
     @ResponseStatus(HttpStatus.NO_CONTENT)

@@ -34,6 +34,9 @@ class SupportGroupConfigControllerTest {
     @Autowired
     MockMvc mockMvc;
 
+    @Autowired
+    SupportGroupConfigService service;
+
     private static RequestPostProcessor asUser() {
         return asUser(UUID.randomUUID());
     }
@@ -81,6 +84,7 @@ class SupportGroupConfigControllerTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.igAccount").value("sg-alpha"))
                 .andExpect(jsonPath("$.status").value("UNCLAIMED"))
+                .andExpect(jsonPath("$.vetted").value(false))
                 .andExpect(jsonPath("$.version").value(1))
                 .andExpect(jsonPath("$.ownerId").doesNotExist())
                 .andExpect(jsonPath("$.definition.type").value("SINGLE_MARKER"))
@@ -115,12 +119,17 @@ class SupportGroupConfigControllerTest {
     }
 
     @Test
-    void listReturnsConfigs() throws Exception {
+    void listReturnsOnlyVettedConfigs() throws Exception {
         mockMvc.perform(post("/supportgroup/v1/groups").with(asUser())
-                .contentType(MediaType.APPLICATION_JSON).content(body("sg-list-1"))).andExpect(status().isCreated());
+                .contentType(MediaType.APPLICATION_JSON).content(body("sg-list-pending"))).andExpect(status().isCreated());
+        mockMvc.perform(post("/supportgroup/v1/groups").with(asUser())
+                .contentType(MediaType.APPLICATION_JSON).content(body("sg-list-vetted"))).andExpect(status().isCreated());
+        service.vet("sg-list-vetted");
+
         mockMvc.perform(get("/supportgroup/v1/groups").with(asUser()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(Matchers.greaterThanOrEqualTo(1)));
+                .andExpect(jsonPath("$[*].igAccount", Matchers.hasItem("sg-list-vetted")))
+                .andExpect(jsonPath("$[*].igAccount", Matchers.not(Matchers.hasItem("sg-list-pending"))));
     }
 
     @Test
