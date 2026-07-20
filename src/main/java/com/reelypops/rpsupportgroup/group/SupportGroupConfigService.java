@@ -41,6 +41,12 @@ public class SupportGroupConfigService {
         return configs.findAllByOrderByCreatedAtDesc();
     }
 
+    /** The public browse list (Cycle 10): only VETTED configs are offered to clients for “choose a support group”. */
+    @Transactional(readOnly = true)
+    public List<SupportGroupConfig> listVetted() {
+        return configs.findByVettedTrueOrderByCreatedAtDesc();
+    }
+
     /**
      * Admin override (Cycle 9): attribute an unclaimed config to a ReelyPops user WITHOUT the claim (verify +
      * subscribe) flow — for comping access + operator / E2E testing. Flags it {@code adminAttributed}.
@@ -56,6 +62,14 @@ public class SupportGroupConfigService {
     @Transactional
     public void remove(String igAccount) {
         configs.delete(require(igAccount));
+    }
+
+    /** Operator vetting (Cycle 10): approve a config → publicly browsable + locks the creator's authoritative fields. */
+    @Transactional
+    public SupportGroupConfig vet(String igAccount) {
+        SupportGroupConfig c = require(igAccount);
+        c.vet();
+        return configs.save(c);
     }
 
     /** An owner claims an unclaimed config (§6). Idempotent guard: re-claiming a claimed config is a conflict. */

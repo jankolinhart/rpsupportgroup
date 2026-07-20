@@ -47,6 +47,9 @@ public class SupportGroupConfig {
     @Column(name = "admin_attributed", nullable = false)
     private boolean adminAttributed;
 
+    @Column(name = "vetted", nullable = false)
+    private boolean vetted;
+
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "definition", nullable = false, columnDefinition = "jsonb")
     private GroupDefinition definition;
@@ -91,6 +94,19 @@ public class SupportGroupConfig {
         this.status = ConfigStatus.CLAIMED;
         this.adminAttributed = true;
         this.version++;
+    }
+
+    /**
+     * Operator vetting (Cycle 10): mark this config as sanity-checked and publicly browsable. Idempotent — bumps the
+     * version only on the false→true transition so polling clients notice and lock their authoritative fields.
+     */
+    public boolean vet() {
+        if (vetted) {
+            return false;
+        }
+        this.vetted = true;
+        this.version++;
+        return true;
     }
 
     /**

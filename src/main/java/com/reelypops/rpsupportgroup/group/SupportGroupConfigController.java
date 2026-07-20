@@ -37,9 +37,10 @@ public class SupportGroupConfigController {
         return GroupResponse.of(service.create(req.igAccount(), req.definition()));
     }
 
+    /** The public browse list (Cycle 10): only VETTED configs are offered to clients for “choose a support group”. */
     @GetMapping
     public List<GroupResponse> list() {
-        return service.list().stream().map(GroupResponse::of).toList();
+        return service.listVetted().stream().map(GroupResponse::of).toList();
     }
 
     @GetMapping("/{igAccount}")

@@ -13,4 +13,6 @@ public interface SupportGroupConfigRepository extends JpaRepository<SupportGroup
     boolean existsByIgAccount(String igAccount);
 
     List<SupportGroupConfig> findAllByOrderByCreatedAtDesc();
+
+    List<SupportGroupConfig> findByVettedTrueOrderByCreatedAtDesc();
 }
