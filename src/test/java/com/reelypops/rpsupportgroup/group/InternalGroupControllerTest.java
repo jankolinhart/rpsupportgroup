@@ -70,5 +70,15 @@ class InternalGroupControllerTest {
                 .andExpect(status().isNotFound());
     }
 
+    @Test
+    void withKeyCreatesUnclaimedConfig() throws Exception {
+        String body = "{\"igAccount\":\"int-create\",\"definition\":{\"type\":\"SINGLE_MARKER\",\"timezone\":\"UTC\"}}";
+        mockMvc.perform(post("/supportgroup/v1/internal/groups").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.igAccount").value("int-create"))
+                .andExpect(jsonPath("$.status").value("UNCLAIMED"));
+    }
+
     private static final String KEY_HEADER = "X-Internal-Api-Key";
 }
