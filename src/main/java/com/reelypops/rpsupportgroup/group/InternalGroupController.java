@@ -2,12 +2,15 @@ package com.reelypops.rpsupportgroup.group;
 
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
@@ -25,9 +28,11 @@ import java.util.List;
 public class InternalGroupController {
 
     private final SupportGroupConfigService service;
+    private final SupportGroupAvatarService avatarService;
 
-    public InternalGroupController(SupportGroupConfigService service) {
+    public InternalGroupController(SupportGroupConfigService service, SupportGroupAvatarService avatarService) {
         this.service = service;
+        this.avatarService = avatarService;
     }
 
     @GetMapping
@@ -70,5 +75,26 @@ public class InternalGroupController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void remove(@PathVariable String igAccount) {
         service.remove(igAccount);
+    }
+
+    /**
+     * Client-contributed SG avatar (Cycle 10): the client fetches the real profile image via its residential exit
+     * and uploads the bytes here through the BFF. Upserted per group and served back at {@code GET …/avatar} at a
+     * URL templatable by the group's Instagram account.
+     */
+    @PutMapping("/{igAccount}/avatar")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void putAvatar(@PathVariable String igAccount,
+                          @RequestHeader(value = "Content-Type", required = false) String contentType,
+                          @RequestBody(required = false) byte[] image) {
+        avatarService.put(igAccount, image, contentType);
+    }
+
+    /** Serve a group's stored avatar — 404 when none has been contributed yet (the client then shows a placeholder). */
+    @GetMapping("/{igAccount}/avatar")
+    public ResponseEntity<byte[]> getAvatar(@PathVariable String igAccount) {
+        return avatarService.get(igAccount)
+                .map(a -> ResponseEntity.ok().contentType(MediaType.parseMediaType(a.getContentType())).body(a.getImage()))
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 }
