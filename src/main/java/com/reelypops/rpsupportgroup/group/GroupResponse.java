@@ -12,6 +12,7 @@ public record GroupResponse(
         String igAccount,
         ConfigStatus status,
         UUID ownerId,
+        boolean adminAttributed,
         GroupDefinition definition,
         long version,
         Instant createdAt,
@@ -19,6 +20,6 @@ public record GroupResponse(
 
     static GroupResponse of(SupportGroupConfig c) {
         return new GroupResponse(c.getId(), c.getIgAccount(), c.getStatus(), c.getOwnerId(),
-                c.getDefinition(), c.getVersion(), c.getCreatedAt(), c.getUpdatedAt());
+                c.isAdminAttributed(), c.getDefinition(), c.getVersion(), c.getCreatedAt(), c.getUpdatedAt());
     }
 }

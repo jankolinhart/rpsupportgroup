@@ -44,6 +44,9 @@ public class SupportGroupConfig {
     @Column(name = "owner_id")
     private UUID ownerId;
 
+    @Column(name = "admin_attributed", nullable = false)
+    private boolean adminAttributed;
+
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "definition", nullable = false, columnDefinition = "jsonb")
     private GroupDefinition definition;
@@ -76,6 +79,17 @@ public class SupportGroupConfig {
     public void claim(UUID ownerId) {
         this.ownerId = ownerId;
         this.status = ConfigStatus.CLAIMED;
+        this.version++;
+    }
+
+    /**
+     * Admin override (Cycle 9): attribute this config to an owner WITHOUT the claim (verify + subscribe) flow —
+     * for comping access + operator / E2E testing. Flags it {@code adminAttributed} (distinguishable, revocable).
+     */
+    public void attribute(UUID ownerId) {
+        this.ownerId = ownerId;
+        this.status = ConfigStatus.CLAIMED;
+        this.adminAttributed = true;
         this.version++;
     }
 

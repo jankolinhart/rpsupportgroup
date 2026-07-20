@@ -2,6 +2,7 @@ package com.reelypops.rpsupportgroup.group;
 
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -43,5 +44,18 @@ public class InternalGroupController {
     @ResponseStatus(HttpStatus.CREATED)
     public GroupResponse create(@Valid @RequestBody CreateGroupRequest req) {
         return GroupResponse.of(service.create(req.igAccount(), req.definition()));
+    }
+
+    /** Admin override (Cycle 9): attribute an unclaimed config to a ReelyPops user without the claim flow. */
+    @PostMapping("/{igAccount}/attribute")
+    public GroupResponse attribute(@PathVariable String igAccount, @Valid @RequestBody AttributeRequest req) {
+        return GroupResponse.of(service.attribute(igAccount, req.ownerId()));
+    }
+
+    /** Admin: remove a config. */
+    @DeleteMapping("/{igAccount}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void remove(@PathVariable String igAccount) {
+        service.remove(igAccount);
     }
 }
