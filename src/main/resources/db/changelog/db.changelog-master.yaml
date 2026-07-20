@@ -1,0 +1,4 @@
+databaseChangeLog:
+  - include:
+      file: changes/001-support-group-config.sql
+      relativeToChangelogFile: true
