@@ -41,6 +41,23 @@ public class SupportGroupConfigService {
         return configs.findAllByOrderByCreatedAtDesc();
     }
 
+    /**
+     * Admin override (Cycle 9): attribute an unclaimed config to a ReelyPops user WITHOUT the claim (verify +
+     * subscribe) flow — for comping access + operator / E2E testing. Flags it {@code adminAttributed}.
+     */
+    @Transactional
+    public SupportGroupConfig attribute(String igAccount, UUID ownerId) {
+        SupportGroupConfig c = require(igAccount);
+        c.attribute(ownerId);
+        return configs.save(c);
+    }
+
+    /** Admin: remove a config entirely. */
+    @Transactional
+    public void remove(String igAccount) {
+        configs.delete(require(igAccount));
+    }
+
     /** An owner claims an unclaimed config (§6). Idempotent guard: re-claiming a claimed config is a conflict. */
     @Transactional
     public SupportGroupConfig claim(String igAccount, UUID ownerId) {

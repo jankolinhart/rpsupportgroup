@@ -13,6 +13,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.util.UUID;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -77,7 +78,42 @@ class InternalGroupControllerTest {
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.igAccount").value("int-create"))
-                .andExpect(jsonPath("$.status").value("UNCLAIMED"));
+                .andExpect(jsonPath("$.status").value("UNCLAIMED"))
+                .andExpect(jsonPath("$.adminAttributed").value(false));
+    }
+
+    @Test
+    void withKeyAttributesConfigToOwner() throws Exception {
+        createConfig("int-attr");
+        UUID owner = UUID.randomUUID();
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/attribute", "int-attr").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"ownerId\":\"" + owner + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CLAIMED"))
+                .andExpect(jsonPath("$.ownerId").value(owner.toString()))
+                .andExpect(jsonPath("$.adminAttributed").value(true));
+    }
+
+    @Test
+    void attributeUnknownConfigIsNotFound() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/attribute", "int-attr-none").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"ownerId\":\"" + UUID.randomUUID() + "\"}"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void withKeyRemovesConfig() throws Exception {
+        createConfig("int-del");
+        mockMvc.perform(delete("/supportgroup/v1/internal/groups/{ig}", "int-del").header(KEY_HEADER, KEY))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "int-del").header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void removeUnknownConfigIsNotFound() throws Exception {
+        mockMvc.perform(delete("/supportgroup/v1/internal/groups/{ig}", "int-del-none").header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
     }
 
     private static final String KEY_HEADER = "X-Internal-Api-Key";
