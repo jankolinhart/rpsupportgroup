@@ -17,6 +17,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -175,6 +176,52 @@ class InternalGroupControllerTest {
     void removeUnknownConfigIsNotFound() throws Exception {
         mockMvc.perform(delete("/supportgroup/v1/internal/groups/{ig}", "int-del-none").header(KEY_HEADER, KEY))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void contributeThenServeAvatarRoundTrips() throws Exception {
+        byte[] png = new byte[] { 1, 2, 3, 4 };
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/avatar", "int-av")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.IMAGE_JPEG).content(png))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/avatar", "int-av").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.IMAGE_JPEG))
+                .andExpect(content().bytes(png));
+    }
+
+    @Test
+    void contributeAvatarUpdatesExisting() throws Exception {
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/avatar", "int-av2")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.IMAGE_JPEG).content(new byte[] { 1 }))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/avatar", "int-av2")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.IMAGE_PNG).content(new byte[] { 9, 9 }))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/avatar", "int-av2").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.IMAGE_PNG))
+                .andExpect(content().bytes(new byte[] { 9, 9 }));
+    }
+
+    @Test
+    void serveAvatarUnknownIsNotFound() throws Exception {
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/avatar", "int-av-none").header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void contributeEmptyAvatarIsBadRequest() throws Exception {
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/avatar", "int-av-empty")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.IMAGE_JPEG).content(new byte[0]))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void contributeAvatarWithoutKeyIsUnauthorized() throws Exception {
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/avatar", "int-av-x")
+                        .contentType(MediaType.IMAGE_JPEG).content(new byte[] { 1 }))
+                .andExpect(status().isUnauthorized());
     }
 
     private static final String KEY_HEADER = "X-Internal-Api-Key";
