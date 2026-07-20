@@ -61,10 +61,16 @@ class SupportGroupConfigControllerTest {
                 + "\"type\":\"SINGLE_MARKER\","
                 + "\"timezone\":\"Europe/Berlin\","
                 + "\"markerOwners\":[\"owner1\"],"
-                + "\"openingDays\":[\"MON\",\"TUE\"],"
-                + "\"maxTags\":3,"
-                + "\"safeTagRemovalMinutes\":30,"
-                + "\"likingEndMinutes\":120}"
+                + "\"maxTaggedPosts\":3,"
+                + "\"continuousDays\":[0,1,2,3,4,5,6],"
+                + "\"startMarkerTime\":\"09:00\","
+                + "\"endMarkerTime\":\"18:00\","
+                + "\"endMarkerDayOffset\":0,"
+                + "\"singleMarkerTime\":\"12:00\","
+                + "\"likesUntilTime\":\"04:00\","
+                + "\"likesUntilDayOffset\":1,"
+                + "\"tagRemoveEarliestTime\":\"08:00\","
+                + "\"tagRemoveEarliestDayOffset\":1}"
                 + "}";
     }
 
