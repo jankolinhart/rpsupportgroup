@@ -8,12 +8,14 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import java.util.UUID;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -33,7 +35,23 @@ class SupportGroupConfigControllerTest {
     MockMvc mockMvc;
 
     private static RequestPostProcessor asUser() {
-        return jwt().jwt(j -> j.subject(UUID.randomUUID().toString()));
+        return asUser(UUID.randomUUID());
+    }
+
+    private static RequestPostProcessor asUser(UUID id) {
+        return jwt().jwt(j -> j.subject(id.toString()));
+    }
+
+    private static RequestPostProcessor asAdmin(UUID id) {
+        return jwt().authorities(new SimpleGrantedAuthority("ROLE_SG_ADMIN")).jwt(j -> j.subject(id.toString()));
+    }
+
+    private static String markerOwner(String handle) {
+        return "{\"handle\":\"" + handle + "\"}";
+    }
+
+    private static String minimalBody(String ig) {
+        return "{\"igAccount\":\"" + ig + "\",\"definition\":{\"type\":\"CONTINUOUS\",\"timezone\":\"UTC\"}}";
     }
 
     private static String body(String ig) {
@@ -111,5 +129,153 @@ class SupportGroupConfigControllerTest {
         mockMvc.perform(post("/supportgroup/v1/groups").with(asUser())
                         .contentType(MediaType.APPLICATION_JSON).content(body("")))
                 .andExpect(status().isBadRequest());
+    }
+
+    // --- claim / promote (§6) ---
+
+    @Test
+    void ownerClaimsUnclaimedConfig() throws Exception {
+        UUID owner = UUID.randomUUID();
+        mockMvc.perform(post("/supportgroup/v1/groups").with(asUser())
+                .contentType(MediaType.APPLICATION_JSON).content(body("sg-claim"))).andExpect(status().isCreated());
+        mockMvc.perform(post("/supportgroup/v1/groups/{ig}/claim", "sg-claim").with(asAdmin(owner)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CLAIMED"))
+                .andExpect(jsonPath("$.ownerId").value(owner.toString()))
+                .andExpect(jsonPath("$.version").value(2));
+    }
+
+    @Test
+    void claimAlreadyClaimedIsConflict() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/groups").with(asUser())
+                .contentType(MediaType.APPLICATION_JSON).content(body("sg-claim2"))).andExpect(status().isCreated());
+        mockMvc.perform(post("/supportgroup/v1/groups/{ig}/claim", "sg-claim2").with(asAdmin(UUID.randomUUID())))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/supportgroup/v1/groups/{ig}/claim", "sg-claim2").with(asAdmin(UUID.randomUUID())))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void nonAdminCannotClaim() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/groups").with(asUser())
+                .contentType(MediaType.APPLICATION_JSON).content(body("sg-claim3"))).andExpect(status().isCreated());
+        mockMvc.perform(post("/supportgroup/v1/groups/{ig}/claim", "sg-claim3").with(asUser()))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void claimUnknownConfigIsNotFound() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/groups/{ig}/claim", "sg-claim-none").with(asAdmin(UUID.randomUUID())))
+                .andExpect(status().isNotFound());
+    }
+
+    // --- marker-owner discovery write (Q4) ---
+
+    @Test
+    void clientAddsDiscoveredMarkerOwner() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/groups").with(asUser())
+                .contentType(MediaType.APPLICATION_JSON).content(body("sg-mo"))).andExpect(status().isCreated());
+        mockMvc.perform(post("/supportgroup/v1/groups/{ig}/marker-owners", "sg-mo").with(asUser())
+                        .contentType(MediaType.APPLICATION_JSON).content(markerOwner("owner2")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.definition.markerOwners.length()").value(2))
+                .andExpect(jsonPath("$.definition.markerOwners", Matchers.hasItem("owner2")))
+                .andExpect(jsonPath("$.version").value(2));
+    }
+
+    @Test
+    void addMarkerOwnerIsIdempotent() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/groups").with(asUser())
+                .contentType(MediaType.APPLICATION_JSON).content(body("sg-moi"))).andExpect(status().isCreated());
+        mockMvc.perform(post("/supportgroup/v1/groups/{ig}/marker-owners", "sg-moi").with(asUser())
+                .contentType(MediaType.APPLICATION_JSON).content(markerOwner("owner2"))).andExpect(status().isOk());
+        mockMvc.perform(post("/supportgroup/v1/groups/{ig}/marker-owners", "sg-moi").with(asUser())
+                        .contentType(MediaType.APPLICATION_JSON).content(markerOwner("owner2")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.definition.markerOwners.length()").value(2))
+                .andExpect(jsonPath("$.version").value(2));
+    }
+
+    @Test
+    void addMarkerOwnerOnConfigWithoutOwners() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/groups").with(asUser())
+                .contentType(MediaType.APPLICATION_JSON).content(minimalBody("sg-mow"))).andExpect(status().isCreated());
+        mockMvc.perform(post("/supportgroup/v1/groups/{ig}/marker-owners", "sg-mow").with(asUser())
+                        .contentType(MediaType.APPLICATION_JSON).content(markerOwner("owner1")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.definition.markerOwners.length()").value(1))
+                .andExpect(jsonPath("$.definition.markerOwners", Matchers.hasItem("owner1")));
+    }
+
+    @Test
+    void addMarkerOwnerUnknownConfigIsNotFound() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/groups/{ig}/marker-owners", "sg-mo-none").with(asUser())
+                        .contentType(MediaType.APPLICATION_JSON).content(markerOwner("owner2")))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void addMarkerOwnerBlankIsRejected() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/groups").with(asUser())
+                .contentType(MediaType.APPLICATION_JSON).content(body("sg-mob"))).andExpect(status().isCreated());
+        mockMvc.perform(post("/supportgroup/v1/groups/{ig}/marker-owners", "sg-mob").with(asUser())
+                        .contentType(MediaType.APPLICATION_JSON).content(markerOwner("")))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void ownerRevokesMarkerOwner() throws Exception {
+        UUID owner = UUID.randomUUID();
+        mockMvc.perform(post("/supportgroup/v1/groups").with(asUser())
+                .contentType(MediaType.APPLICATION_JSON).content(body("sg-rev"))).andExpect(status().isCreated());
+        mockMvc.perform(post("/supportgroup/v1/groups/{ig}/claim", "sg-rev").with(asAdmin(owner)))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/supportgroup/v1/groups/{ig}/marker-owners", "sg-rev").with(asUser())
+                .contentType(MediaType.APPLICATION_JSON).content(markerOwner("owner2"))).andExpect(status().isOk());
+        mockMvc.perform(delete("/supportgroup/v1/groups/{ig}/marker-owners/{h}", "sg-rev", "owner2").with(asAdmin(owner)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.definition.markerOwners.length()").value(1))
+                .andExpect(jsonPath("$.definition.markerOwners", Matchers.not(Matchers.hasItem("owner2"))));
+    }
+
+    @Test
+    void revokeMissingMarkerOwnerIsNoop() throws Exception {
+        UUID owner = UUID.randomUUID();
+        mockMvc.perform(post("/supportgroup/v1/groups").with(asUser())
+                .contentType(MediaType.APPLICATION_JSON).content(body("sg-revn"))).andExpect(status().isCreated());
+        mockMvc.perform(post("/supportgroup/v1/groups/{ig}/claim", "sg-revn").with(asAdmin(owner)))
+                .andExpect(status().isOk());
+        mockMvc.perform(delete("/supportgroup/v1/groups/{ig}/marker-owners/{h}", "sg-revn", "ghost").with(asAdmin(owner)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.definition.markerOwners.length()").value(1));
+    }
+
+    @Test
+    void nonOwnerAdminCannotRevoke() throws Exception {
+        UUID owner = UUID.randomUUID();
+        mockMvc.perform(post("/supportgroup/v1/groups").with(asUser())
+                .contentType(MediaType.APPLICATION_JSON).content(body("sg-revo"))).andExpect(status().isCreated());
+        mockMvc.perform(post("/supportgroup/v1/groups/{ig}/claim", "sg-revo").with(asAdmin(owner)))
+                .andExpect(status().isOk());
+        mockMvc.perform(delete("/supportgroup/v1/groups/{ig}/marker-owners/{h}", "sg-revo", "owner1")
+                        .with(asAdmin(UUID.randomUUID())))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void nonAdminCannotRevoke() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/groups").with(asUser())
+                .contentType(MediaType.APPLICATION_JSON).content(body("sg-revu"))).andExpect(status().isCreated());
+        mockMvc.perform(delete("/supportgroup/v1/groups/{ig}/marker-owners/{h}", "sg-revu", "owner1").with(asUser()))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void revokeOnUnclaimedConfigIsForbidden() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/groups").with(asUser())
+                .contentType(MediaType.APPLICATION_JSON).content(body("sg-revx"))).andExpect(status().isCreated());
+        mockMvc.perform(delete("/supportgroup/v1/groups/{ig}/marker-owners/{h}", "sg-revx", "owner1")
+                        .with(asAdmin(UUID.randomUUID())))
+                .andExpect(status().isForbidden());
     }
 }

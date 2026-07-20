@@ -27,4 +27,9 @@ public record GroupDefinition(
         Integer maxTags,
         Integer safeTagRemovalMinutes,
         Integer likingEndMinutes) {
+
+    /** Return a copy with a replaced marker-owner list (records are immutable). */
+    public GroupDefinition withMarkerOwners(List<String> owners) {
+        return new GroupDefinition(type, timezone, owners, openingDays, maxTags, safeTagRemovalMinutes, likingEndMinutes);
+    }
 }
