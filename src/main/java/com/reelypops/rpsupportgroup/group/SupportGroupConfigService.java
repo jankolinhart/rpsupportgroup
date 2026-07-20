@@ -72,6 +72,14 @@ public class SupportGroupConfigService {
         return configs.save(c);
     }
 
+    /** Operator correction (Cycle 10): replace a config's authoritative definition (e.g. before vetting a fixed one). */
+    @Transactional
+    public SupportGroupConfig updateDefinition(String igAccount, GroupDefinition definition) {
+        SupportGroupConfig c = require(igAccount);
+        c.updateDefinition(definition);
+        return configs.save(c);
+    }
+
     /** An owner claims an unclaimed config (§6). Idempotent guard: re-claiming a claimed config is a conflict. */
     @Transactional
     public SupportGroupConfig claim(String igAccount, UUID ownerId) {

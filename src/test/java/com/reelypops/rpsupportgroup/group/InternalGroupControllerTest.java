@@ -16,6 +16,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -128,6 +129,37 @@ class InternalGroupControllerTest {
     void vetUnknownConfigIsNotFound() throws Exception {
         mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vet", "int-vet-none").header(KEY_HEADER, KEY))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void withKeyUpdatesDefinition() throws Exception {
+        createConfig("int-upd");
+        String def = "{\"type\":\"TWO_MARKER\",\"timezone\":\"Europe/Berlin\","
+                + "\"startMarkerTime\":\"08:00\",\"endMarkerTime\":\"20:00\"}";
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}", "int-upd").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content(def))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.definition.type").value("TWO_MARKER"))
+                .andExpect(jsonPath("$.definition.timezone").value("Europe/Berlin"))
+                .andExpect(jsonPath("$.definition.startMarkerTime").value("08:00"))
+                .andExpect(jsonPath("$.version").value(2));
+    }
+
+    @Test
+    void updateDefinitionUnknownConfigIsNotFound() throws Exception {
+        String def = "{\"type\":\"CONTINUOUS\",\"timezone\":\"UTC\"}";
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}", "int-upd-none").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content(def))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void updateDefinitionInvalidIsBadRequest() throws Exception {
+        createConfig("int-upd-bad");
+        String def = "{\"timezone\":\"UTC\"}"; // missing @NotNull type
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}", "int-upd-bad").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content(def))
+                .andExpect(status().isBadRequest());
     }
 
     @Test

@@ -109,6 +109,12 @@ public class SupportGroupConfig {
         return true;
     }
 
+    /** Operator correction (Cycle 10): replace the authoritative definition (fix nonsense timings etc.); bumps version. */
+    public void updateDefinition(GroupDefinition definition) {
+        this.definition = definition;
+        this.version++;
+    }
+
     /**
      * Register a discovered marker owner (Q4): idempotent — returns {@code false} and changes nothing if the
      * handle is already known, else appends it and bumps the version. First writer wins; later duplicates no-op.
