@@ -15,6 +15,8 @@ import org.hibernate.annotations.UpdateTimestamp;
 import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -68,5 +70,45 @@ public class SupportGroupConfig {
     /** Create a new, unclaimed config for a support group (§6: auto-registered by the first client). */
     public static SupportGroupConfig createUnclaimed(String igAccount, GroupDefinition definition) {
         return new SupportGroupConfig(igAccount, definition);
+    }
+
+    /** An owner claims this config, making it authoritative (§6). Bumps the version. */
+    public void claim(UUID ownerId) {
+        this.ownerId = ownerId;
+        this.status = ConfigStatus.CLAIMED;
+        this.version++;
+    }
+
+    /**
+     * Register a discovered marker owner (Q4): idempotent — returns {@code false} and changes nothing if the
+     * handle is already known, else appends it and bumps the version. First writer wins; later duplicates no-op.
+     */
+    public boolean addMarkerOwner(String handle) {
+        List<String> current = owners(definition);
+        if (current.contains(handle)) {
+            return false;
+        }
+        List<String> updated = new ArrayList<>(current);
+        updated.add(handle);
+        this.definition = definition.withMarkerOwners(List.copyOf(updated));
+        this.version++;
+        return true;
+    }
+
+    /** Owner revokes a marker owner (Q4 safety-net): idempotent — {@code false} if it was not present. */
+    public boolean removeMarkerOwner(String handle) {
+        List<String> current = owners(definition);
+        if (!current.contains(handle)) {
+            return false;
+        }
+        List<String> updated = new ArrayList<>(current);
+        updated.remove(handle);
+        this.definition = definition.withMarkerOwners(List.copyOf(updated));
+        this.version++;
+        return true;
+    }
+
+    private static List<String> owners(GroupDefinition definition) {
+        return definition.markerOwners() == null ? List.of() : definition.markerOwners();
     }
 }

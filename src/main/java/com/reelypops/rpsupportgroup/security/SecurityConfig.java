@@ -4,6 +4,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -62,6 +63,8 @@ public class SecurityConfig {
             .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/supportgroup/v1/health", "/actuator/**").permitAll()
+                .requestMatchers(HttpMethod.POST, "/supportgroup/v1/groups/*/claim").hasRole("SG_ADMIN")
+                .requestMatchers(HttpMethod.DELETE, "/supportgroup/v1/groups/*/marker-owners/*").hasRole("SG_ADMIN")
                 .anyRequest().authenticated())
             .oauth2ResourceServer(oauth -> oauth
                 .jwt(jwt -> jwt.decoder(jwtDecoder).jwtAuthenticationConverter(rolesConverter())))
