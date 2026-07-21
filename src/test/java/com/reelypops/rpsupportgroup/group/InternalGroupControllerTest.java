@@ -224,5 +224,46 @@ class InternalGroupControllerTest {
                 .andExpect(status().isUnauthorized());
     }
 
+    // --- content categories (Cycle 12) ---
+
+    @Test
+    void assignsAndUnassignsACategory() throws Exception {
+        createConfig("int-cat");
+        // assign is idempotent — twice, then it appears once on the config
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/categories/{slug}", "int-cat", "travel")
+                        .header(KEY_HEADER, KEY)).andExpect(status().isNoContent());
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/categories/{slug}", "int-cat", "travel")
+                        .header(KEY_HEADER, KEY)).andExpect(status().isNoContent());
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "int-cat").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.categories", Matchers.contains("travel")));
+
+        mockMvc.perform(delete("/supportgroup/v1/internal/groups/{ig}/categories/{slug}", "int-cat", "travel")
+                        .header(KEY_HEADER, KEY)).andExpect(status().isNoContent());
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "int-cat").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.categories.length()").value(0));
+    }
+
+    @Test
+    void unassigningAnAbsentCategoryIsANoOp() throws Exception {
+        createConfig("int-cat-noop");
+        mockMvc.perform(delete("/supportgroup/v1/internal/groups/{ig}/categories/{slug}", "int-cat-noop", "fashion")
+                        .header(KEY_HEADER, KEY)).andExpect(status().isNoContent());
+    }
+
+    @Test
+    void assignToUnknownGroupIsNotFound() throws Exception {
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/categories/{slug}", "int-cat-none", "travel")
+                        .header(KEY_HEADER, KEY)).andExpect(status().isNotFound());
+    }
+
+    @Test
+    void assignUnknownCategoryIsNotFound() throws Exception {
+        createConfig("int-cat-badcat");
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/categories/{slug}", "int-cat-badcat", "no-such")
+                        .header(KEY_HEADER, KEY)).andExpect(status().isNotFound());
+    }
+
     private static final String KEY_HEADER = "X-Internal-Api-Key";
 }

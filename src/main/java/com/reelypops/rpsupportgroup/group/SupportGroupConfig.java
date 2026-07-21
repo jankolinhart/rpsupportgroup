@@ -4,7 +4,11 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
+import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.JoinTable;
+import jakarta.persistence.ManyToMany;
 import jakarta.persistence.Table;
 import lombok.AccessLevel;
 import lombok.Getter;
@@ -16,7 +20,9 @@ import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -53,6 +59,17 @@ public class SupportGroupConfig {
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "definition", nullable = false, columnDefinition = "jsonb")
     private GroupDefinition definition;
+
+    /**
+     * Content categories (Cycle 12) — the admin-curated taxonomy this group is classified under. Metadata only
+     * (never round truth), so changing it does NOT bump {@code version} (which is the definition ETag the client
+     * polls). Eager because a config is always rendered with its category slugs (browse tiles + get).
+     */
+    @ManyToMany(fetch = FetchType.EAGER)
+    @JoinTable(name = "sg_config_category",
+            joinColumns = @JoinColumn(name = "config_id"),
+            inverseJoinColumns = @JoinColumn(name = "category_id"))
+    private Set<SgCategory> categories = new LinkedHashSet<>();
 
     @Column(name = "version", nullable = false)
     private long version;
@@ -146,5 +163,21 @@ public class SupportGroupConfig {
 
     private static List<String> owners(GroupDefinition definition) {
         return definition.markerOwners() == null ? List.of() : definition.markerOwners();
+    }
+
+    /**
+     * Assign a content category (Cycle 12) — idempotent: returns {@code false} and changes nothing if the group is
+     * already in that category. Metadata only, so it does not bump {@code version}.
+     */
+    public boolean assignCategory(SgCategory category) {
+        if (categories.stream().anyMatch(c -> c.getSlug().equals(category.getSlug()))) {
+            return false;
+        }
+        return categories.add(category);
+    }
+
+    /** Unassign a content category by slug (Cycle 12) — idempotent: {@code false} if it was not assigned. */
+    public boolean unassignCategory(String slug) {
+        return categories.removeIf(c -> c.getSlug().equals(slug));
     }
 }

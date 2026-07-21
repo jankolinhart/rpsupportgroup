@@ -29,10 +29,13 @@ public class InternalGroupController {
 
     private final SupportGroupConfigService service;
     private final SupportGroupAvatarService avatarService;
+    private final SgCategoryService categoryService;
 
-    public InternalGroupController(SupportGroupConfigService service, SupportGroupAvatarService avatarService) {
+    public InternalGroupController(SupportGroupConfigService service, SupportGroupAvatarService avatarService,
+                                   SgCategoryService categoryService) {
         this.service = service;
         this.avatarService = avatarService;
+        this.categoryService = categoryService;
     }
 
     @GetMapping
@@ -75,6 +78,20 @@ public class InternalGroupController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void remove(@PathVariable String igAccount) {
         service.remove(igAccount);
+    }
+
+    /** Admin: assign a content category to a group (Cycle 12) — idempotent. */
+    @PutMapping("/{igAccount}/categories/{slug}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void assignCategory(@PathVariable String igAccount, @PathVariable String slug) {
+        categoryService.assign(igAccount, slug);
+    }
+
+    /** Admin: unassign a content category from a group (Cycle 12) — idempotent. */
+    @DeleteMapping("/{igAccount}/categories/{slug}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void unassignCategory(@PathVariable String igAccount, @PathVariable String slug) {
+        categoryService.unassign(igAccount, slug);
     }
 
     /**
