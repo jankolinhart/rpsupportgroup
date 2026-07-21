@@ -75,14 +75,17 @@ class InternalGroupControllerTest {
 
     @Test
     void withKeyCreatesUnclaimedConfig() throws Exception {
-        String body = "{\"igAccount\":\"int-create\",\"definition\":{\"type\":\"SINGLE_MARKER\",\"timezone\":\"UTC\"}}";
+        String body = "{\"igAccount\":\"int-create\",\"definition\":{\"type\":\"SINGLE_MARKER\",\"timezone\":\"UTC\","
+                + "\"openWeekdays\":[1,2,3,4,5]},\"description\":\"Weekday single-marker group.\"}";
         mockMvc.perform(post("/supportgroup/v1/internal/groups").header(KEY_HEADER, KEY)
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.igAccount").value("int-create"))
                 .andExpect(jsonPath("$.status").value("UNCLAIMED"))
                 .andExpect(jsonPath("$.vetted").value(false))
-                .andExpect(jsonPath("$.adminAttributed").value(false));
+                .andExpect(jsonPath("$.adminAttributed").value(false))
+                .andExpect(jsonPath("$.description").value("Weekday single-marker group."))
+                .andExpect(jsonPath("$.definition.openWeekdays.length()").value(5));
     }
 
     @Test
@@ -135,31 +138,63 @@ class InternalGroupControllerTest {
     @Test
     void withKeyUpdatesDefinition() throws Exception {
         createConfig("int-upd");
-        String def = "{\"type\":\"TWO_MARKER\",\"timezone\":\"Europe/Berlin\","
-                + "\"startMarkerTime\":\"08:00\",\"endMarkerTime\":\"20:00\"}";
+        String body = "{\"definition\":{\"type\":\"TWO_MARKER\",\"timezone\":\"Europe/Berlin\","
+                + "\"startMarkerTime\":\"08:00\",\"endMarkerTime\":\"20:00\",\"openWeekdays\":[1,2,3,4,5]},"
+                + "\"description\":\"A lovely two-marker group.\"}";
         mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}", "int-upd").header(KEY_HEADER, KEY)
-                        .contentType(MediaType.APPLICATION_JSON).content(def))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.definition.type").value("TWO_MARKER"))
                 .andExpect(jsonPath("$.definition.timezone").value("Europe/Berlin"))
                 .andExpect(jsonPath("$.definition.startMarkerTime").value("08:00"))
+                .andExpect(jsonPath("$.definition.openWeekdays[0]").value(1))
+                .andExpect(jsonPath("$.definition.openWeekdays.length()").value(5))
+                .andExpect(jsonPath("$.description").value("A lovely two-marker group."))
                 .andExpect(jsonPath("$.version").value(2));
     }
 
     @Test
+    void continuousCorrectionKeepsOpenWeekdaysAndContinuousDaysInSync() throws Exception {
+        createConfig("int-cont-sync");
+        // A CONTINUOUS correction that sets openWeekdays should back-write continuousDays (the client's round-reset
+        // still reads continuousDays) — R-1 canonicalisation keeps the two in sync.
+        String body = "{\"definition\":{\"type\":\"CONTINUOUS\",\"timezone\":\"UTC\",\"openWeekdays\":[1,2,3,4,5]}}";
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}", "int-cont-sync").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.definition.openWeekdays.length()").value(5))
+                .andExpect(jsonPath("$.definition.continuousDays.length()").value(5))
+                .andExpect(jsonPath("$.definition.continuousDays[0]").value(1));
+    }
+
+    @Test
+    void continuousCorrectionBackfillsOpenWeekdaysFromContinuousDays() throws Exception {
+        createConfig("int-cont-backfill");
+        // A legacy CONTINUOUS correction that sets only continuousDays should back-fill openWeekdays so the tile can
+        // render its opening days.
+        String body = "{\"definition\":{\"type\":\"CONTINUOUS\",\"timezone\":\"UTC\",\"continuousDays\":[6,0]}}";
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}", "int-cont-backfill").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.definition.openWeekdays.length()").value(2))
+                .andExpect(jsonPath("$.definition.openWeekdays[0]").value(6))
+                .andExpect(jsonPath("$.definition.continuousDays[1]").value(0));
+    }
+
+    @Test
     void updateDefinitionUnknownConfigIsNotFound() throws Exception {
-        String def = "{\"type\":\"CONTINUOUS\",\"timezone\":\"UTC\"}";
+        String body = "{\"definition\":{\"type\":\"CONTINUOUS\",\"timezone\":\"UTC\"}}";
         mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}", "int-upd-none").header(KEY_HEADER, KEY)
-                        .contentType(MediaType.APPLICATION_JSON).content(def))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isNotFound());
     }
 
     @Test
     void updateDefinitionInvalidIsBadRequest() throws Exception {
         createConfig("int-upd-bad");
-        String def = "{\"timezone\":\"UTC\"}"; // missing @NotNull type
+        String body = "{\"definition\":{\"timezone\":\"UTC\"}}"; // missing @NotNull type
         mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}", "int-upd-bad").header(KEY_HEADER, KEY)
-                        .contentType(MediaType.APPLICATION_JSON).content(def))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isBadRequest());
     }
 

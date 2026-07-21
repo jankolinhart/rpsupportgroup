@@ -67,7 +67,7 @@ public class InternalGroupController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public GroupResponse create(@Valid @RequestBody CreateGroupRequest req) {
-        return GroupResponse.of(service.create(req.igAccount(), req.definition()));
+        return GroupResponse.of(service.create(req.igAccount(), req.definition(), req.description()));
     }
 
     /** Admin override (Cycle 9): attribute an unclaimed config to a ReelyPops user without the claim flow. */
@@ -82,10 +82,13 @@ public class InternalGroupController {
         return GroupResponse.of(service.vet(igAccount));
     }
 
-    /** Operator correction (Cycle 10): replace the authoritative definition (fix timings / timezone / marker owners). */
+    /**
+     * Operator correction (Cycle 10/11): replace the authoritative definition (fix timings / timezone / opening
+     * weekdays / marker owners) and the optional group description in one call.
+     */
     @PutMapping("/{igAccount}")
-    public GroupResponse updateDefinition(@PathVariable String igAccount, @Valid @RequestBody GroupDefinition definition) {
-        return GroupResponse.of(service.updateDefinition(igAccount, definition));
+    public GroupResponse updateConfig(@PathVariable String igAccount, @Valid @RequestBody UpdateGroupRequest req) {
+        return GroupResponse.of(service.updateConfig(igAccount, req.definition(), req.description()));
     }
 
     /** Admin: remove a config. */

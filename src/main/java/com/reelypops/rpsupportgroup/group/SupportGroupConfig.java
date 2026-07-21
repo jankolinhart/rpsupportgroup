@@ -61,6 +61,14 @@ public class SupportGroupConfig {
     private GroupDefinition definition;
 
     /**
+     * A free-text group blurb (Cycle 11, R-1) shown lazily in the client's "i" info card. Authoritative (an admin
+     * curates it; editable while PENDING, locked once vetted) but kept out of the jsonb {@code definition} because it
+     * is not round truth, so it never bumps the definition {@code version} ETag the client polls.
+     */
+    @Column(name = "description")
+    private String description;
+
+    /**
      * Content categories (Cycle 12) — the admin-curated taxonomy this group is classified under. Metadata only
      * (never round truth), so changing it does NOT bump {@code version} (which is the definition ETag the client
      * polls). Eager because a config is always rendered with its category slugs (browse tiles + get).
@@ -90,9 +98,11 @@ public class SupportGroupConfig {
         this.version = 1L;
     }
 
-    /** Create a new, unclaimed config for a support group (§6: auto-registered by the first client). */
-    public static SupportGroupConfig createUnclaimed(String igAccount, GroupDefinition definition) {
-        return new SupportGroupConfig(igAccount, definition);
+    /** Create a new, unclaimed config with an optional group description (Cycle 11, R-1). */
+    public static SupportGroupConfig createUnclaimed(String igAccount, GroupDefinition definition, String description) {
+        SupportGroupConfig c = new SupportGroupConfig(igAccount, definition);
+        c.description = description;
+        return c;
     }
 
     /** An owner claims this config, making it authoritative (§6). Bumps the version. */
@@ -128,8 +138,16 @@ public class SupportGroupConfig {
 
     /** Operator correction (Cycle 10): replace the authoritative definition (fix nonsense timings etc.); bumps version. */
     public void updateDefinition(GroupDefinition definition) {
-        this.definition = definition;
+        this.definition = definition.canonicalized();
         this.version++;
+    }
+
+    /**
+     * Operator correction (Cycle 11, R-1): set the authoritative group description. Not round truth, so it does not
+     * bump the definition {@code version} the client polls — the "i" card fetches it lazily.
+     */
+    public void updateDescription(String description) {
+        this.description = description;
     }
 
     /**

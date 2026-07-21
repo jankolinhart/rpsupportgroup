@@ -17,6 +17,7 @@ public record GroupResponse(
         boolean adminAttributed,
         boolean vetted,
         GroupDefinition definition,
+        String description,
         long version,
         Instant createdAt,
         Instant updatedAt,
@@ -24,7 +25,8 @@ public record GroupResponse(
 
     static GroupResponse of(SupportGroupConfig c) {
         return new GroupResponse(c.getId(), c.getIgAccount(), c.getStatus(), c.getOwnerId(),
-                c.isAdminAttributed(), c.isVetted(), c.getDefinition(), c.getVersion(), c.getCreatedAt(), c.getUpdatedAt(),
+                c.isAdminAttributed(), c.isVetted(), c.getDefinition(), c.getDescription(), c.getVersion(),
+                c.getCreatedAt(), c.getUpdatedAt(),
                 c.getCategories().stream().map(SgCategory::getSlug).sorted().toList());
     }
 }

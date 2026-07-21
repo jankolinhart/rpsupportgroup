@@ -82,7 +82,9 @@ class SupportGroupConfigControllerTest {
                 + "\"likesUntilTime\":\"04:00\","
                 + "\"likesUntilDayOffset\":1,"
                 + "\"tagRemoveEarliestTime\":\"08:00\","
-                + "\"tagRemoveEarliestDayOffset\":1}"
+                + "\"tagRemoveEarliestDayOffset\":1,"
+                + "\"openWeekdays\":[1,2,3,4,5]},"
+                + "\"description\":\"Alpha group blurb.\""
                 + "}";
     }
 
@@ -98,6 +100,8 @@ class SupportGroupConfigControllerTest {
                 .andExpect(jsonPath("$.ownerId").doesNotExist())
                 .andExpect(jsonPath("$.definition.type").value("SINGLE_MARKER"))
                 .andExpect(jsonPath("$.definition.timezone").value("Europe/Berlin"))
+                .andExpect(jsonPath("$.definition.openWeekdays.length()").value(5))
+                .andExpect(jsonPath("$.description").value("Alpha group blurb."))
                 .andExpect(jsonPath("$.id").exists())
                 .andExpect(jsonPath("$.createdAt").exists())
                 .andExpect(jsonPath("$.updatedAt").exists());
