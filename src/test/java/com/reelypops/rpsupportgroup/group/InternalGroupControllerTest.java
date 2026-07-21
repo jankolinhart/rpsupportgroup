@@ -265,5 +265,28 @@ class InternalGroupControllerTest {
                         .header(KEY_HEADER, KEY)).andExpect(status().isNotFound());
     }
 
+    @Test
+    void browseReturnsPagedVettedWithCategoryFilter() throws Exception {
+        createConfig("int-br-a");
+        createConfig("int-br-b");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vet", "int-br-a").header(KEY_HEADER, KEY)).andExpect(status().isOk());
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vet", "int-br-b").header(KEY_HEADER, KEY)).andExpect(status().isOk());
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/categories/{slug}", "int-br-a", "travel").header(KEY_HEADER, KEY))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/browse")
+                        .param("categories", "travel").param("q", "int-br").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(1))
+                .andExpect(jsonPath("$.content[0].igAccount").value("int-br-a"))
+                .andExpect(jsonPath("$.content[0].categories", Matchers.contains("travel")))
+                .andExpect(jsonPath("$.page").value(0))
+                .andExpect(jsonPath("$.hasNext").value(false));
+
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/browse").param("q", "int-br").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(2));
+    }
+
     private static final String KEY_HEADER = "X-Internal-Api-Key";
 }

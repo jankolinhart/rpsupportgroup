@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -41,6 +42,20 @@ public class InternalGroupController {
     @GetMapping
     public List<GroupResponse> list() {
         return service.list().stream().map(GroupResponse::of).toList();
+    }
+
+    /**
+     * The client's public browse (Cycle 12) via the rpserver BFF: a page of VETTED configs, optionally filtered by
+     * any of the given category slugs (OR) and a case-insensitive substring on the group's IG account. Distinct from
+     * {@link #list()} (which returns every config, incl. pending, for the admin console).
+     */
+    @GetMapping("/browse")
+    public PagedGroups browse(
+            @RequestParam(name = "categories", required = false) List<String> categories,
+            @RequestParam(name = "q", required = false) String q,
+            @RequestParam(name = "page", defaultValue = "0") int page,
+            @RequestParam(name = "size", defaultValue = "24") int size) {
+        return PagedGroups.of(service.browse(categories, q, page, size));
     }
 
     @GetMapping("/{igAccount}")
