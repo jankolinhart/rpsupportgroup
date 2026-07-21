@@ -1,10 +1,13 @@
 package com.reelypops.rpsupportgroup.group;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 
@@ -41,10 +44,22 @@ public class SupportGroupConfigService {
         return configs.findAllByOrderByCreatedAtDesc();
     }
 
-    /** The public browse list (Cycle 10): only VETTED configs are offered to clients for “choose a support group”. */
+    /**
+     * The public browse list (Cycle 10/12): page the VETTED registry, optionally filtered by <em>any</em> of the
+     * given category slugs (OR) and a case-insensitive substring on the group's IG account. Blank category slugs are
+     * ignored; when none remain the category filter is skipped.
+     */
     @Transactional(readOnly = true)
-    public List<SupportGroupConfig> listVetted() {
-        return configs.findByVettedTrueOrderByCreatedAtDesc();
+    public Page<SupportGroupConfig> browse(List<String> categories, String q, int page, int size) {
+        List<String> slugs = categories == null ? List.of()
+                : categories.stream()
+                        .filter(s -> s != null && !s.isBlank())
+                        .map(s -> s.trim().toLowerCase())
+                        .toList();
+        boolean noCats = slugs.isEmpty();
+        Collection<String> slugParam = noCats ? List.of("") : slugs;
+        String query = (q == null || q.isBlank()) ? "" : q.trim();
+        return configs.browseVetted(noCats, slugParam, query, PageRequest.of(page, size));
     }
 
     /**

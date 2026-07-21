@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -37,10 +38,17 @@ public class SupportGroupConfigController {
         return GroupResponse.of(service.create(req.igAccount(), req.definition()));
     }
 
-    /** The public browse list (Cycle 10): only VETTED configs are offered to clients for “choose a support group”. */
+    /**
+     * The public browse list (Cycle 10/12): a page of VETTED configs for “choose a support group”, optionally
+     * filtered by any of the given category slugs (OR) and a case-insensitive substring on the group's IG account.
+     */
     @GetMapping
-    public List<GroupResponse> list() {
-        return service.listVetted().stream().map(GroupResponse::of).toList();
+    public PagedGroups browse(
+            @RequestParam(name = "categories", required = false) List<String> categories,
+            @RequestParam(name = "q", required = false) String q,
+            @RequestParam(name = "page", defaultValue = "0") int page,
+            @RequestParam(name = "size", defaultValue = "24") int size) {
+        return PagedGroups.of(service.browse(categories, q, page, size));
     }
 
     @GetMapping("/{igAccount}")

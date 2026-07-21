@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -29,15 +30,32 @@ public class InternalGroupController {
 
     private final SupportGroupConfigService service;
     private final SupportGroupAvatarService avatarService;
+    private final SgCategoryService categoryService;
 
-    public InternalGroupController(SupportGroupConfigService service, SupportGroupAvatarService avatarService) {
+    public InternalGroupController(SupportGroupConfigService service, SupportGroupAvatarService avatarService,
+                                   SgCategoryService categoryService) {
         this.service = service;
         this.avatarService = avatarService;
+        this.categoryService = categoryService;
     }
 
     @GetMapping
     public List<GroupResponse> list() {
         return service.list().stream().map(GroupResponse::of).toList();
+    }
+
+    /**
+     * The client's public browse (Cycle 12) via the rpserver BFF: a page of VETTED configs, optionally filtered by
+     * any of the given category slugs (OR) and a case-insensitive substring on the group's IG account. Distinct from
+     * {@link #list()} (which returns every config, incl. pending, for the admin console).
+     */
+    @GetMapping("/browse")
+    public PagedGroups browse(
+            @RequestParam(name = "categories", required = false) List<String> categories,
+            @RequestParam(name = "q", required = false) String q,
+            @RequestParam(name = "page", defaultValue = "0") int page,
+            @RequestParam(name = "size", defaultValue = "24") int size) {
+        return PagedGroups.of(service.browse(categories, q, page, size));
     }
 
     @GetMapping("/{igAccount}")
@@ -75,6 +93,20 @@ public class InternalGroupController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void remove(@PathVariable String igAccount) {
         service.remove(igAccount);
+    }
+
+    /** Admin: assign a content category to a group (Cycle 12) — idempotent. */
+    @PutMapping("/{igAccount}/categories/{slug}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void assignCategory(@PathVariable String igAccount, @PathVariable String slug) {
+        categoryService.assign(igAccount, slug);
+    }
+
+    /** Admin: unassign a content category from a group (Cycle 12) — idempotent. */
+    @DeleteMapping("/{igAccount}/categories/{slug}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void unassignCategory(@PathVariable String igAccount, @PathVariable String slug) {
+        categoryService.unassign(igAccount, slug);
     }
 
     /**

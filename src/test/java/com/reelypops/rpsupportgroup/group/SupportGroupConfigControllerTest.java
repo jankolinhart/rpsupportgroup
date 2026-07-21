@@ -37,6 +37,15 @@ class SupportGroupConfigControllerTest {
     @Autowired
     SupportGroupConfigService service;
 
+    @Autowired
+    SgCategoryService categoryService;
+
+    private void create(String ig) throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/groups").with(asUser())
+                        .contentType(MediaType.APPLICATION_JSON).content(body(ig)))
+                .andExpect(status().isCreated());
+    }
+
     private static RequestPostProcessor asUser() {
         return asUser(UUID.randomUUID());
     }
@@ -128,8 +137,80 @@ class SupportGroupConfigControllerTest {
 
         mockMvc.perform(get("/supportgroup/v1/groups").with(asUser()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[*].igAccount", Matchers.hasItem("sg-list-vetted")))
-                .andExpect(jsonPath("$[*].igAccount", Matchers.not(Matchers.hasItem("sg-list-pending"))));
+                .andExpect(jsonPath("$.content[*].igAccount", Matchers.hasItem("sg-list-vetted")))
+                .andExpect(jsonPath("$.content[*].igAccount", Matchers.not(Matchers.hasItem("sg-list-pending"))))
+                .andExpect(jsonPath("$.page").value(0))
+                .andExpect(jsonPath("$.size").value(24))
+                .andExpect(jsonPath("$.hasNext").exists());
+    }
+
+    @Test
+    void browseIncludesCategorySlugsAndFiltersByCategory() throws Exception {
+        create("br-cat-a");
+        create("br-cat-b");
+        service.vet("br-cat-a");
+        service.vet("br-cat-b");
+        categoryService.assign("br-cat-a", "travel");
+
+        mockMvc.perform(get("/supportgroup/v1/groups")
+                        .param("categories", "travel").param("q", "br-cat").with(asUser()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(1))
+                .andExpect(jsonPath("$.content[0].igAccount").value("br-cat-a"))
+                .andExpect(jsonPath("$.content[0].categories", Matchers.contains("travel")))
+                .andExpect(jsonPath("$.totalElements").value(1));
+
+        mockMvc.perform(get("/supportgroup/v1/groups").param("q", "br-cat").with(asUser()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(2))
+                .andExpect(jsonPath("$.content[*].categories[*]", Matchers.hasItem("travel")));
+    }
+
+    @Test
+    void browseSearchesIgAccountCaseInsensitively() throws Exception {
+        create("br-search-XyZ");
+        service.vet("br-search-XyZ");
+
+        mockMvc.perform(get("/supportgroup/v1/groups").param("q", "xyz").with(asUser()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[*].igAccount", Matchers.hasItem("br-search-XyZ")));
+        mockMvc.perform(get("/supportgroup/v1/groups").param("q", "no-match-zzz").with(asUser()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(0));
+    }
+
+    @Test
+    void browsePagesResults() throws Exception {
+        create("br-pg-1");
+        create("br-pg-2");
+        create("br-pg-3");
+        service.vet("br-pg-1");
+        service.vet("br-pg-2");
+        service.vet("br-pg-3");
+
+        mockMvc.perform(get("/supportgroup/v1/groups")
+                        .param("q", "br-pg").param("size", "2").param("page", "0").with(asUser()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(2))
+                .andExpect(jsonPath("$.totalElements").value(3))
+                .andExpect(jsonPath("$.totalPages").value(2))
+                .andExpect(jsonPath("$.page").value(0))
+                .andExpect(jsonPath("$.hasNext").value(true));
+        mockMvc.perform(get("/supportgroup/v1/groups")
+                        .param("q", "br-pg").param("size", "2").param("page", "1").with(asUser()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(1))
+                .andExpect(jsonPath("$.hasNext").value(false));
+    }
+
+    @Test
+    void browseWithUnknownCategoryReturnsEmpty() throws Exception {
+        create("br-unknowncat");
+        service.vet("br-unknowncat");
+        mockMvc.perform(get("/supportgroup/v1/groups")
+                        .param("categories", "no-such-category").param("q", "br-unknowncat").with(asUser()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(0));
     }
 
     @Test
