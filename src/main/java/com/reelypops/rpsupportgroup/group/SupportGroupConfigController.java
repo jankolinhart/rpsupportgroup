@@ -35,7 +35,7 @@ public class SupportGroupConfigController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public GroupResponse create(@Valid @RequestBody CreateGroupRequest req) {
-        return GroupResponse.of(service.create(req.igAccount(), req.definition()));
+        return GroupResponse.of(service.create(req.igAccount(), req.definition(), req.description()));
     }
 
     /**

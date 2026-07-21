@@ -27,11 +27,11 @@ public class SupportGroupConfigService {
     }
 
     @Transactional
-    public SupportGroupConfig create(String igAccount, GroupDefinition definition) {
+    public SupportGroupConfig create(String igAccount, GroupDefinition definition, String description) {
         if (configs.existsByIgAccount(igAccount)) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "config already exists for " + igAccount);
         }
-        return configs.save(SupportGroupConfig.createUnclaimed(igAccount, definition));
+        return configs.save(SupportGroupConfig.createUnclaimed(igAccount, definition.canonicalized(), description));
     }
 
     @Transactional(readOnly = true)
@@ -87,11 +87,15 @@ public class SupportGroupConfigService {
         return configs.save(c);
     }
 
-    /** Operator correction (Cycle 10): replace a config's authoritative definition (e.g. before vetting a fixed one). */
+    /**
+     * Operator correction (Cycle 11, R-1): replace a config's authoritative definition <em>and</em> its group
+     * description in one call. The definition change bumps the {@code version} ETag; the description does not.
+     */
     @Transactional
-    public SupportGroupConfig updateDefinition(String igAccount, GroupDefinition definition) {
+    public SupportGroupConfig updateConfig(String igAccount, GroupDefinition definition, String description) {
         SupportGroupConfig c = require(igAccount);
         c.updateDefinition(definition);
+        c.updateDescription(description);
         return configs.save(c);
     }
 

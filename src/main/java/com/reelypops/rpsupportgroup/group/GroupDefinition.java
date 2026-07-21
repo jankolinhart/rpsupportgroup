@@ -25,6 +25,12 @@ import java.util.List;
  * @param likesUntilDayOffset        day offset of the liking deadline
  * @param tagRemoveEarliestTime      earliest safe tag-removal time-of-day, {@code HH:mm}
  * @param tagRemoveEarliestDayOffset day offset of the safe tag-removal time
+ * @param openWeekdays               weekday indices the group is <em>open</em> (0=Sun … 6=Sat) — the general
+ *                                   opening-days field for <em>all</em> SG types (Cycle 11, R-1). Distinct from the
+ *                                   liking rounds: opening times are a semantic group-config item that cannot be
+ *                                   derived and are set at creation. For CONTINUOUS groups it also drives the
+ *                                   round-reset day set, so {@link #canonicalized()} keeps {@code continuousDays} in
+ *                                   sync with it.
  */
 public record GroupDefinition(
         @NotNull SgType type,
@@ -39,12 +45,29 @@ public record GroupDefinition(
         String likesUntilTime,
         Integer likesUntilDayOffset,
         String tagRemoveEarliestTime,
-        Integer tagRemoveEarliestDayOffset) {
+        Integer tagRemoveEarliestDayOffset,
+        List<Integer> openWeekdays) {
 
     /** Return a copy with a replaced marker-owner list (records are immutable). */
     public GroupDefinition withMarkerOwners(List<String> owners) {
         return new GroupDefinition(type, timezone, owners, maxTaggedPosts, continuousDays, startMarkerTime,
                 endMarkerTime, endMarkerDayOffset, singleMarkerTime, likesUntilTime, likesUntilDayOffset,
-                tagRemoveEarliestTime, tagRemoveEarliestDayOffset);
+                tagRemoveEarliestTime, tagRemoveEarliestDayOffset, openWeekdays);
+    }
+
+    /**
+     * Return a write-normalised copy (Cycle 11, R-1). {@code openWeekdays} is the canonical opening-days field for
+     * every type; for a CONTINUOUS group the client's round-reset still reads {@code continuousDays}, so the two are
+     * kept in sync — an explicit {@code openWeekdays} wins, else it is back-filled from a legacy {@code continuousDays}.
+     * Non-continuous groups keep {@code openWeekdays} standalone (their {@code continuousDays} is irrelevant to rounds).
+     */
+    public GroupDefinition canonicalized() {
+        if (type != SgType.CONTINUOUS) {
+            return this;
+        }
+        List<Integer> days = (openWeekdays != null && !openWeekdays.isEmpty()) ? openWeekdays : continuousDays;
+        return new GroupDefinition(type, timezone, markerOwners, maxTaggedPosts, days, startMarkerTime,
+                endMarkerTime, endMarkerDayOffset, singleMarkerTime, likesUntilTime, likesUntilDayOffset,
+                tagRemoveEarliestTime, tagRemoveEarliestDayOffset, days);
     }
 }
