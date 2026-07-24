@@ -17,6 +17,8 @@ import java.util.UUID;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -197,5 +199,68 @@ class InternalCorpusControllerTest {
         mockMvc.perform(get("/supportgroup/v1/internal/corpus/snapshots/{id}", UUID.randomUUID())
                         .header(KEY_HEADER, KEY))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void putsAndServesARepresentative() throws Exception {
+        String id = openSnapshot("corp-rep", "REQUEST");
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", id)
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
+                        .content(appendBody("AAA", "owner1", "hash-a", 0)))
+                .andExpect(status().isOk());
+        byte[] png = {1, 2, 3, 4, 5};
+        mockMvc.perform(put("/supportgroup/v1/internal/corpus/snapshots/{id}/representatives/{sc}", id, "AAA")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.IMAGE_PNG).content(png))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(get("/supportgroup/v1/internal/corpus/snapshots/{id}/representatives/{sc}", id, "AAA")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.IMAGE_PNG))
+                .andExpect(content().bytes(png));
+        // the detail view reports which shortcodes carry a representative
+        mockMvc.perform(get("/supportgroup/v1/internal/corpus/snapshots/{id}", id).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.representativeShortcodes.length()").value(1))
+                .andExpect(jsonPath("$.representativeShortcodes[0]").value("AAA"));
+    }
+
+    @Test
+    void representativeUploadUpsertsBytes() throws Exception {
+        String id = openSnapshot("corp-rep-upsert", "DUTY");
+        mockMvc.perform(put("/supportgroup/v1/internal/corpus/snapshots/{id}/representatives/{sc}", id, "AAA")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.IMAGE_JPEG).content(new byte[]{1, 1}))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(put("/supportgroup/v1/internal/corpus/snapshots/{id}/representatives/{sc}", id, "AAA")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.IMAGE_PNG).content(new byte[]{9, 9, 9}))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(get("/supportgroup/v1/internal/corpus/snapshots/{id}/representatives/{sc}", id, "AAA")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.IMAGE_PNG))
+                .andExpect(content().bytes(new byte[]{9, 9, 9}));
+    }
+
+    @Test
+    void missingRepresentativeIsNotFound() throws Exception {
+        String id = openSnapshot("corp-rep-none", "REQUEST");
+        mockMvc.perform(get("/supportgroup/v1/internal/corpus/snapshots/{id}/representatives/{sc}", id, "ZZZ")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void putRepresentativeForUnknownSnapshotIsNotFound() throws Exception {
+        mockMvc.perform(put("/supportgroup/v1/internal/corpus/snapshots/{id}/representatives/{sc}",
+                        UUID.randomUUID(), "AAA")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.IMAGE_PNG).content(new byte[]{1}))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void putEmptyRepresentativeIsBadRequest() throws Exception {
+        String id = openSnapshot("corp-rep-empty", "REQUEST");
+        mockMvc.perform(put("/supportgroup/v1/internal/corpus/snapshots/{id}/representatives/{sc}", id, "AAA")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.IMAGE_PNG).content(new byte[0]))
+                .andExpect(status().isBadRequest());
     }
 }
