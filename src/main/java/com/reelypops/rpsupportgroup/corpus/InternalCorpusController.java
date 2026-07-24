@@ -2,10 +2,14 @@ package com.reelypops.rpsupportgroup.corpus;
 
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
@@ -57,6 +61,23 @@ public class InternalCorpusController {
     @GetMapping("/snapshots/{snapshotId}")
     public SnapshotDetailResponse detail(@PathVariable UUID snapshotId) {
         MarkerCorpusService.SnapshotDetail d = service.detail(snapshotId);
-        return SnapshotDetailResponse.of(d.snapshot(), d.items());
+        return SnapshotDetailResponse.of(d.snapshot(), d.items(), d.representativeShortcodes());
+    }
+
+    /** Upsert a representative thumbnail (raw image bytes) for a post in a snapshot. */
+    @PutMapping("/snapshots/{snapshotId}/representatives/{shortcode}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void putRepresentative(@PathVariable UUID snapshotId, @PathVariable String shortcode,
+                                  @RequestHeader(value = "Content-Type", required = false) String contentType,
+                                  @RequestBody(required = false) byte[] image) {
+        service.putRepresentative(snapshotId, shortcode, image, contentType);
+    }
+
+    /** Serve a post's representative thumbnail — 404 when none has been contributed. */
+    @GetMapping("/snapshots/{snapshotId}/representatives/{shortcode}")
+    public ResponseEntity<byte[]> getRepresentative(@PathVariable UUID snapshotId, @PathVariable String shortcode) {
+        return service.getRepresentative(snapshotId, shortcode)
+                .map(r -> ResponseEntity.ok().contentType(MediaType.parseMediaType(r.getContentType())).body(r.getImage()))
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 }

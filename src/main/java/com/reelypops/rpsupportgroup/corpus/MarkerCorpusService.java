@@ -7,6 +7,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -16,14 +17,18 @@ import java.util.UUID;
 @Service
 public class MarkerCorpusService {
 
+    private static final String DEFAULT_CONTENT_TYPE = "image/jpeg";
+
     private final MarkerCorpusSnapshotRepository snapshots;
     private final CorpusSnapshotItemRepository items;
+    private final CorpusRepresentativeRepository representatives;
     private final SupportGroupConfigRepository configs;
 
     public MarkerCorpusService(MarkerCorpusSnapshotRepository snapshots, CorpusSnapshotItemRepository items,
-                               SupportGroupConfigRepository configs) {
+                               CorpusRepresentativeRepository representatives, SupportGroupConfigRepository configs) {
         this.snapshots = snapshots;
         this.items = items;
+        this.representatives = representatives;
         this.configs = configs;
     }
 
@@ -59,17 +64,41 @@ public class MarkerCorpusService {
         return snapshots.save(snapshot);
     }
 
+    /** Upsert a representative thumbnail for a post in a snapshot (404 if the snapshot is unknown, 400 if no bytes). */
+    @Transactional
+    public void putRepresentative(UUID snapshotId, String shortcode, byte[] image, String contentType) {
+        require(snapshotId);
+        if (image == null || image.length == 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "representative image is required");
+        }
+        String type = (contentType == null || contentType.isBlank()) ? DEFAULT_CONTENT_TYPE : contentType;
+        CorpusRepresentative rep = representatives.findBySnapshotIdAndShortcode(snapshotId, shortcode)
+                .map(existing -> {
+                    existing.update(image, type);
+                    return existing;
+                })
+                .orElseGet(() -> CorpusRepresentative.create(snapshotId, shortcode, image, type));
+        representatives.save(rep);
+    }
+
+    /** The stored representative thumbnail for a post, or empty when none has been contributed. */
+    @Transactional(readOnly = true)
+    public Optional<CorpusRepresentative> getRepresentative(UUID snapshotId, String shortcode) {
+        return representatives.findBySnapshotIdAndShortcode(snapshotId, shortcode);
+    }
+
     /** A group's snapshots, newest first (admin evidence list). */
     @Transactional(readOnly = true)
     public List<MarkerCorpusSnapshot> list(String igAccount) {
         return snapshots.findByIgAccountOrderByCreatedAtDesc(igAccount);
     }
 
-    /** One snapshot with its items in grid order (404 if unknown). */
+    /** One snapshot with its items in grid order + which shortcodes carry a representative (404 if unknown). */
     @Transactional(readOnly = true)
     public SnapshotDetail detail(UUID snapshotId) {
         MarkerCorpusSnapshot snapshot = require(snapshotId);
-        return new SnapshotDetail(snapshot, items.findBySnapshotIdOrderByOrdinalAsc(snapshotId));
+        return new SnapshotDetail(snapshot, items.findBySnapshotIdOrderByOrdinalAsc(snapshotId),
+                representatives.findShortcodesBySnapshotId(snapshotId));
     }
 
     private MarkerCorpusSnapshot require(UUID snapshotId) {
@@ -77,7 +106,8 @@ public class MarkerCorpusService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "no snapshot " + snapshotId));
     }
 
-    /** A snapshot + its items (mapped to the detail response by the controller). */
-    public record SnapshotDetail(MarkerCorpusSnapshot snapshot, List<CorpusSnapshotItem> items) {
+    /** A snapshot + its items + the shortcodes with a representative (mapped to the detail response by the controller). */
+    public record SnapshotDetail(MarkerCorpusSnapshot snapshot, List<CorpusSnapshotItem> items,
+                                 List<String> representativeShortcodes) {
     }
 }
