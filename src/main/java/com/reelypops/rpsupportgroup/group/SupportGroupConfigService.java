@@ -7,6 +7,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
@@ -83,7 +85,32 @@ public class SupportGroupConfigService {
     @Transactional
     public SupportGroupConfig vet(String igAccount) {
         SupportGroupConfig c = require(igAccount);
+        if (c.getVettingState() == VettingState.BLOCKED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, igAccount + " is blocked and cannot be vetted");
+        }
         c.vet();
+        return configs.save(c);
+    }
+
+    /**
+     * Operator soft-reject (P1): a re-requestable-after-cooldown decision carrying a reason + a cooldown of
+     * {@code cooldownDays}. A BLOCKED config cannot be soft-rejected (terminal).
+     */
+    @Transactional
+    public SupportGroupConfig reject(String igAccount, String reason, int cooldownDays) {
+        SupportGroupConfig c = require(igAccount);
+        if (c.getVettingState() == VettingState.BLOCKED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, igAccount + " is blocked and cannot be rejected");
+        }
+        c.reject(reason, Instant.now().plus(cooldownDays, ChronoUnit.DAYS));
+        return configs.save(c);
+    }
+
+    /** Operator block (P1): the terminal, admin-only abuse verdict. Idempotent. */
+    @Transactional
+    public SupportGroupConfig block(String igAccount) {
+        SupportGroupConfig c = require(igAccount);
+        c.block();
         return configs.save(c);
     }
 

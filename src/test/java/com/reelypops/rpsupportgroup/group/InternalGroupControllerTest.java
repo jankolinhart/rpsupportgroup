@@ -136,6 +136,101 @@ class InternalGroupControllerTest {
     }
 
     @Test
+    void createStartsUnderVerification() throws Exception {
+        createConfig("int-vs-new");
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "int-vs-new").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.vettingState").value("UNDER_VERIFICATION"))
+                .andExpect(jsonPath("$.vetted").value(false));
+    }
+
+    @Test
+    void vetMovesToVettedState() throws Exception {
+        createConfig("int-vs-vet");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vet", "int-vs-vet").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.vettingState").value("VETTED"))
+                .andExpect(jsonPath("$.vetted").value(true));
+    }
+
+    @Test
+    void rejectsConfigWithReasonAndCooldown() throws Exception {
+        createConfig("int-reject");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/reject", "int-reject").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"below follower threshold\",\"cooldownDays\":14}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.vettingState").value("REJECTED"))
+                .andExpect(jsonPath("$.rejectReason").value("below follower threshold"))
+                .andExpect(jsonPath("$.cooldownUntil").isNotEmpty())
+                .andExpect(jsonPath("$.rejectedAt").isNotEmpty())
+                .andExpect(jsonPath("$.vetted").value(false))
+                .andExpect(jsonPath("$.version").value(2));
+    }
+
+    @Test
+    void rejectInvalidBodyIsBadRequest() throws Exception {
+        createConfig("int-reject-bad");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/reject", "int-reject-bad").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"cooldownDays\":-1}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void rejectUnknownConfigIsNotFound() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/reject", "int-reject-none").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"x\",\"cooldownDays\":1}"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void blocksConfig() throws Exception {
+        createConfig("int-block");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/block", "int-block").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.vettingState").value("BLOCKED"))
+                .andExpect(jsonPath("$.vetted").value(false))
+                .andExpect(jsonPath("$.version").value(2));
+    }
+
+    @Test
+    void blockIsIdempotent() throws Exception {
+        createConfig("int-block-idem");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/block", "int-block-idem").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.version").value(2));
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/block", "int-block-idem").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.vettingState").value("BLOCKED"))
+                .andExpect(jsonPath("$.version").value(2)); // re-block does not bump the version
+    }
+
+    @Test
+    void blockUnknownConfigIsNotFound() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/block", "int-block-none").header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void rejectingABlockedConfigIsConflict() throws Exception {
+        createConfig("int-block-reject");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/block", "int-block-reject").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/reject", "int-block-reject").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"x\",\"cooldownDays\":1}"))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void vettingABlockedConfigIsConflict() throws Exception {
+        createConfig("int-block-vet");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/block", "int-block-vet").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vet", "int-block-vet").header(KEY_HEADER, KEY))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
     void withKeyUpdatesDefinition() throws Exception {
         createConfig("int-upd");
         String body = "{\"definition\":{\"type\":\"TWO_MARKER\",\"timezone\":\"Europe/Berlin\","
