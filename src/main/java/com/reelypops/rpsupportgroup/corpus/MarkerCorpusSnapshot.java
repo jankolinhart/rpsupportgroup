@@ -73,12 +73,18 @@ public class MarkerCorpusSnapshot {
         this.itemCount += count;
     }
 
-    /** Mark the pass complete. Idempotent — a re-seal is a no-op (an interrupted pass may be sealed once, partial). */
+    /** Mark the pass complete. Only an OPEN snapshot seals — a re-seal or a sealed/interrupted snapshot is a no-op. */
     public void seal() {
-        if (status == SnapshotStatus.SEALED) {
+        if (status != SnapshotStatus.OPEN) {
             return;
         }
         this.status = SnapshotStatus.SEALED;
+        this.sealedAt = Instant.now();
+    }
+
+    /** GC sweep (P1): abandon an orphaned OPEN pass. Only ever called on OPEN snapshots (the sweeper filters them). */
+    public void interrupt() {
+        this.status = SnapshotStatus.INTERRUPTED;
         this.sealedAt = Instant.now();
     }
 }

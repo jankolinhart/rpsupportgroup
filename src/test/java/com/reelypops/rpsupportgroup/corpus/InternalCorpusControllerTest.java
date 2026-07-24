@@ -12,6 +12,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import java.time.Instant;
 import java.util.UUID;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
@@ -27,7 +28,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * {@code X-Internal-Api-Key}. Covers the append-only snapshot lifecycle (open → per-scroll append → seal) and the
  * admin evidence reads (list + detail), plus the guards (unknown group/snapshot, append-after-seal, validation).
  */
-@SpringBootTest(properties = "rp.internal.api-key=itest-key")
+@SpringBootTest(properties = {"rp.internal.api-key=itest-key", "rp.corpus.retention=3"})
 @AutoConfigureMockMvc
 @Import(TestcontainersConfiguration.class)
 class InternalCorpusControllerTest {
@@ -37,6 +38,12 @@ class InternalCorpusControllerTest {
 
     @Autowired
     MockMvc mockMvc;
+
+    @Autowired
+    MarkerCorpusService corpusService;
+
+    @Autowired
+    CorpusMaintenanceScheduler scheduler;
 
     private void createConfig(String ig) throws Exception {
         String body = "{\"igAccount\":\"" + ig + "\",\"definition\":{\"type\":\"CONTINUOUS\",\"timezone\":\"UTC\"}}";
@@ -262,5 +269,48 @@ class InternalCorpusControllerTest {
         mockMvc.perform(put("/supportgroup/v1/internal/corpus/snapshots/{id}/representatives/{sc}", id, "AAA")
                         .header(KEY_HEADER, KEY).contentType(MediaType.IMAGE_PNG).content(new byte[0]))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void retentionPrunesToTheConfiguredWindowOnSeal() throws Exception {
+        String ig = "corp-prune";
+        createConfig(ig);
+        // open + seal 4 passes; the test window is rp.corpus.retention=3, so the oldest is pruned on the 4th seal
+        for (int i = 0; i < 4; i++) {
+            MvcResult r = mockMvc.perform(post("/supportgroup/v1/internal/corpus/groups/{ig}/snapshots", ig)
+                            .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"source\":\"DUTY\"}"))
+                    .andExpect(status().isCreated()).andReturn();
+            String sid = JsonPath.read(r.getResponse().getContentAsString(), "$.id");
+            mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/seal", sid).header(KEY_HEADER, KEY))
+                    .andExpect(status().isOk());
+        }
+        mockMvc.perform(get("/supportgroup/v1/internal/corpus/groups/{ig}/snapshots", ig).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(3));
+    }
+
+    @Test
+    void sweepStaleMarksOrphanedOpenSnapshotsInterrupted() throws Exception {
+        String id = openSnapshot("corp-sweep", "REQUEST");
+        // a cutoff in the future ⇒ every currently-open snapshot is treated as stale and swept
+        corpusService.sweepStale(Instant.now().plusSeconds(60));
+        mockMvc.perform(get("/supportgroup/v1/internal/corpus/snapshots/{id}", id).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.snapshot.status").value("INTERRUPTED"));
+        // a swept (terminal) snapshot rejects further appends
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", id)
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
+                        .content(appendBody("X", "a", "h", 0)))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void scheduledSweepLeavesFreshSnapshotsOpen() throws Exception {
+        String id = openSnapshot("corp-sched", "REQUEST");
+        scheduler.sweep(); // default 6h stale TTL ⇒ a fresh open snapshot is untouched
+        mockMvc.perform(get("/supportgroup/v1/internal/corpus/snapshots/{id}", id).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.snapshot.status").value("OPEN"));
     }
 }
