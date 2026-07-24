@@ -1,11 +1,13 @@
 package com.reelypops.rpsupportgroup.corpus;
 
 import com.reelypops.rpsupportgroup.group.SupportGroupConfigRepository;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -23,13 +25,16 @@ public class MarkerCorpusService {
     private final CorpusSnapshotItemRepository items;
     private final CorpusRepresentativeRepository representatives;
     private final SupportGroupConfigRepository configs;
+    private final int retention;
 
     public MarkerCorpusService(MarkerCorpusSnapshotRepository snapshots, CorpusSnapshotItemRepository items,
-                               CorpusRepresentativeRepository representatives, SupportGroupConfigRepository configs) {
+                               CorpusRepresentativeRepository representatives, SupportGroupConfigRepository configs,
+                               @Value("${rp.corpus.retention:8}") int retention) {
         this.snapshots = snapshots;
         this.items = items;
         this.representatives = representatives;
         this.configs = configs;
+        this.retention = retention;
     }
 
     /** Open a new snapshot for a known group (404 if no config exists for {@code igAccount}). */
@@ -56,12 +61,14 @@ public class MarkerCorpusService {
         return snapshots.save(snapshot);
     }
 
-    /** Seal a completed pass (idempotent, 404 if unknown). */
+    /** Seal a completed pass (idempotent, 404 if unknown) and prune the group to the retention window. */
     @Transactional
     public MarkerCorpusSnapshot seal(UUID snapshotId) {
         MarkerCorpusSnapshot snapshot = require(snapshotId);
         snapshot.seal();
-        return snapshots.save(snapshot);
+        MarkerCorpusSnapshot saved = snapshots.save(snapshot);
+        prune(snapshot.getIgAccount());
+        return saved;
     }
 
     /** Upsert a representative thumbnail for a post in a snapshot (404 if the snapshot is unknown, 400 if no bytes). */
@@ -91,6 +98,27 @@ public class MarkerCorpusService {
     @Transactional(readOnly = true)
     public List<MarkerCorpusSnapshot> list(String igAccount) {
         return snapshots.findByIgAccountOrderByCreatedAtDesc(igAccount);
+    }
+
+    /** Retention GC: keep only the newest {@code rp.corpus.retention} snapshots for a group; delete the rest. */
+    @Transactional
+    public int prune(String igAccount) {
+        List<MarkerCorpusSnapshot> all = snapshots.findByIgAccountOrderByCreatedAtDesc(igAccount);
+        if (all.size() <= retention) {
+            return 0;
+        }
+        List<MarkerCorpusSnapshot> excess = all.subList(retention, all.size());
+        snapshots.deleteAll(excess);
+        return excess.size();
+    }
+
+    /** GC sweep: mark OPEN snapshots opened before {@code cutoff} as INTERRUPTED (orphaned streams). Returns the count. */
+    @Transactional
+    public int sweepStale(Instant cutoff) {
+        List<MarkerCorpusSnapshot> stale = snapshots.findByStatusAndCreatedAtBefore(SnapshotStatus.OPEN, cutoff);
+        stale.forEach(MarkerCorpusSnapshot::interrupt);
+        snapshots.saveAll(stale);
+        return stale.size();
     }
 
     /** One snapshot with its items in grid order + which shortcodes carry a representative (404 if unknown). */
