@@ -56,6 +56,27 @@ public class SupportGroupConfig {
     @Column(name = "vetted", nullable = false)
     private boolean vetted;
 
+    /**
+     * The authoritative vetting lifecycle (P1). {@link #vetted} above is a stored <em>projection</em> of
+     * {@code vettingState == VETTED}, maintained by the transitions below so the existing browse / lock logic is
+     * untouched.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "vetting_state", nullable = false)
+    private VettingState vettingState;
+
+    /** Soft-reject reason shown to the requester (P1) — set only in {@link VettingState#REJECTED}. */
+    @Column(name = "reject_reason")
+    private String rejectReason;
+
+    /** Earliest a soft-rejected group may be re-requested (P1) — set only in {@link VettingState#REJECTED}. */
+    @Column(name = "cooldown_until")
+    private Instant cooldownUntil;
+
+    /** When the soft reject was recorded (P1). */
+    @Column(name = "rejected_at")
+    private Instant rejectedAt;
+
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "definition", nullable = false, columnDefinition = "jsonb")
     private GroupDefinition definition;
@@ -95,6 +116,7 @@ public class SupportGroupConfig {
         this.igAccount = igAccount;
         this.definition = definition;
         this.status = ConfigStatus.UNCLAIMED;
+        this.vettingState = VettingState.UNDER_VERIFICATION;
         this.version = 1L;
     }
 
@@ -124,14 +146,51 @@ public class SupportGroupConfig {
     }
 
     /**
-     * Operator vetting (Cycle 10): mark this config as sanity-checked and publicly browsable. Idempotent — bumps the
-     * version only on the false→true transition so polling clients notice and lock their authoritative fields.
+     * Operator vetting (Cycle 10 / P1): approve → {@link VettingState#VETTED} (publicly browsable; the client locks its
+     * authoritative fields). Idempotent — bumps the version only on the transition into VETTED so polling clients
+     * notice. Keeps {@link #vetted} as the stored projection and clears any prior soft-reject detail. A
+     * {@link VettingState#BLOCKED} config may not be vetted — the service guards that.
      */
     public boolean vet() {
-        if (vetted) {
+        if (vettingState == VettingState.VETTED) {
             return false;
         }
+        this.vettingState = VettingState.VETTED;
         this.vetted = true;
+        this.rejectReason = null;
+        this.cooldownUntil = null;
+        this.rejectedAt = null;
+        this.version++;
+        return true;
+    }
+
+    /**
+     * Operator soft-reject (P1): a <em>re-requestable-after-cooldown</em> decision carrying a {@code reason} + a
+     * {@code cooldownUntil}. Clears the vetted projection and bumps the version. The service guards that a
+     * {@link VettingState#BLOCKED} config cannot be soft-rejected.
+     */
+    public void reject(String reason, Instant cooldownUntil) {
+        this.vettingState = VettingState.REJECTED;
+        this.rejectReason = reason;
+        this.cooldownUntil = cooldownUntil;
+        this.rejectedAt = Instant.now();
+        this.vetted = false;
+        this.version++;
+    }
+
+    /**
+     * Operator block (P1): the terminal, admin-only abuse verdict. Idempotent — bumps the version only on the
+     * transition into BLOCKED. Clears the vetted projection + any soft-reject detail.
+     */
+    public boolean block() {
+        if (vettingState == VettingState.BLOCKED) {
+            return false;
+        }
+        this.vettingState = VettingState.BLOCKED;
+        this.vetted = false;
+        this.rejectReason = null;
+        this.cooldownUntil = null;
+        this.rejectedAt = null;
         this.version++;
         return true;
     }

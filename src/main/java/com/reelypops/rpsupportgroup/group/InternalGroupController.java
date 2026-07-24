@@ -82,6 +82,18 @@ public class InternalGroupController {
         return GroupResponse.of(service.vet(igAccount));
     }
 
+    /** Operator soft-reject (P1): a re-requestable-after-cooldown decision (reason + cooldown days). */
+    @PostMapping("/{igAccount}/reject")
+    public GroupResponse reject(@PathVariable String igAccount, @Valid @RequestBody RejectRequest req) {
+        return GroupResponse.of(service.reject(igAccount, req.reason(), req.cooldownDays()));
+    }
+
+    /** Operator block (P1): the terminal, admin-only abuse verdict. */
+    @PostMapping("/{igAccount}/block")
+    public GroupResponse block(@PathVariable String igAccount) {
+        return GroupResponse.of(service.block(igAccount));
+    }
+
     /**
      * Operator correction (Cycle 10/11): replace the authoritative definition (fix timings / timezone / opening
      * weekdays / marker owners) and the optional group description in one call.

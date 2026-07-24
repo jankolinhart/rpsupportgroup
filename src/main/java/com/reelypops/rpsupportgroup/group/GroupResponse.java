@@ -16,6 +16,10 @@ public record GroupResponse(
         UUID ownerId,
         boolean adminAttributed,
         boolean vetted,
+        VettingState vettingState,
+        String rejectReason,
+        Instant cooldownUntil,
+        Instant rejectedAt,
         GroupDefinition definition,
         String description,
         long version,
@@ -25,7 +29,8 @@ public record GroupResponse(
 
     static GroupResponse of(SupportGroupConfig c) {
         return new GroupResponse(c.getId(), c.getIgAccount(), c.getStatus(), c.getOwnerId(),
-                c.isAdminAttributed(), c.isVetted(), c.getDefinition(), c.getDescription(), c.getVersion(),
+                c.isAdminAttributed(), c.isVetted(), c.getVettingState(), c.getRejectReason(), c.getCooldownUntil(),
+                c.getRejectedAt(), c.getDefinition(), c.getDescription(), c.getVersion(),
                 c.getCreatedAt(), c.getUpdatedAt(),
                 c.getCategories().stream().map(SgCategory::getSlug).sorted().toList());
     }
