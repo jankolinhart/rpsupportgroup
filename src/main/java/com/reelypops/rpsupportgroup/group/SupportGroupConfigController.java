@@ -2,6 +2,7 @@ package com.reelypops.rpsupportgroup.group;
 
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -33,9 +34,10 @@ public class SupportGroupConfigController {
     }
 
     @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)
-    public GroupResponse create(@Valid @RequestBody CreateGroupRequest req) {
-        return GroupResponse.of(service.create(req.igAccount(), req.definition(), req.description()));
+    public ResponseEntity<GroupResponse> create(@Valid @RequestBody CreateGroupRequest req) {
+        var result = service.intake(req.igAccount(), req.definition(), req.description());
+        return ResponseEntity.status(result.created() ? HttpStatus.CREATED : HttpStatus.OK)
+                .body(GroupResponse.of(result.config()));
     }
 
     /**

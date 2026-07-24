@@ -78,7 +78,7 @@ public class SupportGroupConfig {
     private Instant rejectedAt;
 
     @JdbcTypeCode(SqlTypes.JSON)
-    @Column(name = "definition", nullable = false, columnDefinition = "jsonb")
+    @Column(name = "definition", columnDefinition = "jsonb")
     private GroupDefinition definition;
 
     /**
@@ -125,6 +125,14 @@ public class SupportGroupConfig {
         SupportGroupConfig c = new SupportGroupConfig(igAccount, definition);
         c.description = description;
         return c;
+    }
+
+    /**
+     * Create a name-only <em>requested</em> config (P1): no definition yet (the admin/AI fills it during vetting), so it
+     * lands UNDER_VERIFICATION with a null definition and cannot be vetted until a definition is set.
+     */
+    public static SupportGroupConfig createRequested(String igAccount) {
+        return new SupportGroupConfig(igAccount, null);
     }
 
     /** An owner claims this config, making it authoritative (§6). Bumps the version. */

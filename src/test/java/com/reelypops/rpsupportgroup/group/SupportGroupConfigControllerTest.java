@@ -108,11 +108,27 @@ class SupportGroupConfigControllerTest {
     }
 
     @Test
-    void duplicateIgAccountIsConflict() throws Exception {
+    void duplicateIntakeReturnsExistingConfig() throws Exception {
         mockMvc.perform(post("/supportgroup/v1/groups").with(asUser())
                 .contentType(MediaType.APPLICATION_JSON).content(body("sg-dup"))).andExpect(status().isCreated());
+        // Idempotent intake: re-posting the same handle adopts the existing config (200), not a 409 or a duplicate.
         mockMvc.perform(post("/supportgroup/v1/groups").with(asUser())
-                .contentType(MediaType.APPLICATION_JSON).content(body("sg-dup"))).andExpect(status().isConflict());
+                        .contentType(MediaType.APPLICATION_JSON).content(body("sg-dup")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.igAccount").value("sg-dup"))
+                .andExpect(jsonPath("$.version").value(1));
+    }
+
+    @Test
+    void requestByNameCreatesUnderVerification() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/groups").with(asUser())
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"igAccount\":\"sg-req\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.igAccount").value("sg-req"))
+                .andExpect(jsonPath("$.status").value("UNCLAIMED"))
+                .andExpect(jsonPath("$.vettingState").value("UNDER_VERIFICATION"))
+                .andExpect(jsonPath("$.vetted").value(false))
+                .andExpect(jsonPath("$.definition").doesNotExist());
     }
 
     @Test

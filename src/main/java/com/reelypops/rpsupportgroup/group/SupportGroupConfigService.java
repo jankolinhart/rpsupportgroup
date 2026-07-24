@@ -28,12 +28,26 @@ public class SupportGroupConfigService {
         this.configs = configs;
     }
 
+    /**
+     * Idempotent request/create intake (P1), keyed on {@code igAccount}. If a config already exists (any state) it is
+     * returned as-is (adopt-instead-of-duplicate, {@code created=false}); otherwise a new one is created
+     * ({@code created=true}) — a name-only request (no definition) lands UNDER_VERIFICATION with a null definition, a
+     * full upload lands as an UNCLAIMED config.
+     */
     @Transactional
-    public SupportGroupConfig create(String igAccount, GroupDefinition definition, String description) {
-        if (configs.existsByIgAccount(igAccount)) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "config already exists for " + igAccount);
-        }
-        return configs.save(SupportGroupConfig.createUnclaimed(igAccount, definition.canonicalized(), description));
+    public IntakeResult intake(String igAccount, GroupDefinition definition, String description) {
+        return configs.findByIgAccount(igAccount)
+                .map(existing -> new IntakeResult(existing, false))
+                .orElseGet(() -> {
+                    SupportGroupConfig created = definition == null
+                            ? SupportGroupConfig.createRequested(igAccount)
+                            : SupportGroupConfig.createUnclaimed(igAccount, definition.canonicalized(), description);
+                    return new IntakeResult(configs.save(created), true);
+                });
+    }
+
+    /** The outcome of {@link #intake}: the config + whether it was newly {@code created} (201) vs already existed (200). */
+    public record IntakeResult(SupportGroupConfig config, boolean created) {
     }
 
     @Transactional(readOnly = true)
@@ -87,6 +101,9 @@ public class SupportGroupConfigService {
         SupportGroupConfig c = require(igAccount);
         if (c.getVettingState() == VettingState.BLOCKED) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, igAccount + " is blocked and cannot be vetted");
+        }
+        if (c.getDefinition() == null) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, igAccount + " has no definition yet and cannot be vetted");
         }
         c.vet();
         return configs.save(c);
