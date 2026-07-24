@@ -89,6 +89,30 @@ class InternalGroupControllerTest {
     }
 
     @Test
+    void intakeExistingReturnsOk() throws Exception {
+        String body = "{\"igAccount\":\"int-intake-dup\",\"definition\":{\"type\":\"CONTINUOUS\",\"timezone\":\"UTC\"}}";
+        mockMvc.perform(post("/supportgroup/v1/internal/groups").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated());
+        mockMvc.perform(post("/supportgroup/v1/internal/groups").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.igAccount").value("int-intake-dup"));
+    }
+
+    @Test
+    void vettingWithoutADefinitionIsConflict() throws Exception {
+        // A name-only request (no definition) lands UNDER_VERIFICATION; it cannot be vetted until a definition is set.
+        mockMvc.perform(post("/supportgroup/v1/internal/groups").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"igAccount\":\"int-req-novet\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.vettingState").value("UNDER_VERIFICATION"))
+                .andExpect(jsonPath("$.definition").doesNotExist());
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vet", "int-req-novet").header(KEY_HEADER, KEY))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
     void withKeyAttributesConfigToOwner() throws Exception {
         createConfig("int-attr");
         UUID owner = UUID.randomUUID();

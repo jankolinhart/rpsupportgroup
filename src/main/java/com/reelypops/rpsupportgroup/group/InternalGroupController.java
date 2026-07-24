@@ -65,9 +65,10 @@ public class InternalGroupController {
 
     /** The BFF forwards a client's 3b upload here: auto-register the config as UNCLAIMED (§6). */
     @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)
-    public GroupResponse create(@Valid @RequestBody CreateGroupRequest req) {
-        return GroupResponse.of(service.create(req.igAccount(), req.definition(), req.description()));
+    public ResponseEntity<GroupResponse> create(@Valid @RequestBody CreateGroupRequest req) {
+        var result = service.intake(req.igAccount(), req.definition(), req.description());
+        return ResponseEntity.status(result.created() ? HttpStatus.CREATED : HttpStatus.OK)
+                .body(GroupResponse.of(result.config()));
     }
 
     /** Admin override (Cycle 9): attribute an unclaimed config to a ReelyPops user without the claim flow. */
