@@ -14,7 +14,11 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -27,6 +31,8 @@ import java.util.UUID;
 public class VettingProposalService {
 
     private static final String PROVENANCE_TIER0 = "TIER_0_DHASH";
+    // A banner re-posted this many DISTINCT times is fully convincing on recurrence alone; fewer scales confidence down.
+    private static final int RECURRENCE_CONFIDENCE_TARGET = 3;
 
     private final MarkerCorpusSnapshotRepository snapshots;
     private final CorpusSnapshotItemRepository items;
@@ -35,13 +41,15 @@ public class VettingProposalService {
     private final int minClusterSize;
     private final int maxClusters;
     private final int maxSamples;
+    private final double minPurity;
 
     public VettingProposalService(MarkerCorpusSnapshotRepository snapshots, CorpusSnapshotItemRepository items,
                                   AiVettingEnricher enricher,
-                                  @Value("${rp.vetting.dhash-threshold:8}") int hammingThreshold,
+                                  @Value("${rp.vetting.dhash-threshold:4}") int hammingThreshold,
                                   @Value("${rp.vetting.min-cluster-size:2}") int minClusterSize,
                                   @Value("${rp.vetting.max-clusters:5}") int maxClusters,
-                                  @Value("${rp.vetting.max-samples:5}") int maxSamples) {
+                                  @Value("${rp.vetting.max-samples:5}") int maxSamples,
+                                  @Value("${rp.vetting.min-purity:0.75}") double minPurity) {
         this.snapshots = snapshots;
         this.items = items;
         this.enricher = enricher;
@@ -49,6 +57,7 @@ public class VettingProposalService {
         this.minClusterSize = minClusterSize;
         this.maxClusters = maxClusters;
         this.maxSamples = maxSamples;
+        this.minPurity = minPurity;
     }
 
     /** Build the advisory vetting proposal for a snapshot (404 if unknown), then run it through the enricher seam. */
@@ -74,12 +83,37 @@ public class VettingProposalService {
             return new DetectorProfileProposal(id, ig, itemCount, ProposedType.TEXT_OVERLAY, List.of(), List.of(),
                     0.0, true, PROVENANCE_TIER0);
         }
-        List<MarkerCluster> clusters = strong.stream().limit(maxClusters).map(this::toMarkerCluster).toList();
-        List<String> ownerRoster = strong.stream()
-                .flatMap(c -> c.authors().stream()).distinct().sorted().toList();
-        double confidence = (double) strong.get(0).size() / itemCount;
+        // A genuine flat-banner marker is the SAME image re-posted across DISTINCT posts by a SINGLE owner (directive
+        // P5: a post appears in the grid only once, so an image recurs only because the owner re-posts a fresh banner
+        // each round). Keep only clusters that (a) recur across >= minClusterSize DISTINCT posts and (b) are dominated
+        // by one author (purity >= minPurity). This rejects multi-author lookalike clusters (different members posting
+        // visually-similar photos) and single collab posts fanned into per-author rows — the two things that flooded
+        // the roster with non-owners on large grids.
+        List<MarkerCandidate> candidates = strong.stream()
+                .map(c -> MarkerCandidate.from(c.representative(), c.members(), maxSamples))
+                .filter(c -> c.distinctPosts() >= minClusterSize && c.purity() >= minPurity)
+                .sorted(Comparator.comparingInt(MarkerCandidate::recurrence).reversed()
+                        .thenComparing(MarkerCandidate::dominantAuthor))
+                .toList();
+        if (candidates.isEmpty()) {
+            // Images recur, but none is a clean single-owner banner (multi-author lookalikes / collab fan-out) — punt
+            // to vision rather than proposing a wrong owner.
+            return new DetectorProfileProposal(id, ig, itemCount, ProposedType.TEXT_OVERLAY, List.of(), List.of(),
+                    0.0, true, PROVENANCE_TIER0);
+        }
+        List<MarkerCluster> clusters = candidates.stream().limit(maxClusters).map(this::toMarkerCluster).toList();
+        // Roster = the dominant author of each candidate cluster, strongest first — NOT the union of every recurring
+        // cluster's authors. A single owner who posts two banners (e.g. an END + START pair each round) collapses to
+        // one entry via distinct().
+        List<String> ownerRoster = candidates.stream().map(MarkerCandidate::dominantAuthor).distinct().toList();
+        double confidence = confidenceOf(candidates.get(0));
         return new DetectorProfileProposal(id, ig, itemCount, ProposedType.FLAT_BANNER, ownerRoster, clusters,
                 confidence, false, PROVENANCE_TIER0);
+    }
+
+    /** Confidence in the top candidate: its single-author purity, tempered by how many DISTINCT times it recurs. */
+    private double confidenceOf(MarkerCandidate top) {
+        return top.purity() * Math.min(1.0, (double) top.recurrence() / RECURRENCE_CONFIDENCE_TARGET);
     }
 
     /** Greedy single-link clustering of items by dHash Hamming distance, returned largest cluster first. */
@@ -105,8 +139,8 @@ public class VettingProposalService {
         return clusters;
     }
 
-    private MarkerCluster toMarkerCluster(Cluster c) {
-        return new MarkerCluster(c.representative(), c.size(), c.authors(), c.sampleShortcodes(maxSamples));
+    private MarkerCluster toMarkerCluster(MarkerCandidate c) {
+        return new MarkerCluster(c.dHash(), c.distinctPosts(), c.authors(), c.sampleShortcodes());
     }
 
     /** Hamming distance between two equal-length dHash strings (each char is a bit). Mirrors {@code lib/dhash.js}. */
@@ -143,12 +177,38 @@ public class VettingProposalService {
             return representative;
         }
 
-        private List<String> authors() {
-            return members.stream().map(CorpusSnapshotItem::getAuthorUsername).distinct().sorted().toList();
+        private List<CorpusSnapshotItem> members() {
+            return members;
         }
+    }
 
-        private List<String> sampleShortcodes(int cap) {
-            return members.stream().map(CorpusSnapshotItem::getShortcode).limit(cap).toList();
+    /**
+     * A single-owner recurring-image cluster reduced to what marker-owner detection needs: the author who dominates it,
+     * how many DISTINCT posts (shortcodes) recur, and how pure that ownership is. Counting DISTINCT posts (not raw rows)
+     * means a collab post fanned into per-author rows counts once, and per-post co-authors don't inflate recurrence.
+     */
+    private record MarkerCandidate(String dHash, int distinctPosts, String dominantAuthor, int recurrence,
+                                   double purity, List<String> authors, List<String> sampleShortcodes) {
+
+        static MarkerCandidate from(String dHash, List<CorpusSnapshotItem> members, int maxSamples) {
+            Map<String, Set<String>> shortcodesByAuthor = new LinkedHashMap<>();
+            Set<String> distinct = new LinkedHashSet<>();
+            for (CorpusSnapshotItem item : members) {
+                distinct.add(item.getShortcode());
+                shortcodesByAuthor.computeIfAbsent(item.getAuthorUsername(), k -> new LinkedHashSet<>())
+                        .add(item.getShortcode());
+            }
+            // Dominant author = the one contributing the most DISTINCT posts (ties broken by name for determinism).
+            Map.Entry<String, Set<String>> top = shortcodesByAuthor.entrySet().stream()
+                    .sorted(Comparator.<Map.Entry<String, Set<String>>>comparingInt(e -> e.getValue().size()).reversed()
+                            .thenComparing(Map.Entry::getKey))
+                    .toList().get(0);
+            int distinctPosts = distinct.size();
+            int recurrence = top.getValue().size();
+            double purity = (double) recurrence / distinctPosts;
+            List<String> authors = shortcodesByAuthor.keySet().stream().sorted().toList();
+            List<String> samples = distinct.stream().limit(maxSamples).toList();
+            return new MarkerCandidate(dHash, distinctPosts, top.getKey(), recurrence, purity, authors, samples);
         }
     }
 }

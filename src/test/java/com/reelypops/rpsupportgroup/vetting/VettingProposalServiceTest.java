@@ -22,9 +22,10 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * Unit test for the Tier-0 (dHash-cluster) proposal engine: a recurring banner is proposed as FLAT_BANNER with an owner
- * roster + confidence; a grid where nothing recurs escalates as TEXT_OVERLAY; empty is UNKNOWN; the length guard keeps
- * differently-sized hashes apart; an unknown snapshot is a 404.
+ * Unit test for the Tier-0 (dHash-cluster) proposal engine: a single-owner recurring banner is proposed as FLAT_BANNER
+ * with an owner roster + confidence; multi-author lookalike clusters and collab fan-out are rejected (impure / not
+ * distinct); the strongest owner leads the roster; a grid where nothing recurs cleanly escalates as TEXT_OVERLAY; empty
+ * is UNKNOWN; the length guard keeps differently-sized hashes apart; an unknown snapshot is a 404.
  */
 class VettingProposalServiceTest {
 
@@ -42,8 +43,8 @@ class VettingProposalServiceTest {
     void setUp() {
         snapshots = mock(MarkerCorpusSnapshotRepository.class);
         items = mock(CorpusSnapshotItemRepository.class);
-        // threshold 2, min-cluster 2, max-clusters 5, max-samples 5
-        service = new VettingProposalService(snapshots, items, new NoOpAiVettingEnricher(), 2, 2, 5, 5);
+        // threshold 2, min-cluster 2, max-clusters 5, max-samples 5, min-purity 0.75
+        service = new VettingProposalService(snapshots, items, new NoOpAiVettingEnricher(), 2, 2, 5, 5, 0.75);
     }
 
     private MarkerCorpusSnapshot stubSnapshot(List<CorpusSnapshotItem> gridItems) {
@@ -104,7 +105,7 @@ class VettingProposalServiceTest {
         assertThat(p.itemCount()).isEqualTo(5);
         assertThat(p.ownerRoster()).containsExactly("owner.acct");
         assertThat(p.escalate()).isFalse();
-        assertThat(p.confidence()).isEqualTo(3.0 / 5.0);
+        assertThat(p.confidence()).isEqualTo(1.0); // owner: purity 1.0 * min(1, recurrence 3 / target 3)
         assertThat(p.markerClusters()).hasSize(1);
         DetectorProfileProposal.MarkerCluster top = p.markerClusters().get(0);
         assertThat(top.size()).isEqualTo(3);
@@ -151,5 +152,86 @@ class VettingProposalServiceTest {
         assertThat(p.markerClusters()).hasSize(1);
         assertThat(p.markerClusters().get(0).size()).isEqualTo(2);
         assertThat(p.confidence()).isEqualTo(2.0 / 3.0);
+    }
+
+    @Test
+    void multiAuthorLookalikeClusterIsRejected() {
+        // Three DIFFERENT members each post one near-identical image (a lookalike cluster, not a marker). The cluster
+        // recurs (size 3) but its purity is 1/3, so it is discarded and Tier 0 escalates instead of flooding the roster.
+        MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
+        UUID id = snap.getId();
+        List<CorpusSnapshotItem> grid = List.of(
+                item(id, "member.a", H0),
+                item(id, "member.b", H0_NEAR),
+                item(id, "member.c", H0));
+        when(snapshots.findById(id)).thenReturn(Optional.of(snap));
+        when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
+
+        DetectorProfileProposal p = service.propose(id);
+
+        assertThat(p.proposedType()).isEqualTo(ProposedType.TEXT_OVERLAY);
+        assertThat(p.escalate()).isTrue();
+        assertThat(p.ownerRoster()).isEmpty();
+        assertThat(p.markerClusters()).isEmpty();
+        assertThat(p.confidence()).isZero();
+    }
+
+    @Test
+    void collabPostIsNotCountedAsRecurrence() {
+        // One collaborative post (a single shortcode) fanned into two author rows must NOT look like a 2-post cluster:
+        // it is one distinct post, below min-cluster-size, so nothing is proposed.
+        MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
+        UUID id = snap.getId();
+        List<CorpusSnapshotItem> grid = List.of(
+                CorpusSnapshotItem.of(id, "collab-1", "owner.acct", H0, null, 0),
+                CorpusSnapshotItem.of(id, "collab-1", "coauthor.acct", H0, null, 1));
+        when(snapshots.findById(id)).thenReturn(Optional.of(snap));
+        when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
+
+        DetectorProfileProposal p = service.propose(id);
+
+        assertThat(p.proposedType()).isEqualTo(ProposedType.TEXT_OVERLAY);
+        assertThat(p.escalate()).isTrue();
+        assertThat(p.ownerRoster()).isEmpty();
+    }
+
+    @Test
+    void strongestSingleOwnerLeadsTheRoster() {
+        // owner.a re-posts one banner 3x; owner.b a different banner 2x. Both are pure single-owner clusters, so both
+        // are candidates — but the stronger (more recurring) owner leads the roster and drives confidence.
+        MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
+        UUID id = snap.getId();
+        List<CorpusSnapshotItem> grid = List.of(
+                item(id, "owner.a", H0), item(id, "owner.a", H0), item(id, "owner.a", H0_NEAR),
+                item(id, "owner.b", H_FAR), item(id, "owner.b", H_FAR));
+        when(snapshots.findById(id)).thenReturn(Optional.of(snap));
+        when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
+
+        DetectorProfileProposal p = service.propose(id);
+
+        assertThat(p.proposedType()).isEqualTo(ProposedType.FLAT_BANNER);
+        assertThat(p.ownerRoster()).containsExactly("owner.a", "owner.b");
+        assertThat(p.markerClusters()).hasSize(2);
+        assertThat(p.markerClusters().get(0).authorUsernames()).containsExactly("owner.a");
+        assertThat(p.markerClusters().get(0).size()).isEqualTo(3);
+        assertThat(p.confidence()).isEqualTo(1.0); // owner.a: purity 1.0 * min(1, 3/3)
+    }
+
+    @Test
+    void equalStrengthOwnersAreOrderedAlphabetically() {
+        // Two equally-recurring pure banners (2 posts each) by different owners: the recurrence tie is broken by author
+        // name so the roster is deterministic.
+        MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
+        UUID id = snap.getId();
+        List<CorpusSnapshotItem> grid = List.of(
+                item(id, "b.owner", H0), item(id, "b.owner", H0),
+                item(id, "a.owner", H_FAR), item(id, "a.owner", H_FAR));
+        when(snapshots.findById(id)).thenReturn(Optional.of(snap));
+        when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
+
+        DetectorProfileProposal p = service.propose(id);
+
+        assertThat(p.ownerRoster()).containsExactly("a.owner", "b.owner");
+        assertThat(p.confidence()).isEqualTo(2.0 / 3.0); // recurrence 2: purity 1.0 * min(1, 2/3)
     }
 }
