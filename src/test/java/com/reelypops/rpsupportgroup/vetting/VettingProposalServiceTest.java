@@ -22,10 +22,12 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * Unit test for the Tier-0 (dHash-cluster) proposal engine: a single-owner recurring banner is proposed as FLAT_BANNER
- * with an owner roster + confidence; multi-author lookalike clusters and collab fan-out are rejected (impure / not
- * distinct); the strongest owner leads the roster; a grid where nothing recurs cleanly escalates as TEXT_OVERLAY; empty
- * is UNKNOWN; the length guard keeps differently-sized hashes apart; an unknown snapshot is a 404.
+ * Unit test for the Tier-0 (dHash-cluster) proposal engine and its M2 slam-dunk gate: a single owner that recurs on a
+ * regular cadence spanning the grid, clearly ahead of the field, is ACCEPTED as FLAT_BANNER (no AI); a weak/ambiguous
+ * grid keeps the ranked roster but ESCALATES (confidence = how far the top candidate separates from the second);
+ * multi-author lookalike clusters and collab fan-out are rejected (impure / not distinct); a grid where nothing recurs
+ * escalates as TEXT_OVERLAY; empty is UNKNOWN; the length guard keeps differently-sized hashes apart; an unknown
+ * snapshot is a 404.
  */
 class VettingProposalServiceTest {
 
@@ -43,8 +45,8 @@ class VettingProposalServiceTest {
     void setUp() {
         snapshots = mock(MarkerCorpusSnapshotRepository.class);
         items = mock(CorpusSnapshotItemRepository.class);
-        // threshold 2, min-cluster 2, max-clusters 5, max-samples 5, min-purity 0.75
-        service = new VettingProposalService(snapshots, items, new NoOpAiVettingEnricher(), 2, 2, 5, 5, 0.75);
+        // threshold 2, min-cluster 2, max-clusters 5, max-samples 5, min-purity 0.75, min-score 2.0, min-separation 0.5
+        service = new VettingProposalService(snapshots, items, new NoOpAiVettingEnricher(), 2, 2, 5, 5, 0.75, 2.0, 0.5);
     }
 
     private MarkerCorpusSnapshot stubSnapshot(List<CorpusSnapshotItem> gridItems) {
@@ -57,6 +59,11 @@ class VettingProposalServiceTest {
     private CorpusSnapshotItem item(UUID snapshotId, String author, String dHash) {
         int o = ordinal.getAndIncrement();
         return CorpusSnapshotItem.of(snapshotId, "sc-" + o, author, dHash, null, o);
+    }
+
+    /** Explicit-ordinal grid item — for cadence/coverage/separation tests where the position in the grid matters. */
+    private CorpusSnapshotItem at(UUID snapshotId, String author, String dHash, int ord) {
+        return CorpusSnapshotItem.of(snapshotId, "sc-" + ord, author, dHash, null, ord);
     }
 
     @Test
@@ -87,31 +94,32 @@ class VettingProposalServiceTest {
     }
 
     @Test
-    void recurringBannerIsProposedAsFlatBanner() {
+    void slamDunkSingleOwnerIsAcceptedWithoutAi() {
+        // One owner re-posts the SAME banner 5x at a regular cadence spanning the grid; a reposter's different image
+        // appears twice, bunched at the end. The owner's score towers over the reposter's, so the gate ACCEPTS one
+        // owner (no AI) and names it alone.
         MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
         UUID id = snap.getId();
         List<CorpusSnapshotItem> grid = List.of(
-                item(id, "owner.acct", H0),
-                item(id, "owner.acct", H0_NEAR), // clusters with H0 (Hamming 1 <= 2)
-                item(id, "owner.acct", H0),
-                item(id, "member.a", H_FAR),
-                item(id, "member.b", H_FAR2));
+                at(id, "owner.acct", H0, 0), at(id, "owner.acct", H0, 1), at(id, "owner.acct", H0, 2),
+                at(id, "owner.acct", H0, 3), at(id, "owner.acct", H0, 4),
+                at(id, "reposter.acct", H_FAR, 5), at(id, "reposter.acct", H_FAR, 6));
         when(snapshots.findById(id)).thenReturn(Optional.of(snap));
         when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
 
         DetectorProfileProposal p = service.propose(id);
 
         assertThat(p.proposedType()).isEqualTo(ProposedType.FLAT_BANNER);
-        assertThat(p.itemCount()).isEqualTo(5);
-        assertThat(p.ownerRoster()).containsExactly("owner.acct");
-        assertThat(p.escalate()).isFalse();
-        assertThat(p.confidence()).isEqualTo(1.0); // owner: purity 1.0 * min(1, recurrence 3 / target 3)
-        assertThat(p.markerClusters()).hasSize(1);
+        assertThat(p.escalate()).isFalse();                          // slam dunk — accepted, no AI
+        assertThat(p.ownerRoster()).containsExactly("owner.acct");   // names the ONE owner
+        assertThat(p.confidence()).isGreaterThan(0.9);               // ~0.95 separation from the reposter
+        assertThat(p.itemCount()).isEqualTo(7);
+        assertThat(p.markerClusters()).hasSize(2);                   // owner + reposter (context)
         DetectorProfileProposal.MarkerCluster top = p.markerClusters().get(0);
-        assertThat(top.size()).isEqualTo(3);
+        assertThat(top.size()).isEqualTo(5);
         assertThat(top.dHash()).isEqualTo(H0);
         assertThat(top.authorUsernames()).containsExactly("owner.acct");
-        assertThat(top.sampleShortcodes()).hasSize(3);
+        assertThat(top.sampleShortcodes()).hasSize(5);
     }
 
     @Test
@@ -149,9 +157,10 @@ class VettingProposalServiceTest {
         DetectorProfileProposal p = service.propose(id);
 
         assertThat(p.proposedType()).isEqualTo(ProposedType.FLAT_BANNER);
-        assertThat(p.markerClusters()).hasSize(1);
+        assertThat(p.markerClusters()).hasSize(1);                 // the length-5 hash did NOT join the length-4 cluster
         assertThat(p.markerClusters().get(0).size()).isEqualTo(2);
-        assertThat(p.confidence()).isEqualTo(2.0 / 3.0);
+        assertThat(p.escalate()).isTrue();                         // only 2 recurrences, low coverage → weak → escalate
+        assertThat(p.confidence()).isEqualTo(0.25);
     }
 
     @Test
@@ -196,42 +205,45 @@ class VettingProposalServiceTest {
     }
 
     @Test
-    void strongestSingleOwnerLeadsTheRoster() {
-        // owner.a re-posts one banner 3x; owner.b a different banner 2x. Both are pure single-owner clusters, so both
-        // are candidates — but the stronger (more recurring) owner leads the roster and drives confidence.
+    void weakSingleOwnerEscalatesWithRosterKept() {
+        // A pure single owner, but only 2 recurrences (cadence unprovable, strength below min-score) — not a slam dunk.
+        // The gate keeps the owner on the roster as context but ESCALATES rather than auto-accepting a weak signal.
         MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
         UUID id = snap.getId();
         List<CorpusSnapshotItem> grid = List.of(
-                item(id, "owner.a", H0), item(id, "owner.a", H0), item(id, "owner.a", H0_NEAR),
-                item(id, "owner.b", H_FAR), item(id, "owner.b", H_FAR));
+                at(id, "owner.acct", H0, 0), at(id, "owner.acct", H0, 1));
         when(snapshots.findById(id)).thenReturn(Optional.of(snap));
         when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
 
         DetectorProfileProposal p = service.propose(id);
 
         assertThat(p.proposedType()).isEqualTo(ProposedType.FLAT_BANNER);
-        assertThat(p.ownerRoster()).containsExactly("owner.a", "owner.b");
-        assertThat(p.markerClusters()).hasSize(2);
-        assertThat(p.markerClusters().get(0).authorUsernames()).containsExactly("owner.a");
-        assertThat(p.markerClusters().get(0).size()).isEqualTo(3);
-        assertThat(p.confidence()).isEqualTo(1.0); // owner.a: purity 1.0 * min(1, 3/3)
+        assertThat(p.escalate()).isTrue();
+        assertThat(p.ownerRoster()).containsExactly("owner.acct");
+        assertThat(p.confidence()).isEqualTo(0.5);   // strength min(1, score 1.0 / min-score 2.0)
+        assertThat(p.markerClusters()).hasSize(1);
     }
 
     @Test
-    void equalStrengthOwnersAreOrderedAlphabetically() {
-        // Two equally-recurring pure banners (2 posts each) by different owners: the recurrence tie is broken by author
-        // name so the roster is deterministic.
+    void ambiguousEqualOwnersEscalateWithRankedRoster() {
+        // Two equally-strong cadenced owners (interleaved every other post): both recur 3x, regular, same coverage, so
+        // neither separates. separation = 0 -> confidence 0 -> ESCALATE, keeping BOTH on the roster (P4: co-owners) in a
+        // deterministic (score, then author) order for the AI/human to adjudicate.
         MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
         UUID id = snap.getId();
         List<CorpusSnapshotItem> grid = List.of(
-                item(id, "b.owner", H0), item(id, "b.owner", H0),
-                item(id, "a.owner", H_FAR), item(id, "a.owner", H_FAR));
+                at(id, "owner.a", H0, 0), at(id, "owner.b", H_FAR, 1),
+                at(id, "owner.a", H0, 2), at(id, "owner.b", H_FAR, 3),
+                at(id, "owner.a", H0, 4), at(id, "owner.b", H_FAR, 5));
         when(snapshots.findById(id)).thenReturn(Optional.of(snap));
         when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
 
         DetectorProfileProposal p = service.propose(id);
 
-        assertThat(p.ownerRoster()).containsExactly("a.owner", "b.owner");
-        assertThat(p.confidence()).isEqualTo(2.0 / 3.0); // recurrence 2: purity 1.0 * min(1, 2/3)
+        assertThat(p.proposedType()).isEqualTo(ProposedType.FLAT_BANNER);
+        assertThat(p.escalate()).isTrue();
+        assertThat(p.ownerRoster()).containsExactly("owner.a", "owner.b");
+        assertThat(p.confidence()).isEqualTo(0.0);   // no separation — a tie
+        assertThat(p.markerClusters()).hasSize(2);
     }
 }
