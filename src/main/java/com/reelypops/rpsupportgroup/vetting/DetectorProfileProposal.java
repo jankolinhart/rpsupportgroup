@@ -14,9 +14,11 @@ import java.util.UUID;
  * @param igAccount      the support group's Instagram account
  * @param itemCount      how many grid items were considered
  * @param proposedType   the inferred marker style
- * @param ownerRoster    candidate marker-owner usernames (the recurring-marker cluster authors), sorted
- * @param markerClusters the top recurring-image clusters (the flat-banner candidates)
- * @param confidence     0..1 — the dominant cluster's share of the grid (0 when nothing recurs)
+ * @param ownerRoster    candidate marker-owner usernames — the dominant author of each single-owner recurring cluster,
+ *                       strongest first (empty when Tier 0 finds no clean owner)
+ * @param markerClusters the top single-owner recurring-image clusters (the flat-banner candidates)
+ * @param confidence     0..1 — the top candidate's single-owner purity tempered by how many times it recurs (0 when
+ *                       nothing recurs cleanly)
  * @param escalate       true when Tier&nbsp;0 could not decide (text-overlay) and vision escalation is warranted
  * @param provenance     which tier(s) produced this proposal
  */
