@@ -5,12 +5,16 @@ import com.reelypops.rpsupportgroup.corpus.CorpusSnapshotItemRepository;
 import com.reelypops.rpsupportgroup.corpus.CorpusSource;
 import com.reelypops.rpsupportgroup.corpus.MarkerCorpusSnapshot;
 import com.reelypops.rpsupportgroup.corpus.MarkerCorpusSnapshotRepository;
+import com.reelypops.rpsupportgroup.group.DetectedProfile.ScheduleFacet;
+import com.reelypops.rpsupportgroup.group.MarkerGroupType;
+import com.reelypops.rpsupportgroup.group.RoundState;
 import com.reelypops.rpsupportgroup.vetting.DetectorProfileProposal.ProposedType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -271,5 +275,47 @@ class VettingProposalServiceTest {
         assertThat(p.ownerRoster()).containsExactly("owner.a", "owner.b");
         assertThat(p.confidence()).isEqualTo(0.0);   // no separation — a tie
         assertThat(p.markerClusters()).hasSize(2);
+    }
+
+    /** Grid item WITH a posted-at instant — for the M3b schedule derivation (times / weekdays / current state). */
+    private CorpusSnapshotItem dated(UUID snapshotId, String author, String dHash, int ord, String instant) {
+        return CorpusSnapshotItem.of(snapshotId, "sc-" + ord, author, dHash, Instant.parse(instant), ord);
+    }
+
+    @Test
+    void analyzeEnrichesWithCandidateMetricsReferenceConfidenceAndDerivedSchedule() {
+        // A clean 2-marker owner: a START banner (H0) at 09:00 and an END banner (H_FAR) at 17:00 across four days
+        // (Mon-Thu). analyze() must surface the ranked candidates, per-reference confidence, and the derived schedule.
+        MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
+        UUID id = snap.getId();
+        List<CorpusSnapshotItem> grid = List.of(
+                dated(id, "owner.acct", H0, 0, "2026-01-05T09:00:00Z"),
+                dated(id, "owner.acct", H_FAR, 1, "2026-01-05T17:00:00Z"),
+                dated(id, "owner.acct", H0, 2, "2026-01-06T09:00:00Z"),
+                dated(id, "owner.acct", H_FAR, 3, "2026-01-06T17:00:00Z"),
+                dated(id, "owner.acct", H0, 4, "2026-01-07T09:00:00Z"),
+                dated(id, "owner.acct", H_FAR, 5, "2026-01-07T17:00:00Z"),
+                dated(id, "owner.acct", H0, 6, "2026-01-08T09:00:00Z"),
+                dated(id, "owner.acct", H_FAR, 7, "2026-01-08T17:00:00Z"));
+        when(snapshots.findById(id)).thenReturn(Optional.of(snap));
+        when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
+
+        SnapshotAnalysis a = service.analyze(id);
+
+        assertThat(a.proposal().proposedType()).isEqualTo(ProposedType.FLAT_BANNER);
+        assertThat(a.proposal().escalate()).isFalse();
+        assertThat(a.proposal().ownerRoster()).containsExactly("owner.acct");
+        // Two owner clusters (START + END): each a candidate with metrics, each a reference with marker confidence.
+        assertThat(a.candidates()).hasSize(2);
+        assertThat(a.candidates()).allSatisfy(c -> assertThat(c.author()).isEqualTo("owner.acct"));
+        assertThat(a.references()).hasSize(2);
+        assertThat(a.references()).allSatisfy(r -> assertThat(r.confidence()).isEqualTo(1.0));
+        ScheduleFacet s = a.schedule();
+        assertThat(s.groupType()).isEqualTo(MarkerGroupType.TWO_MARKER);
+        assertThat(s.groupTypeConfidence()).isGreaterThan(0.9);
+        assertThat(s.start().timeOfDayUtc()).isEqualTo("09:00");
+        assertThat(s.end().timeOfDayUtc()).isEqualTo("17:00");
+        assertThat(s.openWeekdays()).containsExactly(1, 2, 3, 4); // Mon-Thu STARTs
+        assertThat(s.currentState()).isEqualTo(RoundState.CLOSED_PERIOD); // trailing marker is an END
     }
 }

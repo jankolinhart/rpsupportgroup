@@ -4,6 +4,9 @@ import com.reelypops.rpsupportgroup.corpus.CorpusSnapshotItem;
 import com.reelypops.rpsupportgroup.corpus.CorpusSnapshotItemRepository;
 import com.reelypops.rpsupportgroup.corpus.MarkerCorpusSnapshot;
 import com.reelypops.rpsupportgroup.corpus.MarkerCorpusSnapshotRepository;
+import com.reelypops.rpsupportgroup.group.DetectedProfile.MarkerReference;
+import com.reelypops.rpsupportgroup.group.DetectedProfile.OwnerCandidate;
+import com.reelypops.rpsupportgroup.group.DetectedProfile.ScheduleFacet;
 import com.reelypops.rpsupportgroup.vetting.DetectorProfileProposal.MarkerCluster;
 import com.reelypops.rpsupportgroup.vetting.DetectorProfileProposal.ProposedType;
 import org.slf4j.Logger;
@@ -14,6 +17,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -75,25 +79,37 @@ public class VettingProposalService {
     /** Build the advisory vetting proposal for a snapshot (404 if unknown), then run it through the enricher seam. */
     @Transactional(readOnly = true)
     public DetectorProfileProposal propose(UUID snapshotId) {
+        return analyze(snapshotId).proposal();
+    }
+
+    /**
+     * The full Tier&nbsp;0 read of a snapshot (M3b): the enriched {@link DetectorProfileProposal} plus the ranked owner
+     * candidates, the recurring-image references (with marker confidence), and the derived schedule — computed in one
+     * clustering pass and mapped onto the persisted {@link com.reelypops.rpsupportgroup.group.DetectedProfile} advisory.
+     */
+    @Transactional(readOnly = true)
+    public SnapshotAnalysis analyze(UUID snapshotId) {
         MarkerCorpusSnapshot snapshot = snapshots.findById(snapshotId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "no snapshot " + snapshotId));
         List<CorpusSnapshotItem> gridItems = items.findBySnapshotIdOrderByOrdinalAsc(snapshotId);
-        return enricher.enrich(buildTier0(snapshot, gridItems), gridItems);
+        SnapshotAnalysis analysis = buildAnalysis(snapshot, gridItems);
+        DetectorProfileProposal enriched = enricher.enrich(analysis.proposal(), gridItems);
+        return new SnapshotAnalysis(enriched, analysis.candidates(), analysis.references(), analysis.schedule());
     }
 
-    private DetectorProfileProposal buildTier0(MarkerCorpusSnapshot snapshot, List<CorpusSnapshotItem> gridItems) {
+    private SnapshotAnalysis buildAnalysis(MarkerCorpusSnapshot snapshot, List<CorpusSnapshotItem> gridItems) {
         UUID id = snapshot.getId();
         String ig = snapshot.getIgAccount();
         int itemCount = gridItems.size();
         if (itemCount == 0) {
-            return new DetectorProfileProposal(id, ig, 0, ProposedType.UNKNOWN, List.of(), List.of(),
-                    0.0, false, PROVENANCE_TIER0);
+            return emptyAnalysis(new DetectorProfileProposal(id, ig, 0, ProposedType.UNKNOWN, List.of(), List.of(),
+                    0.0, false, PROVENANCE_TIER0));
         }
         List<Cluster> strong = cluster(gridItems).stream().filter(c -> c.size() >= minClusterSize).toList();
         if (strong.isEmpty()) {
             // No image recurs across the grid: a text-overlay style — Tier 0 cannot judge it, so escalate to vision.
-            return new DetectorProfileProposal(id, ig, itemCount, ProposedType.TEXT_OVERLAY, List.of(), List.of(),
-                    0.0, true, PROVENANCE_TIER0);
+            return emptyAnalysis(new DetectorProfileProposal(id, ig, itemCount, ProposedType.TEXT_OVERLAY, List.of(),
+                    List.of(), 0.0, true, PROVENANCE_TIER0));
         }
         // A genuine flat-banner marker is the SAME image re-posted across DISTINCT posts by a SINGLE owner (directive
         // P5: a post appears in the grid only once, so an image recurs only because the owner re-posts a fresh banner
@@ -112,8 +128,8 @@ public class VettingProposalService {
         if (candidates.isEmpty()) {
             // Images recur, but none is a clean single-owner banner (multi-author lookalikes / collab fan-out) — punt
             // to vision rather than proposing a wrong owner.
-            return new DetectorProfileProposal(id, ig, itemCount, ProposedType.TEXT_OVERLAY, List.of(), List.of(),
-                    0.0, true, PROVENANCE_TIER0);
+            return emptyAnalysis(new DetectorProfileProposal(id, ig, itemCount, ProposedType.TEXT_OVERLAY, List.of(),
+                    List.of(), 0.0, true, PROVENANCE_TIER0));
         }
         // The gate. confidence = how strongly the top OWNER stands out from the next DIFFERENT owner:
         // min(separation, absolute-strength). Accept ONE owner only on a SLAM DUNK — a strong score AND a clear lead —
@@ -136,13 +152,31 @@ public class VettingProposalService {
         logDiagnostics(id, itemCount, candidates, slamDunk, confidence);
 
         List<MarkerCluster> clusters = candidates.stream().limit(maxClusters).map(this::toMarkerCluster).toList();
+        DetectorProfileProposal proposal;
         if (slamDunk) {
-            return new DetectorProfileProposal(id, ig, itemCount, ProposedType.FLAT_BANNER,
+            proposal = new DetectorProfileProposal(id, ig, itemCount, ProposedType.FLAT_BANNER,
                     List.of(top.dominantAuthor()), clusters, confidence, false, PROVENANCE_TIER0);
+        } else {
+            List<String> roster = candidates.stream().map(MarkerCandidate::dominantAuthor).distinct().toList();
+            proposal = new DetectorProfileProposal(id, ig, itemCount, ProposedType.FLAT_BANNER, roster, clusters,
+                    confidence, true, PROVENANCE_TIER0);
         }
-        List<String> roster = candidates.stream().map(MarkerCandidate::dominantAuthor).distinct().toList();
-        return new DetectorProfileProposal(id, ig, itemCount, ProposedType.FLAT_BANNER, roster, clusters,
-                confidence, true, PROVENANCE_TIER0);
+        // M3b: surface the ranked candidate metrics + per-reference confidence, and derive the schedule from the TOP
+        // owner's clusters (its START/END banners) — advisory, whether we accepted or escalated.
+        List<OwnerCandidate> ownerCandidates = candidates.stream().map(MarkerCandidate::toOwnerCandidate).toList();
+        List<MarkerReference> references = candidates.stream().limit(maxClusters)
+                .map(c -> c.toReference(minScore)).toList();
+        List<ScheduleDeriver.ClusterPosts> ownerClusters = candidates.stream()
+                .filter(c -> c.dominantAuthor().equals(top.dominantAuthor()))
+                .map(c -> new ScheduleDeriver.ClusterPosts(c.ownerPosts()))
+                .toList();
+        ScheduleFacet schedule = ScheduleDeriver.derive(ownerClusters);
+        return new SnapshotAnalysis(proposal, ownerCandidates, references, schedule);
+    }
+
+    /** The analysis for a snapshot with no clean owner: just the proposal, no candidates / references / schedule. */
+    private static SnapshotAnalysis emptyAnalysis(DetectorProfileProposal proposal) {
+        return new SnapshotAnalysis(proposal, List.of(), List.of(), ScheduleDeriver.empty());
     }
 
     /** Calibration diagnostic (M2): per-candidate marker-signature metrics + the accept/escalate decision (cloud log). */
@@ -229,17 +263,20 @@ public class VettingProposalService {
      */
     private record MarkerCandidate(String dHash, int distinctPosts, String dominantAuthor, int recurrence,
                                    double purity, double cadenceRegularity, double coverage, double score,
-                                   List<String> authors, List<String> sampleShortcodes) {
+                                   List<String> authors, List<String> sampleShortcodes,
+                                   List<ScheduleDeriver.Post> ownerPosts) {
 
         static MarkerCandidate from(String dHash, List<CorpusSnapshotItem> members, int maxSamples, int itemCount) {
             Map<String, Set<String>> shortcodesByAuthor = new LinkedHashMap<>();
             Map<String, Integer> ordinalByShortcode = new LinkedHashMap<>();
+            Map<String, Instant> postedAtByShortcode = new LinkedHashMap<>();
             Set<String> distinct = new LinkedHashSet<>();
             for (CorpusSnapshotItem item : members) {
                 distinct.add(item.getShortcode());
                 shortcodesByAuthor.computeIfAbsent(item.getAuthorUsername(), k -> new LinkedHashSet<>())
                         .add(item.getShortcode());
                 ordinalByShortcode.putIfAbsent(item.getShortcode(), item.getOrdinal());
+                postedAtByShortcode.putIfAbsent(item.getShortcode(), item.getPostedAt());
             }
             // Dominant author = the one contributing the most DISTINCT posts (ties broken by name for determinism).
             Map.Entry<String, Set<String>> top = shortcodesByAuthor.entrySet().stream()
@@ -256,8 +293,24 @@ public class VettingProposalService {
             double score = recurrence * cadenceRegularity * coverage;
             List<String> authors = shortcodesByAuthor.keySet().stream().sorted().toList();
             List<String> samples = distinct.stream().limit(maxSamples).toList();
+            // The dominant author's posts (ordinal + postedAt) feed the M3b schedule derivation.
+            List<ScheduleDeriver.Post> ownerPosts = top.getValue().stream()
+                    .map(sc -> new ScheduleDeriver.Post(ordinalByShortcode.get(sc), postedAtByShortcode.get(sc)))
+                    .sorted(Comparator.comparingInt(ScheduleDeriver.Post::ordinal))
+                    .toList();
             return new MarkerCandidate(dHash, distinctPosts, top.getKey(), recurrence, purity, cadenceRegularity,
-                    coverage, score, authors, samples);
+                    coverage, score, authors, samples, ownerPosts);
+        }
+
+        /** The marker-signature metrics behind the gate, surfaced for the admin (Advisory Store, M3b). */
+        OwnerCandidate toOwnerCandidate() {
+            return new OwnerCandidate(dominantAuthor, distinctPosts, recurrence, purity, cadenceRegularity,
+                    coverage, score);
+        }
+
+        /** One recurring-image cluster as an untyped reference; confidence = normalised marker-signature strength. */
+        MarkerReference toReference(double minScore) {
+            return new MarkerReference(dHash, distinctPosts, sampleShortcodes, Math.min(1.0, score / minScore));
         }
 
         /** Regularity of the gaps between successive posts (1 = perfectly even); needs >= 3 posts to mean anything. */
