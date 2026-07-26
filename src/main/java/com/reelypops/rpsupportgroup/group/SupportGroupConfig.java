@@ -91,6 +91,15 @@ public class SupportGroupConfig {
     private DetectedProfile detectedProfile;
 
     /**
+     * The <strong>single authoritative confirmed</strong> profile (M3a) — the {@link VettedProfile} the admin builds in
+     * the Vetting Portal, and the object that ships. The legacy {@link #definition} + {@link #description} are a one-way
+     * projection of it (kept for today's client/scanner; retired in M5), so they cannot diverge from it.
+     */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "vetted_profile", columnDefinition = "jsonb")
+    private VettedProfile vettedProfile;
+
+    /**
      * A free-text group blurb (Cycle 11, R-1) shown lazily in the client's "i" info card. Authoritative (an admin
      * curates it; editable while PENDING, locked once vetted) but kept out of the jsonb {@code definition} because it
      * is not round truth, so it never bumps the definition {@code version} ETag the client polls.
@@ -224,6 +233,19 @@ public class SupportGroupConfig {
      */
     public void updateDetectedProfile(DetectedProfile detectedProfile) {
         this.detectedProfile = detectedProfile;
+    }
+
+    /**
+     * Save/refresh the single authoritative confirmed profile (M3a, the Vetting Portal "Save"). Projects its round-truth
+     * one-way onto the legacy {@code definition} + {@code description} (so today's client/scanner keep working until M5);
+     * because the projection is derived it cannot diverge. Bumps the client-facing {@code version} (the projected
+     * definition changed).
+     */
+    public void saveVettedProfile(VettedProfile profile) {
+        this.vettedProfile = profile;
+        this.definition = profile.definition().canonicalized();
+        this.description = profile.description();
+        this.version++;
     }
 
     /**

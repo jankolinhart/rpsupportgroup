@@ -104,6 +104,27 @@ public class InternalGroupController {
         return GroupResponse.of(service.updateConfig(igAccount, req.definition(), req.description()));
     }
 
+    /**
+     * Vetting Portal "Save" (M3a): persist the single authoritative {@link VettedProfile} (§6) — a pre-vetting
+     * correction that projects the round-truth onto the legacy definition but does <strong>not</strong> vet.
+     */
+    @PutMapping("/{igAccount}/vetted-profile")
+    public GroupResponse saveVettedProfile(@PathVariable String igAccount, @Valid @RequestBody VettedProfile profile) {
+        return GroupResponse.of(service.saveVettedProfile(igAccount, profile));
+    }
+
+    /** Vetting Portal "Vet Now" (M3a): save the vetted profile <strong>and</strong> flip UNDER_VERIFICATION → VETTED. */
+    @PostMapping("/{igAccount}/vetted-profile/vet")
+    public GroupResponse vetVettedProfile(@PathVariable String igAccount, @Valid @RequestBody VettedProfile profile) {
+        return GroupResponse.of(service.vetVettedProfile(igAccount, profile));
+    }
+
+    /** The admin-only detected + vetted profile pair the Vetting Portal renders + diffs (M3a). */
+    @GetMapping("/{igAccount}/vetting-profiles")
+    public VettingProfilesResponse vettingProfiles(@PathVariable String igAccount) {
+        return service.getVettingProfiles(igAccount);
+    }
+
     /** Admin: remove a config. */
     @DeleteMapping("/{igAccount}")
     @ResponseStatus(HttpStatus.NO_CONTENT)

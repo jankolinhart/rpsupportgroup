@@ -143,6 +143,39 @@ public class SupportGroupConfigService {
         return configs.save(c);
     }
 
+    /**
+     * Vetting Portal "Save" (M3a): persist the single authoritative {@link VettedProfile} and project its round-truth
+     * one-way onto the legacy definition/description (§6). The config stays as-is (a pre-vetting correction — nothing
+     * ships until Vet Now).
+     */
+    @Transactional
+    public SupportGroupConfig saveVettedProfile(String igAccount, VettedProfile profile) {
+        SupportGroupConfig c = require(igAccount);
+        c.saveVettedProfile(profile);
+        return configs.save(c);
+    }
+
+    /**
+     * Vetting Portal "Vet Now" (M3a): save the {@link VettedProfile} (projecting the definition) <em>and</em> flip
+     * UNDER_VERIFICATION → VETTED in one step. A BLOCKED config cannot be vetted.
+     */
+    @Transactional
+    public SupportGroupConfig vetVettedProfile(String igAccount, VettedProfile profile) {
+        SupportGroupConfig c = require(igAccount);
+        c.saveVettedProfile(profile);
+        if (c.getVettingState() == VettingState.BLOCKED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, igAccount + " is blocked and cannot be vetted");
+        }
+        c.vet();
+        return configs.save(c);
+    }
+
+    /** The admin-only detected + vetted profile pair the Vetting Portal renders + diffs (M3a). */
+    @Transactional(readOnly = true)
+    public VettingProfilesResponse getVettingProfiles(String igAccount) {
+        return VettingProfilesResponse.of(require(igAccount));
+    }
+
     /** An owner claims an unclaimed config (§6). Idempotent guard: re-claiming a claimed config is a conflict. */
     @Transactional
     public SupportGroupConfig claim(String igAccount, UUID ownerId) {

@@ -442,5 +442,89 @@ class InternalGroupControllerTest {
                 .andExpect(jsonPath("$.content.length()").value(2));
     }
 
+    // --- M3a: the vetted profile (single authoritative confirmed object) + the definition projection ---
+
+    private static final String VETTED_BODY =
+            "{\"definition\":{\"type\":\"TWO_MARKER\",\"timezone\":\"Europe/Berlin\",\"markerOwners\":[\"ras.circle\"],"
+                    + "\"startMarkerTime\":\"08:00\",\"endMarkerTime\":\"20:00\",\"openWeekdays\":[1,2,3,4,5]},"
+                    + "\"detector\":{\"style\":\"FLAT_BANNER\",\"references\":[{\"markerType\":\"start\","
+                    + "\"dHashes\":[\"0000\"],\"matchThreshold\":4}]},\"description\":\"Dailyblogger group.\"}";
+
+    @Test
+    void saveVettedProfileProjectsToDefinitionWithoutVetting() throws Exception {
+        createConfig("m3a-save"); // CONTINUOUS/UTC, UNDER_VERIFICATION, version 1
+
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/vetted-profile", "m3a-save")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON).content(VETTED_BODY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.vetted").value(false))                    // Save must NOT vet
+                .andExpect(jsonPath("$.vettingState").value("UNDER_VERIFICATION"))
+                .andExpect(jsonPath("$.definition.type").value("TWO_MARKER"))     // round-truth projected onto definition
+                .andExpect(jsonPath("$.definition.markerOwners[0]").value("ras.circle"))
+                .andExpect(jsonPath("$.description").value("Dailyblogger group."))
+                .andExpect(jsonPath("$.version").value(2));                       // bumped by the projection
+    }
+
+    @Test
+    void vetVettedProfileSavesAndFlipsToVetted() throws Exception {
+        createConfig("m3a-vetnow");
+
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vetted-profile/vet", "m3a-vetnow")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON).content(VETTED_BODY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.vetted").value(true))
+                .andExpect(jsonPath("$.vettingState").value("VETTED"))
+                .andExpect(jsonPath("$.definition.type").value("TWO_MARKER"));
+    }
+
+    @Test
+    void vetVettedProfileOnBlockedConfigIsConflict() throws Exception {
+        createConfig("m3a-blocked");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/block", "m3a-blocked").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vetted-profile/vet", "m3a-blocked")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON).content(VETTED_BODY))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void saveVettedProfileWithInvalidDefinitionIsBadRequest() throws Exception {
+        // definition present but missing the required type → bean validation rejects before the service runs.
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/vetted-profile", "m3a-bad")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"definition\":{\"timezone\":\"UTC\"}}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void saveVettedProfileUnknownConfigIsNotFound() throws Exception {
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/vetted-profile", "m3a-none")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON).content(VETTED_BODY))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void getVettingProfilesReturnsBothSlots() throws Exception {
+        createConfig("m3a-profiles");
+        // before any save: both slots empty
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/vetting-profiles", "m3a-profiles")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.detected").doesNotExist())
+                .andExpect(jsonPath("$.vetted").doesNotExist());
+        // after a Save the vetted slot is populated (round-trips through jsonb)
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/vetted-profile", "m3a-profiles")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON).content(VETTED_BODY))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/vetting-profiles", "m3a-profiles")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.vetted.definition.type").value("TWO_MARKER"))
+                .andExpect(jsonPath("$.vetted.detector.style").value("FLAT_BANNER"))
+                .andExpect(jsonPath("$.vetted.detector.references[0].markerType").value("start"))
+                .andExpect(jsonPath("$.detected").doesNotExist());
+    }
+
     private static final String KEY_HEADER = "X-Internal-Api-Key";
 }
