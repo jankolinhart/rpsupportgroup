@@ -115,12 +115,20 @@ public class VettingProposalService {
             return new DetectorProfileProposal(id, ig, itemCount, ProposedType.TEXT_OVERLAY, List.of(), List.of(),
                     0.0, true, PROVENANCE_TIER0);
         }
-        // The gate. confidence = how strongly the top candidate stands out: min(separation-from-#2, absolute-strength).
-        // Accept ONE owner only on a SLAM DUNK — a strong score AND a clear lead — else ESCALATE (bias to escalate; the
-        // AI is effectively free). A slam-dunk names the owner alone; an ambiguous grid keeps the ranked roster as
-        // context but flags escalate (which of these is the owner? Tier 0 won't guess).
+        // The gate. confidence = how strongly the top OWNER stands out from the next DIFFERENT owner:
+        // min(separation, absolute-strength). Accept ONE owner only on a SLAM DUNK — a strong score AND a clear lead —
+        // else ESCALATE (bias to escalate; the AI is effectively free). A slam-dunk names the owner alone; an ambiguous
+        // grid keeps the ranked roster as context but flags escalate (which of these is the owner? Tier 0 won't guess).
+        // Separation is measured OWNER-to-owner, not cluster-to-cluster (M2.1): a 2-marker owner legitimately produces
+        // TWO clusters (START + END), so its own second banner must NOT count as a rival — else the owner ties with
+        // itself and a clean single owner escalates for no reason. We compare the top cluster against the best cluster
+        // of the next DIFFERENT author (0 when the owner has the field to itself).
         MarkerCandidate top = candidates.get(0);
-        double secondScore = candidates.size() > 1 ? candidates.get(1).score() : 0.0;
+        double secondScore = candidates.stream()
+                .filter(c -> !c.dominantAuthor().equals(top.dominantAuthor()))
+                .mapToDouble(MarkerCandidate::score)
+                .max()
+                .orElse(0.0);
         double separation = (top.score() - secondScore) / top.score();
         double strength = Math.min(1.0, top.score() / minScore);
         double confidence = Math.min(separation, strength);

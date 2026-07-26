@@ -17,8 +17,8 @@ import java.util.UUID;
  * @param ownerRoster    candidate marker-owner usernames. On a confident accept this is the ONE owner; on an escalate
  *                       it is the ranked candidates (context for the AI/human); empty when nothing recurs cleanly
  * @param markerClusters the top single-owner recurring-image clusters (the flat-banner candidates)
- * @param confidence     0..1 — how strongly the top candidate stands out: min(separation-from-#2, absolute-strength);
- *                       a slam dunk clears the gate (accept), otherwise the proposal escalates
+ * @param confidence     0..1 — how strongly the top OWNER stands out from the next DIFFERENT owner:
+ *                       min(separation, absolute-strength); a slam dunk clears the gate (accept), else it escalates
  * @param escalate       true when Tier&nbsp;0 could not decide (text-overlay) and vision escalation is warranted
  * @param provenance     which tier(s) produced this proposal
  */
