@@ -1,5 +1,6 @@
 package com.reelypops.rpsupportgroup.vetting;
 
+import com.reelypops.rpsupportgroup.corpus.CorpusRepresentativeRepository;
 import com.reelypops.rpsupportgroup.corpus.CorpusSnapshotItem;
 import com.reelypops.rpsupportgroup.corpus.CorpusSnapshotItemRepository;
 import com.reelypops.rpsupportgroup.corpus.CorpusSource;
@@ -22,6 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -42,6 +44,7 @@ class VettingProposalServiceTest {
 
     private MarkerCorpusSnapshotRepository snapshots;
     private CorpusSnapshotItemRepository items;
+    private CorpusRepresentativeRepository representatives;
     private VettingProposalService service;
     private final AtomicInteger ordinal = new AtomicInteger(0);
 
@@ -49,8 +52,10 @@ class VettingProposalServiceTest {
     void setUp() {
         snapshots = mock(MarkerCorpusSnapshotRepository.class);
         items = mock(CorpusSnapshotItemRepository.class);
+        representatives = mock(CorpusRepresentativeRepository.class);
+        when(representatives.findShortcodesBySnapshotId(any())).thenReturn(List.of());
         // threshold 2, min-cluster 2, max-clusters 5, max-samples 5, min-purity 0.75, min-score 2.0, min-separation 0.5
-        service = new VettingProposalService(snapshots, items, new NoOpAiVettingEnricher(), 2, 2, 5, 5, 0.75, 2.0, 0.5);
+        service = new VettingProposalService(snapshots, items, representatives, new NoOpAiVettingEnricher(), 2, 2, 5, 5, 0.75, 2.0, 0.5);
     }
 
     private MarkerCorpusSnapshot stubSnapshot(List<CorpusSnapshotItem> gridItems) {
@@ -280,6 +285,25 @@ class VettingProposalServiceTest {
     /** Grid item WITH a posted-at instant — for the M3b schedule derivation (times / weekdays / current state). */
     private CorpusSnapshotItem dated(UUID snapshotId, String author, String dHash, int ord, String instant) {
         return CorpusSnapshotItem.of(snapshotId, "sc-" + ord, author, dHash, Instant.parse(instant), ord);
+    }
+
+    @Test
+    void referenceSamplesPreferShortcodesWithACapturedImage() {
+        // The captured representative of a cluster is often not its first post by grid order — the reference must
+        // surface a shortcode that actually has an image so the admin sees a thumbnail, not a 404.
+        MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
+        UUID id = snap.getId();
+        List<CorpusSnapshotItem> grid = List.of(
+                at(id, "owner.acct", H0, 0), at(id, "owner.acct", H0, 1), at(id, "owner.acct", H0, 2));
+        when(snapshots.findById(id)).thenReturn(Optional.of(snap));
+        when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
+        // Only the THIRD post (sc-2) has a captured representative image.
+        when(representatives.findShortcodesBySnapshotId(id)).thenReturn(List.of("sc-2"));
+
+        SnapshotAnalysis a = service.analyze(id);
+
+        assertThat(a.references()).singleElement().satisfies(r ->
+                assertThat(r.sampleShortcodes().get(0)).isEqualTo("sc-2")); // image-backed shortcode first
     }
 
     @Test
