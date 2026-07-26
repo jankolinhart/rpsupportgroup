@@ -123,6 +123,32 @@ class VettingProposalServiceTest {
     }
 
     @Test
+    void twoMarkerOwnerIsAcceptedDespiteTwoTopClusters() {
+        // A 2-marker owner posts a START banner AND an END banner each round, so it produces the top TWO clusters (both
+        // owner.acct). Separation must be measured OWNER-to-owner (M2.1): the owner's END banner is not its rival, so it
+        // does not tie with itself — it clears the gate over the next DIFFERENT author (a weak reposter).
+        MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
+        UUID id = snap.getId();
+        List<CorpusSnapshotItem> grid = List.of(
+                at(id, "owner.acct", H0, 0), at(id, "owner.acct", H_FAR, 1),
+                at(id, "owner.acct", H0, 2), at(id, "owner.acct", H_FAR, 3),
+                at(id, "owner.acct", H0, 4), at(id, "owner.acct", H_FAR, 5),
+                at(id, "owner.acct", H0, 6), at(id, "owner.acct", H_FAR, 7),
+                at(id, "reposter.acct", H_FAR2, 8), at(id, "reposter.acct", H_FAR2, 9));
+        when(snapshots.findById(id)).thenReturn(Optional.of(snap));
+        when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
+
+        DetectorProfileProposal p = service.propose(id);
+
+        assertThat(p.proposedType()).isEqualTo(ProposedType.FLAT_BANNER);
+        assertThat(p.escalate()).isFalse();                          // owner does not tie with itself
+        assertThat(p.ownerRoster()).containsExactly("owner.acct");   // ONE owner, despite two marker clusters
+        assertThat(p.confidence()).isGreaterThan(0.9);               // ~0.96 lead over the reposter
+        assertThat(p.markerClusters()).hasSize(3);                   // START + END + reposter (context)
+        assertThat(p.markerClusters().get(0).authorUsernames()).containsExactly("owner.acct");
+    }
+
+    @Test
     void gridWhereNothingRecursEscalatesAsTextOverlay() {
         MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
         UUID id = snap.getId();
