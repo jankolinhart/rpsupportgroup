@@ -11,11 +11,16 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.util.UUID;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -147,5 +152,66 @@ class InternalVettingControllerTest {
         mockMvc.perform(post("/supportgroup/v1/internal/vetting/snapshots/{id}/detect", UUID.randomUUID())
                         .header(KEY_HEADER, KEY))
                 .andExpect(status().isNotFound());
+    }
+
+    // --- operator-uploaded marker images (M3 follow-up) ---
+
+    /** A tiny PNG whose brightness ramps left→right, so its dHash is a predictable all-ones string. */
+    private static byte[] pngRamp() throws IOException {
+        BufferedImage img = new BufferedImage(90, 80, BufferedImage.TYPE_INT_RGB);
+        for (int y = 0; y < 80; y++) {
+            for (int x = 0; x < 90; x++) {
+                int v = (int) Math.round(255.0 * x / 89);
+                img.setRGB(x, y, (v << 16) | (v << 8) | v);
+            }
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ImageIO.write(img, "png", out);
+        return out.toByteArray();
+    }
+
+    @Test
+    void uploadMarkerImageStoresAndServesItBack() throws Exception {
+        byte[] png = pngRamp();
+        MvcResult r = mockMvc.perform(post("/supportgroup/v1/internal/vetting/marker-images")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.IMAGE_PNG).content(png))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.id").isNotEmpty())
+                .andExpect(jsonPath("$.dHash").value("1".repeat(64)))
+                .andReturn();
+        String id = JsonPath.read(r.getResponse().getContentAsString(), "$.id");
+
+        mockMvc.perform(get("/supportgroup/v1/internal/vetting/marker-images/{id}", id).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.IMAGE_PNG))
+                .andExpect(content().bytes(png));
+    }
+
+    @Test
+    void uploadMarkerImageRejectsUndecodableBytes() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/internal/vetting/marker-images")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.IMAGE_PNG).content("not an image".getBytes()))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void uploadMarkerImageRejectsEmptyBody() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/internal/vetting/marker-images")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.IMAGE_PNG))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void getUnknownMarkerImageIs404() throws Exception {
+        mockMvc.perform(get("/supportgroup/v1/internal/vetting/marker-images/{id}", UUID.randomUUID())
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void uploadMarkerImageWithoutKeyIsUnauthorized() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/internal/vetting/marker-images")
+                        .contentType(MediaType.IMAGE_PNG).content(pngRamp()))
+                .andExpect(status().isUnauthorized());
     }
 }
