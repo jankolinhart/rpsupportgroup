@@ -26,12 +26,14 @@ public class InternalVettingController {
 
     private final VettingProposalService service;
     private final DetectedProfileService detectedProfiles;
+    private final AiDiscoveryService aiDiscovery;
     private final MarkerImageService markerImages;
 
     public InternalVettingController(VettingProposalService service, DetectedProfileService detectedProfiles,
-                                     MarkerImageService markerImages) {
+                                     AiDiscoveryService aiDiscovery, MarkerImageService markerImages) {
         this.service = service;
         this.detectedProfiles = detectedProfiles;
+        this.aiDiscovery = aiDiscovery;
         this.markerImages = markerImages;
     }
 
@@ -48,6 +50,16 @@ public class InternalVettingController {
     @PostMapping("/snapshots/{snapshotId}/detect")
     public DetectedProfile detect(@PathVariable UUID snapshotId) {
         return detectedProfiles.detect(snapshotId);
+    }
+
+    /**
+     * Run the explicit AI-discovery action (M4): refresh the Tier-0 advisory, then (when the AI gateway is configured
+     * + reachable) attach the {@link DetectedProfile.AiDiscovery} verdict and persist it. Fail-open — returns the
+     * unchanged Tier-0 advisory when the gateway is off/unavailable. 404 if the snapshot or its config is unknown.
+     */
+    @PostMapping("/snapshots/{snapshotId}/detect-ai")
+    public DetectedProfile detectAi(@PathVariable UUID snapshotId) {
+        return aiDiscovery.runAiDiscovery(snapshotId);
     }
 
     /**

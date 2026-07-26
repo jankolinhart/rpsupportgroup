@@ -45,7 +45,8 @@ public class DetectedProfileService {
                 new DetectedProfile.OwnerFacet(proposal.ownerRoster(), proposal.confidence()),
                 analysis.references(),
                 analysis.candidates(),
-                analysis.schedule());
+                analysis.schedule(),
+                null); // AI discovery (M4) is attached only by the explicit AiDiscoveryService action
         SupportGroupConfig config = configs.findByIgAccount(proposal.igAccount())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "no config for " + proposal.igAccount()));

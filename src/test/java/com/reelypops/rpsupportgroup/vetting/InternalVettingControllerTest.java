@@ -154,6 +154,31 @@ class InternalVettingControllerTest {
                 .andExpect(status().isNotFound());
     }
 
+    @Test
+    void detectAiFallsBackToTheTier0AdvisoryWhenTheGatewayIsOff() throws Exception {
+        // No rp.aigateway.base-url is configured in tests, so the AI client is a fail-open no-op: detect-ai runs the
+        // Tier-0 detection + persists it, and returns the advisory unchanged (no AI verdict attached).
+        String id = openSnapshot("vet-detect-ai");
+        append(id, "sc1", "owner.acct", MARKER, 0);
+        append(id, "sc2", "owner.acct", MARKER, 1);
+        append(id, "sc3", "owner.acct", MARKER, 2);
+        append(id, "sc4", "member.a", OTHER, 3);
+        seal(id);
+
+        mockMvc.perform(post("/supportgroup/v1/internal/vetting/snapshots/{id}/detect-ai", id).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.igAccount").value("vet-detect-ai"))
+                .andExpect(jsonPath("$.imageStyle.value").value("FLAT_BANNER"))
+                .andExpect(jsonPath("$.owner.roster[0]").value("owner.acct"));
+    }
+
+    @Test
+    void detectAiUnknownSnapshotIs404() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/internal/vetting/snapshots/{id}/detect-ai", UUID.randomUUID())
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+    }
+
     // --- operator-uploaded marker images (M3 follow-up) ---
 
     /** A tiny PNG whose brightness ramps left→right, so its dHash is a predictable all-ones string. */

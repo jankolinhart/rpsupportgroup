@@ -32,6 +32,13 @@ rp:
   stage: ${RP_STAGE:prod}
   internal:
     api-key: ${INTERNAL_API_KEY:}
+  # The backend-internal AI vetting tier (marker-auto-discovery M4). Empty base-url = AI discovery OFF (local/test
+  # and any stage before the tier is enabled) — the client is a fail-open no-op. The key is rpaigateway's OWN
+  # internal key (each service validates its own X-Internal-Api-Key), injected as a task secret per stage.
+  aigateway:
+    base-url: ${RPAIGATEWAY_BASE_URL:}
+    internal-api-key: ${RPAIGATEWAY_INTERNAL_API_KEY:}
+    max-images: ${RP_AIGATEWAY_MAX_IMAGES:12}
 
 logging:
   level:
