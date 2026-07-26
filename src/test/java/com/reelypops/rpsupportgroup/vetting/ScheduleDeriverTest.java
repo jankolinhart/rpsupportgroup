@@ -41,6 +41,7 @@ class ScheduleDeriverTest {
         assertThat(s.openWeekdays()).isEmpty();
         assertThat(s.openingDaysConfidence()).isZero();
         assertThat(s.currentState()).isEqualTo(RoundState.UNKNOWN);
+        assertThat(s.endMarkerDayOffset()).isNull();
     }
 
     @Test
@@ -58,6 +59,7 @@ class ScheduleDeriverTest {
         assertThat(s.end()).isNull();
         assertThat(s.openWeekdays()).isEmpty(); // single-marker is always-open — no restriction to derive
         assertThat(s.currentState()).isEqualTo(RoundState.OPEN);
+        assertThat(s.endMarkerDayOffset()).isNull(); // no END ⇒ no offset
     }
 
     @Test
@@ -88,7 +90,31 @@ class ScheduleDeriverTest {
         assertThat(s.single()).isNull();
         assertThat(s.openWeekdays()).containsExactly(1, 2); // START posts on Mon + Tue
         assertThat(s.openingDaysConfidence()).isGreaterThan(0.0);
+        assertThat(s.endMarkerDayOffset()).isZero(); // START 09:00 → END 17:00 same day (8h ⇒ 0 days)
         assertThat(s.currentState()).isEqualTo(RoundState.CLOSED_PERIOD); // trailing marker is an END
+    }
+
+    @Test
+    void twoMarkerRegularOvernightRoundHasHighConfidenceAndOneDayOffset() {
+        // 4 rounds: START each Sunday 09:00, END the next day (Monday) 09:00 — a perfectly-alternating, regular group.
+        // The OLD count-based label confidence was ≈0 here and tanked opening-days confidence; the recurrence-based
+        // measure keeps it high, and the START→END gap yields a 1-day end offset. (2026-01-04 is a Sunday; -05 Monday.)
+        ClusterPosts startCluster = new ClusterPosts(List.of(
+                post(0, "2026-01-04T09:00:00Z"), post(2, "2026-01-11T09:00:00Z"),
+                post(4, "2026-01-18T09:00:00Z"), post(6, "2026-01-25T09:00:00Z")));
+        ClusterPosts endCluster = new ClusterPosts(List.of(
+                post(1, "2026-01-05T09:00:00Z"), post(3, "2026-01-12T09:00:00Z"),
+                post(5, "2026-01-19T09:00:00Z"), post(7, "2026-01-26T09:00:00Z")));
+
+        ScheduleFacet s = ScheduleDeriver.derive(List.of(startCluster, endCluster));
+
+        assertThat(s.groupType()).isEqualTo(MarkerGroupType.TWO_MARKER);
+        assertThat(s.start().timeOfDayUtc()).isEqualTo("09:00");
+        assertThat(s.end().timeOfDayUtc()).isEqualTo("09:00");
+        assertThat(s.openWeekdays()).containsExactly(0); // every round starts on a Sunday
+        assertThat(s.openingDaysConfidence()).isGreaterThan(0.9); // regular ⇒ high (was ≈0 under the old formula)
+        assertThat(s.endMarkerDayOffset()).isEqualTo(1); // END is the next day
+        assertThat(s.currentState()).isEqualTo(RoundState.CLOSED_PERIOD); // trailing post is a Monday END
     }
 
     @Test
@@ -131,6 +157,7 @@ class ScheduleDeriverTest {
         assertThat(s.openWeekdays()).isEmpty();
         assertThat(s.openingDaysConfidence()).isZero();
         assertThat(s.currentState()).isEqualTo(RoundState.UNKNOWN);
+        assertThat(s.endMarkerDayOffset()).isNull(); // no dated START→END gap to measure
     }
 
     @Test
@@ -143,6 +170,7 @@ class ScheduleDeriverTest {
         assertThat(s.groupTypeConfidence()).isZero();
         assertThat(s.start()).isNull();
         assertThat(s.currentState()).isEqualTo(RoundState.UNKNOWN);
+        assertThat(s.endMarkerDayOffset()).isNull();
     }
 
     @Test

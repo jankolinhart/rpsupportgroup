@@ -64,15 +64,16 @@ public record DetectedProfile(
     }
 
     /**
-     * The derived schedule advisory (M3b): the group type, the round start/end (or single) times, the opening weekdays,
-     * and the current round state. Times are tz-agnostic time-of-day in <strong>UTC</strong> until the admin sets the
-     * group timezone in the Vetting Portal, then rendered group-local. Any facet may be empty/{@code UNKNOWN} with a 0
-     * confidence when the corpus does not support it (too few dated marker posts, no clean owner, etc.).
+     * The derived schedule advisory (M3b): the group type, the round start/end (or single) times, the end-marker day
+     * offset (round-open duration in whole days), the opening weekdays, and the current round state. Times are
+     * tz-agnostic time-of-day in <strong>UTC</strong> until the admin sets the group timezone in the Vetting Dashboard,
+     * then rendered group-local. Any facet may be empty/{@code UNKNOWN}/{@code null} with a 0 confidence when the corpus
+     * does not support it (too few dated marker posts, no clean owner, etc.).
      */
     public record ScheduleFacet(MarkerGroupType groupType, double groupTypeConfidence,
                                 RoundTime start, RoundTime end, RoundTime single,
                                 List<Integer> openWeekdays, double openingDaysConfidence,
-                                RoundState currentState) {
+                                RoundState currentState, Integer endMarkerDayOffset) {
     }
 
     /** A derived round-boundary time-of-day ({@code HH:mm}, UTC) + how tight (confident) the observed times were. */
