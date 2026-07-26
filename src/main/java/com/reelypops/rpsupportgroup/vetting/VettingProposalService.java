@@ -1,5 +1,6 @@
 package com.reelypops.rpsupportgroup.vetting;
 
+import com.reelypops.rpsupportgroup.corpus.CorpusRepresentativeRepository;
 import com.reelypops.rpsupportgroup.corpus.CorpusSnapshotItem;
 import com.reelypops.rpsupportgroup.corpus.CorpusSnapshotItemRepository;
 import com.reelypops.rpsupportgroup.corpus.MarkerCorpusSnapshot;
@@ -20,6 +21,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -46,6 +48,7 @@ public class VettingProposalService {
 
     private final MarkerCorpusSnapshotRepository snapshots;
     private final CorpusSnapshotItemRepository items;
+    private final CorpusRepresentativeRepository representatives;
     private final AiVettingEnricher enricher;
     private final int hammingThreshold;
     private final int minClusterSize;
@@ -56,6 +59,7 @@ public class VettingProposalService {
     private final double minSeparation;
 
     public VettingProposalService(MarkerCorpusSnapshotRepository snapshots, CorpusSnapshotItemRepository items,
+                                  CorpusRepresentativeRepository representatives,
                                   AiVettingEnricher enricher,
                                   @Value("${rp.vetting.dhash-threshold:4}") int hammingThreshold,
                                   @Value("${rp.vetting.min-cluster-size:2}") int minClusterSize,
@@ -66,6 +70,7 @@ public class VettingProposalService {
                                   @Value("${rp.vetting.min-separation:0.5}") double minSeparation) {
         this.snapshots = snapshots;
         this.items = items;
+        this.representatives = representatives;
         this.enricher = enricher;
         this.hammingThreshold = hammingThreshold;
         this.minClusterSize = minClusterSize;
@@ -92,12 +97,14 @@ public class VettingProposalService {
         MarkerCorpusSnapshot snapshot = snapshots.findById(snapshotId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "no snapshot " + snapshotId));
         List<CorpusSnapshotItem> gridItems = items.findBySnapshotIdOrderByOrdinalAsc(snapshotId);
-        SnapshotAnalysis analysis = buildAnalysis(snapshot, gridItems);
+        Set<String> withImages = new HashSet<>(representatives.findShortcodesBySnapshotId(snapshotId));
+        SnapshotAnalysis analysis = buildAnalysis(snapshot, gridItems, withImages);
         DetectorProfileProposal enriched = enricher.enrich(analysis.proposal(), gridItems);
         return new SnapshotAnalysis(enriched, analysis.candidates(), analysis.references(), analysis.schedule());
     }
 
-    private SnapshotAnalysis buildAnalysis(MarkerCorpusSnapshot snapshot, List<CorpusSnapshotItem> gridItems) {
+    private SnapshotAnalysis buildAnalysis(MarkerCorpusSnapshot snapshot, List<CorpusSnapshotItem> gridItems,
+                                           Set<String> withImages) {
         UUID id = snapshot.getId();
         String ig = snapshot.getIgAccount();
         int itemCount = gridItems.size();
@@ -120,7 +127,7 @@ public class VettingProposalService {
         // Each surviving cluster is scored on its marker SIGNATURE (M2, "Fast M2"): recurrence x cadence-regularity x
         // coverage. A real marker recurs at a REGULAR cadence spanning the window; a serial re-poster does not.
         List<MarkerCandidate> candidates = strong.stream()
-                .map(c -> MarkerCandidate.from(c.representative(), c.members(), maxSamples, itemCount))
+                .map(c -> MarkerCandidate.from(c.representative(), c.members(), maxSamples, itemCount, withImages))
                 .filter(c -> c.distinctPosts() >= minClusterSize && c.purity() >= minPurity)
                 .sorted(Comparator.comparingDouble(MarkerCandidate::score).reversed()
                         .thenComparing(MarkerCandidate::dominantAuthor))
@@ -266,7 +273,8 @@ public class VettingProposalService {
                                    List<String> authors, List<String> sampleShortcodes,
                                    List<ScheduleDeriver.Post> ownerPosts) {
 
-        static MarkerCandidate from(String dHash, List<CorpusSnapshotItem> members, int maxSamples, int itemCount) {
+        static MarkerCandidate from(String dHash, List<CorpusSnapshotItem> members, int maxSamples, int itemCount,
+                                    Set<String> withImages) {
             Map<String, Set<String>> shortcodesByAuthor = new LinkedHashMap<>();
             Map<String, Integer> ordinalByShortcode = new LinkedHashMap<>();
             Map<String, Instant> postedAtByShortcode = new LinkedHashMap<>();
@@ -292,7 +300,12 @@ public class VettingProposalService {
             double coverage = coverage(ordinals, itemCount);
             double score = recurrence * cadenceRegularity * coverage;
             List<String> authors = shortcodesByAuthor.keySet().stream().sorted().toList();
-            List<String> samples = distinct.stream().limit(maxSamples).toList();
+            // Prefer a shortcode whose representative image was actually captured, so the admin sees a thumbnail (not a
+            // 404) — the captured representative of a cluster is often not its first post by grid order.
+            List<String> samples = distinct.stream()
+                    .sorted(Comparator.comparingInt((String sc) -> withImages.contains(sc) ? 0 : 1))
+                    .limit(maxSamples)
+                    .toList();
             // The dominant author's posts (ordinal + postedAt) feed the M3b schedule derivation.
             List<ScheduleDeriver.Post> ownerPosts = top.getValue().stream()
                     .map(sc -> new ScheduleDeriver.Post(ordinalByShortcode.get(sc), postedAtByShortcode.get(sc)))
