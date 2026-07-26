@@ -64,16 +64,19 @@ public record DetectedProfile(
     }
 
     /**
-     * The derived schedule advisory (M3b): the group type, the round start/end (or single) times, the end-marker day
-     * offset (round-open duration in whole days), the opening weekdays, and the current round state. Times are
-     * tz-agnostic time-of-day in <strong>UTC</strong> until the admin sets the group timezone in the Vetting Dashboard,
-     * then rendered group-local. Any facet may be empty/{@code UNKNOWN}/{@code null} with a 0 confidence when the corpus
-     * does not support it (too few dated marker posts, no clean owner, etc.).
+     * The derived schedule advisory (M3b + round-3 refinement): the group type (with its {@code symmetry} + pairing
+     * sub-metrics), the round start/end (or single) times, the end-marker day offset (round-open duration in whole
+     * days; 0 when the round opens + closes on the same day), the <strong>open-span</strong> weekdays (every weekday a
+     * round is active START→END, so a round that spans a weekend marks Sat+Sun open even with no marker posted then),
+     * the {@code roundCount} reconstructed, and the current round state. Times are tz-agnostic time-of-day in
+     * <strong>UTC</strong> until the admin sets the group timezone in the Vetting Dashboard. Any facet may be
+     * empty/{@code UNKNOWN}/{@code null}/0 when the corpus does not support it.
      */
     public record ScheduleFacet(MarkerGroupType groupType, double groupTypeConfidence,
                                 RoundTime start, RoundTime end, RoundTime single,
                                 List<Integer> openWeekdays, double openingDaysConfidence,
-                                RoundState currentState, Integer endMarkerDayOffset) {
+                                RoundState currentState, Integer endMarkerDayOffset,
+                                double symmetry, double pairing, int roundCount) {
     }
 
     /** A derived round-boundary time-of-day ({@code HH:mm}, UTC) + how tight (confident) the observed times were. */
