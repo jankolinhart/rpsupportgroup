@@ -66,16 +66,19 @@ public record DetectedProfile(
     /**
      * The derived schedule advisory (M3b + round-3 refinement): the group type (with its {@code symmetry} + pairing
      * sub-metrics), the round start/end (or single) times, the end-marker day offset (round-open duration in whole
-     * days; 0 when the round opens + closes on the same day), the <strong>open-span</strong> weekdays (every weekday a
-     * round is active START→END, so a round that spans a weekend marks Sat+Sun open even with no marker posted then),
-     * the {@code roundCount} reconstructed, and the current round state. Times are tz-agnostic time-of-day in
-     * <strong>UTC</strong> until the admin sets the group timezone in the Vetting Dashboard. Any facet may be
-     * empty/{@code UNKNOWN}/{@code null}/0 when the corpus does not support it.
+     * days; 0 when the round opens + closes on the same day) with its own {@code endMarkerDayOffsetConfidence} (how
+     * consistent that offset is across rounds), the <strong>open-span</strong> weekdays (every weekday a round is
+     * active START→END, so a round that spans a weekend marks Sat+Sun open even with no marker posted then), the
+     * {@code roundCount} reconstructed, and the current round state. {@code openingDaysConfidence} = how confident we
+     * are that the discovered weekday set is correct = the fraction of those open days on which a marker was directly
+     * observed (1.0 when every open day carries a boundary marker; lower when some open days are only inferred as
+     * mid-round). Times are tz-agnostic time-of-day in <strong>UTC</strong> until the admin sets the group timezone in
+     * the Vetting Dashboard. Any facet may be empty/{@code UNKNOWN}/{@code null}/0 when the corpus does not support it.
      */
     public record ScheduleFacet(MarkerGroupType groupType, double groupTypeConfidence,
                                 RoundTime start, RoundTime end, RoundTime single,
                                 List<Integer> openWeekdays, double openingDaysConfidence,
-                                RoundState currentState, Integer endMarkerDayOffset,
+                                RoundState currentState, Integer endMarkerDayOffset, double endMarkerDayOffsetConfidence,
                                 double symmetry, double pairing, int roundCount) {
     }
 

@@ -97,8 +97,10 @@ class ScheduleDeriverTest {
         assertThat(s.start().timeOfDayUtc()).isEqualTo("09:00");
         assertThat(s.end().timeOfDayUtc()).isEqualTo("18:00");
         assertThat(s.openWeekdays()).containsExactly(0, 1, 2, 3, 4, 5, 6); // the round spans the whole week
-        assertThat(s.openingDaysConfidence()).isEqualTo(1.0);              // every round covers the full span
+        // Only Sun (start) + Sat (end) carry a marker; Mon–Fri are inferred mid-round ⇒ 2 of 7 open days attested.
+        assertThat(s.openingDaysConfidence()).isCloseTo(2.0 / 7, offset(0.01));
         assertThat(s.endMarkerDayOffset()).isEqualTo(6);                   // Sun → the following Sat
+        assertThat(s.endMarkerDayOffsetConfidence()).isEqualTo(1.0);       // both rounds share the 6-day offset
         assertThat(s.roundCount()).isEqualTo(2);
         assertThat(s.currentState()).isEqualTo(RoundState.CLOSED_PERIOD);  // trailing marker is an END
     }
@@ -116,7 +118,10 @@ class ScheduleDeriverTest {
         assertThat(s.start().timeOfDayUtc()).isEqualTo("06:00");
         assertThat(s.end().timeOfDayUtc()).isEqualTo("22:00");
         assertThat(s.endMarkerDayOffset()).isZero();          // opens + closes the same calendar day
+        assertThat(s.endMarkerDayOffsetConfidence()).isEqualTo(1.0); // both rounds open + close on their own day
         assertThat(s.openWeekdays()).containsExactly(1, 2);   // Mon + Tue (each round is a single day)
+        // A marker lands on each open day (both are a round boundary) ⇒ every open day is attested.
+        assertThat(s.openingDaysConfidence()).isEqualTo(1.0);
         assertThat(s.roundCount()).isEqualTo(2);
         assertThat(s.currentState()).isEqualTo(RoundState.CLOSED_PERIOD);
     }
@@ -206,9 +211,9 @@ class ScheduleDeriverTest {
     }
 
     @Test
-    void openingDaysConfidenceDropsWhenRoundsCoverDifferentDays() {
-        // Round 1 spans Mon→Wed; round 2 is a single Fri ⇒ the union is {Mon,Tue,Wed,Fri} but no round covers all of
-        // it, so the consistency confidence is < 1.
+    void openingDaysConfidenceDropsForInferredMidRoundDaysAndOffsetConfidenceForMixedOffsets() {
+        // Round 1 spans Mon→Wed (offset 2); round 2 is a single Fri (offset 0). Tue is spanned by round 1 but carries
+        // no marker of its own, so 3 of the 4 open days are attested; and the two rounds disagree on the day offset.
         ClusterPosts startCluster = new ClusterPosts(List.of(
                 post(0, "2026-01-05T06:00:00Z"), post(2, "2026-01-09T06:00:00Z")));   // Mon, Fri (starts)
         ClusterPosts endCluster = new ClusterPosts(List.of(
@@ -217,7 +222,9 @@ class ScheduleDeriverTest {
         ScheduleFacet s = ScheduleDeriver.derive(List.of(startCluster, endCluster));
 
         assertThat(s.openWeekdays()).containsExactly(1, 2, 3, 5); // Mon,Tue,Wed (round 1) + Fri (round 2)
-        assertThat(s.openingDaysConfidence()).isLessThan(1.0).isGreaterThan(0.0);
+        assertThat(s.openingDaysConfidence()).isCloseTo(0.75, offset(0.01)); // Mon,Wed,Fri attested; Tue inferred
+        assertThat(s.endMarkerDayOffset()).isEqualTo(1);                     // median of the offsets {2, 0}
+        assertThat(s.endMarkerDayOffsetConfidence()).isZero();              // neither round actually has a 1-day offset
     }
 
     @Test
