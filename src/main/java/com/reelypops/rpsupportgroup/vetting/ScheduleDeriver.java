@@ -5,6 +5,7 @@ import com.reelypops.rpsupportgroup.group.DetectedProfile.ScheduleFacet;
 import com.reelypops.rpsupportgroup.group.MarkerGroupType;
 import com.reelypops.rpsupportgroup.group.RoundState;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -50,7 +51,7 @@ final class ScheduleDeriver {
 
     /** The empty advisory when there is no clean owner to derive a schedule from. */
     static ScheduleFacet empty() {
-        return new ScheduleFacet(MarkerGroupType.UNKNOWN, 0.0, null, null, null, List.of(), 0.0, RoundState.UNKNOWN);
+        return new ScheduleFacet(MarkerGroupType.UNKNOWN, 0.0, null, null, null, List.of(), 0.0, RoundState.UNKNOWN, null);
     }
 
     /** Derive the schedule from the accepted owner's clusters (ordered strongest-first). */
@@ -67,9 +68,9 @@ final class ScheduleDeriver {
     private static ScheduleFacet single(ClusterPosts cluster) {
         RoundTime single = time(cluster.posts());
         double confidence = Math.min(1.0, cluster.recurrence() / 3.0);
-        // A single-marker group has no END, so it is always open — no opening-day restriction to derive.
+        // A single-marker group has no END, so it is always open — no opening-day restriction or end offset to derive.
         return new ScheduleFacet(MarkerGroupType.SINGLE_MARKER, confidence, null, null, single,
-                List.of(), 0.0, RoundState.OPEN);
+                List.of(), 0.0, RoundState.OPEN, null);
     }
 
     /** Two clusters ⇒ a two-marker group: label START/END by alternation, then derive both times + opening days. */
@@ -83,20 +84,26 @@ final class ScheduleDeriver {
         Labelled labelled = labelStartEnd(a, b, ordered);
         RoundTime start = time(labelled.start().posts());
         RoundTime end = time(labelled.end().posts());
+        // Round-open duration = the typical START → END gap ⇒ the end-marker day offset (0 when END is same-day).
+        Integer endMarkerDayOffset = dayOffset(medianGap(ordered, labelled.startIndex(), 1 - labelled.startIndex()));
         List<Integer> openWeekdays = weekdays(labelled.start().posts());
-        double openingDaysConfidence = openWeekdays.isEmpty()
-                ? 0.0 : Math.min(1.0, datedCount(labelled.start()) / 3.0) * labelled.labelConfidence();
+        double openingDaysConfidence = openingDaysConfidence(openWeekdays, datedCount(labelled.start()));
         RoundState state = currentState(ordered, labelled);
         return new ScheduleFacet(MarkerGroupType.TWO_MARKER, groupTypeConfidence, start, end, null,
-                openWeekdays, openingDaysConfidence, state);
+                openWeekdays, openingDaysConfidence, state, endMarkerDayOffset);
     }
 
     /** Three or more owner clusters is ambiguous (marker types vs per-weekday variants) — do not guess a schedule. */
     private static ScheduleFacet ambiguous() {
-        return new ScheduleFacet(MarkerGroupType.UNKNOWN, 0.0, null, null, null, List.of(), 0.0, RoundState.UNKNOWN);
+        return new ScheduleFacet(MarkerGroupType.UNKNOWN, 0.0, null, null, null, List.of(), 0.0, RoundState.UNKNOWN, null);
     }
 
-    /** Decide which cluster is START by temporal alternation: the one that more often immediately precedes the other. */
+    /**
+     * Decide which cluster is START by temporal alternation: the one that more often immediately precedes the other
+     * (a START is followed by its END within the round). This labels correctly whether the round is open longer or
+     * shorter than it is closed; the confidence for facets that depend on it comes from their own signal, not from this
+     * alternation count (see {@link #openingDaysConfidence}).
+     */
     private static Labelled labelStartEnd(ClusterPosts a, ClusterPosts b, List<Tagged> ordered) {
         int aThenB = 0;
         int bThenA = 0;
@@ -109,11 +116,52 @@ final class ScheduleDeriver {
                 bThenA++;
             }
         }
-        int total = aThenB + bThenA;
-        double labelConfidence = total == 0 ? 0.0 : (double) Math.abs(aThenB - bThenA) / total;
         // A START marker is followed by its END within the round, so the cluster with more "→ other" transitions leads.
         boolean aIsStart = aThenB >= bThenA;
-        return aIsStart ? new Labelled(a, b, 0, labelConfidence) : new Labelled(b, a, 1, labelConfidence);
+        return aIsStart ? new Labelled(a, b, 0) : new Labelled(b, a, 1);
+    }
+
+    /** Median gap (minutes) of consecutive {@code from → to} cluster transitions in time order; 0 when none. */
+    private static double medianGap(List<Tagged> ordered, int from, int to) {
+        List<Long> gaps = new ArrayList<>();
+        for (int i = 0; i < ordered.size() - 1; i++) {
+            if (ordered.get(i).cluster() == from && ordered.get(i + 1).cluster() == to) {
+                gaps.add(Duration.between(ordered.get(i).postedAt(), ordered.get(i + 1).postedAt()).toMinutes());
+            }
+        }
+        return median(gaps);
+    }
+
+    /** The round-open duration in whole days (the end-marker offset from the start); null when it cannot be measured. */
+    private static Integer dayOffset(double openGapMinutes) {
+        if (openGapMinutes <= 0) {
+            return null;
+        }
+        return (int) Math.round(openGapMinutes / MINUTES_PER_DAY);
+    }
+
+    /**
+     * Opening-days confidence — how well-backed the derived opening weekdays are, independent of the START/END label.
+     * Rewards RECURRENCE: ~2+ dated START posts per opening weekday ⇒ full confidence. (The old formula multiplied by
+     * the alternation label confidence, which is ≈0 for a perfectly-alternating — i.e. perfectly regular — group and so
+     * wrongly tanked this to zero.)
+     */
+    private static double openingDaysConfidence(List<Integer> openWeekdays, int datedStart) {
+        if (openWeekdays.isEmpty()) {
+            return 0.0;
+        }
+        return Math.min(1.0, (datedStart / (double) openWeekdays.size()) / 2.0);
+    }
+
+    /** Median of a list of gap lengths (minutes); 0 when empty. */
+    private static double median(List<Long> values) {
+        if (values.isEmpty()) {
+            return 0.0;
+        }
+        List<Long> sorted = new ArrayList<>(values);
+        sorted.sort(Comparator.naturalOrder());
+        int n = sorted.size();
+        return n % 2 == 1 ? sorted.get(n / 2) : (sorted.get(n / 2 - 1) + sorted.get(n / 2)) / 2.0;
     }
 
     /** The current round state from the trailing (latest) dated marker: START ⇒ open, END ⇒ closed period. */
@@ -206,7 +254,7 @@ final class ScheduleDeriver {
     private record Tagged(int cluster, Instant postedAt) {
     }
 
-    /** The two clusters after labelling: which is START, which is END, and how consistent the alternation was. */
-    private record Labelled(ClusterPosts start, ClusterPosts end, int startIndex, double labelConfidence) {
+    /** The two clusters after labelling: which is START, which is END, and the START cluster's index (0 or 1). */
+    private record Labelled(ClusterPosts start, ClusterPosts end, int startIndex) {
     }
 }

@@ -54,7 +54,7 @@ class DetectedProfileServiceTest {
         List<MarkerReference> references = List.of(new MarkerReference("0000", 6, List.of("sc-1", "sc-2"), 0.95));
         ScheduleFacet schedule = new ScheduleFacet(MarkerGroupType.TWO_MARKER, 0.88,
                 new RoundTime("09:00", 0.8), new RoundTime("17:00", 0.7), null,
-                List.of(1, 2), 0.6, RoundState.OPEN);
+                List.of(1, 2), 0.6, RoundState.OPEN, 1);
         return new SnapshotAnalysis(proposal, candidates, references, schedule);
     }
 
