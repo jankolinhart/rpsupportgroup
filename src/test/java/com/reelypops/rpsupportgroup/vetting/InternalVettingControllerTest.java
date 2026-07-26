@@ -116,4 +116,32 @@ class InternalVettingControllerTest {
                 .andExpect(jsonPath("$.escalate").value(true))
                 .andExpect(jsonPath("$.confidence").value(0.0));
     }
+
+    @Test
+    void detectPersistsAndReturnsTheFacetAdvisory() throws Exception {
+        String id = openSnapshot("vet-detect");
+        append(id, "sc1", "owner.acct", MARKER, 0);
+        append(id, "sc2", "owner.acct", MARKER, 1);
+        append(id, "sc3", "owner.acct", MARKER, 2);
+        append(id, "sc4", "member.a", OTHER, 3);
+        seal(id);
+
+        mockMvc.perform(post("/supportgroup/v1/internal/vetting/snapshots/{id}/detect", id).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.igAccount").value("vet-detect"))
+                .andExpect(jsonPath("$.itemCount").value(4))
+                .andExpect(jsonPath("$.imageStyle.value").value("FLAT_BANNER"))
+                .andExpect(jsonPath("$.owner.roster[0]").value("owner.acct"))
+                .andExpect(jsonPath("$.references[0].dHash").value(MARKER))
+                .andExpect(jsonPath("$.references[0].distinctPosts").value(3))
+                .andExpect(jsonPath("$.escalate").value(false))
+                .andExpect(jsonPath("$.provenance").value("TIER_0_DHASH"));
+    }
+
+    @Test
+    void detectUnknownSnapshotIs404() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/internal/vetting/snapshots/{id}/detect", UUID.randomUUID())
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+    }
 }

@@ -82,6 +82,15 @@ public class SupportGroupConfig {
     private GroupDefinition definition;
 
     /**
+     * The admin-only vetting <strong>advisory</strong> (M3a) — the {@link DetectedProfile} the pipeline detected from the
+     * corpus, which pre-fills the Vetting Portal. Not round truth (it never ships and never bumps {@code version}); it is
+     * regenerated on every (re-)vet.
+     */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "detected_profile", columnDefinition = "jsonb")
+    private DetectedProfile detectedProfile;
+
+    /**
      * A free-text group blurb (Cycle 11, R-1) shown lazily in the client's "i" info card. Authoritative (an admin
      * curates it; editable while PENDING, locked once vetted) but kept out of the jsonb {@code definition} because it
      * is not round truth, so it never bumps the definition {@code version} ETag the client polls.
@@ -207,6 +216,14 @@ public class SupportGroupConfig {
     public void updateDefinition(GroupDefinition definition) {
         this.definition = definition.canonicalized();
         this.version++;
+    }
+
+    /**
+     * Store/refresh the admin-only vetting advisory (M3a). Not round truth, so it does NOT bump the client-facing
+     * {@code version} ETag — the detected profile never ships; it only pre-fills the admin Vetting Portal.
+     */
+    public void updateDetectedProfile(DetectedProfile detectedProfile) {
+        this.detectedProfile = detectedProfile;
     }
 
     /**
