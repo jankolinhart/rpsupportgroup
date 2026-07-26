@@ -25,6 +25,7 @@ import java.util.UUID;
  * @param references    the recurring-image clusters (untyped — the admin assigns start/end/single at vet time, D1c)
  * @param candidates    the ranked Tier-0 marker-owner candidates + their signature metrics (why each did/didn't win)
  * @param schedule      the derived group type + round timing + opening days + current state (M3b); never {@code null}
+ * @param aiDiscovery   the AI tier's verdict (M4), or {@code null} until an admin runs "Run AI discovery"
  */
 public record DetectedProfile(
         UUID snapshotId,
@@ -37,7 +38,8 @@ public record DetectedProfile(
         OwnerFacet owner,
         List<MarkerReference> references,
         List<OwnerCandidate> candidates,
-        ScheduleFacet schedule) {
+        ScheduleFacet schedule,
+        AiDiscovery aiDiscovery) {
 
     /** The inferred marker style + how confident vetting is in it. */
     public record StyleFacet(MarkerStyle value, double confidence) {
@@ -84,5 +86,20 @@ public record DetectedProfile(
 
     /** A derived round-boundary time-of-day ({@code HH:mm}, UTC) + how tight (confident) the observed times were. */
     public record RoundTime(String timeOfDayUtc, double confidence) {
+    }
+
+    /**
+     * The AI tier's advisory verdict (M4, {@code marker-auto-discovery.md} §5) — the judgment Tier&nbsp;0 cannot make
+     * for a text-overlay group: the marker {@link #style}, the round {@link #markerType}, the {@link #owner}, the typed
+     * {@link #references} (with OCR target text for text-overlay), an overall {@link #ocrTargetText}, a
+     * {@link #confidence} and a short {@link #reasoning}. Produced only on the explicit admin "Run AI discovery" action;
+     * {@code null} until then. Advisory only — it pre-fills the Vetting Portal, never auto-vets.
+     */
+    public record AiDiscovery(MarkerStyle style, String markerType, String owner, List<AiReference> references,
+                              String ocrTargetText, double confidence, String reasoning, long generatedAtMs) {
+
+        /** One AI-confirmed marker reference: its round slot ({@code start}/{@code end}/{@code single}) + OCR text. */
+        public record AiReference(String markerType, String ocrText) {
+        }
     }
 }
