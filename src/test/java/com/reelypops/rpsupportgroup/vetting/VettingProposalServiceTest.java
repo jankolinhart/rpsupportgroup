@@ -308,19 +308,19 @@ class VettingProposalServiceTest {
 
     @Test
     void analyzeEnrichesWithCandidateMetricsReferenceConfidenceAndDerivedSchedule() {
-        // A clean 2-marker owner: a START banner (H0) at 09:00 and an END banner (H_FAR) at 17:00 across four days
-        // (Mon-Thu). analyze() must surface the ranked candidates, per-reference confidence, and the derived schedule.
+        // A clean 2-marker owner: a START banner (H0, Sun 09:00) and an END banner (H_FAR, the following Sat 18:00)
+        // across four weekly rounds. The open round spans Sun→Sat, so the open days are the whole week (incl Sunday).
         MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
         UUID id = snap.getId();
         List<CorpusSnapshotItem> grid = List.of(
-                dated(id, "owner.acct", H0, 0, "2026-01-05T09:00:00Z"),
-                dated(id, "owner.acct", H_FAR, 1, "2026-01-05T17:00:00Z"),
-                dated(id, "owner.acct", H0, 2, "2026-01-06T09:00:00Z"),
-                dated(id, "owner.acct", H_FAR, 3, "2026-01-06T17:00:00Z"),
-                dated(id, "owner.acct", H0, 4, "2026-01-07T09:00:00Z"),
-                dated(id, "owner.acct", H_FAR, 5, "2026-01-07T17:00:00Z"),
-                dated(id, "owner.acct", H0, 6, "2026-01-08T09:00:00Z"),
-                dated(id, "owner.acct", H_FAR, 7, "2026-01-08T17:00:00Z"));
+                dated(id, "owner.acct", H0, 0, "2026-01-04T09:00:00Z"),    // Sun START
+                dated(id, "owner.acct", H_FAR, 1, "2026-01-10T18:00:00Z"), // Sat END
+                dated(id, "owner.acct", H0, 2, "2026-01-11T09:00:00Z"),
+                dated(id, "owner.acct", H_FAR, 3, "2026-01-17T18:00:00Z"),
+                dated(id, "owner.acct", H0, 4, "2026-01-18T09:00:00Z"),
+                dated(id, "owner.acct", H_FAR, 5, "2026-01-24T18:00:00Z"),
+                dated(id, "owner.acct", H0, 6, "2026-01-25T09:00:00Z"),
+                dated(id, "owner.acct", H_FAR, 7, "2026-01-31T18:00:00Z"));
         when(snapshots.findById(id)).thenReturn(Optional.of(snap));
         when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
 
@@ -338,8 +338,9 @@ class VettingProposalServiceTest {
         assertThat(s.groupType()).isEqualTo(MarkerGroupType.TWO_MARKER);
         assertThat(s.groupTypeConfidence()).isGreaterThan(0.9);
         assertThat(s.start().timeOfDayUtc()).isEqualTo("09:00");
-        assertThat(s.end().timeOfDayUtc()).isEqualTo("17:00");
-        assertThat(s.openWeekdays()).containsExactly(1, 2, 3, 4); // Mon-Thu STARTs
-        assertThat(s.currentState()).isEqualTo(RoundState.CLOSED_PERIOD); // trailing marker is an END
+        assertThat(s.end().timeOfDayUtc()).isEqualTo("18:00");
+        assertThat(s.openWeekdays()).containsExactly(0, 1, 2, 3, 4, 5, 6); // the round spans the whole week
+        assertThat(s.endMarkerDayOffset()).isEqualTo(6);                   // Sun → the following Sat
+        assertThat(s.currentState()).isEqualTo(RoundState.CLOSED_PERIOD);  // trailing marker is an END
     }
 }

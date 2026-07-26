@@ -19,6 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -171,13 +172,23 @@ public class VettingProposalService {
         // M3b: surface the ranked candidate metrics + per-reference confidence, and derive the schedule from the TOP
         // owner's clusters (its START/END banners) — advisory, whether we accepted or escalated.
         List<OwnerCandidate> ownerCandidates = candidates.stream().map(MarkerCandidate::toOwnerCandidate).toList();
-        List<MarkerReference> references = candidates.stream().limit(maxClusters)
-                .map(c -> c.toReference(minScore)).toList();
+        // Only surface candidates that actually read as markers (score >= the strength threshold) as references, so a
+        // coincidental lookalike cluster (a couple of near-dup member photos) is not shown as a "marker" with no image.
+        // Fall back to the top clusters when nothing clears the bar (an escalated group still needs candidates to review).
+        List<MarkerCandidate> referenceCandidates = candidates.stream()
+                .filter(c -> c.score() >= minScore)
+                .limit(maxClusters)
+                .toList();
+        if (referenceCandidates.isEmpty()) {
+            referenceCandidates = candidates.stream().limit(maxClusters).toList();
+        }
+        List<MarkerReference> references = referenceCandidates.stream().map(c -> c.toReference(minScore)).toList();
         List<ScheduleDeriver.ClusterPosts> ownerClusters = candidates.stream()
                 .filter(c -> c.dominantAuthor().equals(top.dominantAuthor()))
                 .map(c -> new ScheduleDeriver.ClusterPosts(c.ownerPosts()))
                 .toList();
         ScheduleFacet schedule = ScheduleDeriver.derive(ownerClusters);
+        logScheduleDiagnostics(id, top.dominantAuthor(), ownerClusters, schedule);
         return new SnapshotAnalysis(proposal, ownerCandidates, references, schedule);
     }
 
@@ -195,6 +206,30 @@ public class VettingProposalService {
                 candidates.stream().map(c -> String.format("%s{rec=%d,cadence=%.2f,coverage=%.2f,score=%.2f}",
                         c.dominantAuthor(), c.recurrence(), c.cadenceRegularity(), c.coverage(), c.score()))
                         .collect(Collectors.joining(", ")));
+    }
+
+    /**
+     * Round-3 diagnostic (cloud log): the TOP owner's per-cluster post weekdays + first/last timestamps and the derived
+     * schedule, so we can verify the labelling + open-span (e.g. whether a given weekday is a START, an END, or
+     * didn't cluster) against the real corpus without DB access.
+     */
+    private void logScheduleDiagnostics(UUID id, String owner, List<ScheduleDeriver.ClusterPosts> clusters,
+                                        ScheduleFacet s) {
+        StringBuilder cl = new StringBuilder();
+        for (int i = 0; i < clusters.size(); i++) {
+            List<Instant> times = clusters.get(i).posts().stream()
+                    .map(ScheduleDeriver.Post::postedAt).filter(t -> t != null).sorted().toList();
+            String weekdays = times.stream()
+                    .map(t -> t.atZone(ZoneOffset.UTC).getDayOfWeek().toString().substring(0, 3))
+                    .distinct().collect(Collectors.joining(","));
+            cl.append(String.format("c%d{posts=%d,weekdays=[%s],first=%s,last=%s} ",
+                    i, clusters.get(i).posts().size(), weekdays,
+                    times.isEmpty() ? "-" : times.get(0), times.isEmpty() ? "-" : times.get(times.size() - 1)));
+        }
+        log.info("SCHEDULE_DIAG snapshot={} owner={} {} type={} start={} end={} offset={} openDays={} openConf={} "
+                        + "rounds={} state={}",
+                id, owner, cl.toString().trim(), s.groupType(), s.start(), s.end(), s.endMarkerDayOffset(),
+                s.openWeekdays(), String.format("%.2f", s.openingDaysConfidence()), s.roundCount(), s.currentState());
     }
 
     /** Greedy single-link clustering of items by dHash Hamming distance, returned largest cluster first. */
