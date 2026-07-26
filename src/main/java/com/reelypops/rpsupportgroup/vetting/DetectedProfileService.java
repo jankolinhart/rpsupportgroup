@@ -10,7 +10,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
-import java.util.List;
 import java.util.UUID;
 
 /**
@@ -33,29 +32,26 @@ public class DetectedProfileService {
 
     /**
      * Detect + persist the advisory for a sealed snapshot, then return it. 404 if the snapshot is unknown (via the
-     * proposal) or if no {@link SupportGroupConfig} exists for the snapshot's {@code igAccount}.
+     * analysis) or if no {@link SupportGroupConfig} exists for the snapshot's {@code igAccount}.
      */
     @Transactional
     public DetectedProfile detect(UUID snapshotId) {
-        DetectorProfileProposal proposal = proposals.propose(snapshotId);
-        DetectedProfile profile = toDetectedProfile(proposal);
+        SnapshotAnalysis analysis = proposals.analyze(snapshotId);
+        DetectorProfileProposal proposal = analysis.proposal();
+        DetectedProfile profile = new DetectedProfile(
+                proposal.snapshotId(), proposal.igAccount(), proposal.itemCount(), System.currentTimeMillis(),
+                proposal.provenance(), proposal.escalate(),
+                new DetectedProfile.StyleFacet(toStyle(proposal.proposedType()), proposal.confidence()),
+                new DetectedProfile.OwnerFacet(proposal.ownerRoster(), proposal.confidence()),
+                analysis.references(),
+                analysis.candidates(),
+                analysis.schedule());
         SupportGroupConfig config = configs.findByIgAccount(proposal.igAccount())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "no config for " + proposal.igAccount()));
         config.updateDetectedProfile(profile);
         configs.save(config);
         return profile;
-    }
-
-    private static DetectedProfile toDetectedProfile(DetectorProfileProposal p) {
-        List<DetectedProfile.MarkerReference> references = p.markerClusters().stream()
-                .map(c -> new DetectedProfile.MarkerReference(c.dHash(), c.size(), c.sampleShortcodes()))
-                .toList();
-        return new DetectedProfile(
-                p.snapshotId(), p.igAccount(), p.itemCount(), System.currentTimeMillis(), p.provenance(), p.escalate(),
-                new DetectedProfile.StyleFacet(toStyle(p.proposedType()), p.confidence()),
-                new DetectedProfile.OwnerFacet(p.ownerRoster(), p.confidence()),
-                references);
     }
 
     private static MarkerStyle toStyle(ProposedType type) {

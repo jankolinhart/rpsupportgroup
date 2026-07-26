@@ -134,6 +134,10 @@ class InternalVettingControllerTest {
                 .andExpect(jsonPath("$.owner.roster[0]").value("owner.acct"))
                 .andExpect(jsonPath("$.references[0].dHash").value(MARKER))
                 .andExpect(jsonPath("$.references[0].distinctPosts").value(3))
+                .andExpect(jsonPath("$.references[0].confidence").isNumber())
+                .andExpect(jsonPath("$.candidates[0].author").value("owner.acct"))
+                .andExpect(jsonPath("$.schedule.groupType").value("SINGLE_MARKER"))
+                .andExpect(jsonPath("$.schedule.currentState").value("OPEN"))
                 .andExpect(jsonPath("$.escalate").value(false))
                 .andExpect(jsonPath("$.provenance").value("TIER_0_DHASH"));
     }

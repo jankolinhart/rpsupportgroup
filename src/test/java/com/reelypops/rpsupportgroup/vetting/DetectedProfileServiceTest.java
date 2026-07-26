@@ -1,7 +1,13 @@
 package com.reelypops.rpsupportgroup.vetting;
 
 import com.reelypops.rpsupportgroup.group.DetectedProfile;
+import com.reelypops.rpsupportgroup.group.DetectedProfile.MarkerReference;
+import com.reelypops.rpsupportgroup.group.DetectedProfile.OwnerCandidate;
+import com.reelypops.rpsupportgroup.group.DetectedProfile.RoundTime;
+import com.reelypops.rpsupportgroup.group.DetectedProfile.ScheduleFacet;
+import com.reelypops.rpsupportgroup.group.MarkerGroupType;
 import com.reelypops.rpsupportgroup.group.MarkerStyle;
+import com.reelypops.rpsupportgroup.group.RoundState;
 import com.reelypops.rpsupportgroup.group.SupportGroupConfig;
 import com.reelypops.rpsupportgroup.group.SupportGroupConfigRepository;
 import com.reelypops.rpsupportgroup.vetting.DetectorProfileProposal.MarkerCluster;
@@ -39,17 +45,23 @@ class DetectedProfileServiceTest {
         service = new DetectedProfileService(proposals, configs);
     }
 
-    private DetectorProfileProposal proposal(UUID snapshotId, ProposedType type, boolean escalate) {
-        return new DetectorProfileProposal(snapshotId, "glow.grp", 12, type,
+    private SnapshotAnalysis analysis(UUID snapshotId, ProposedType type, boolean escalate) {
+        DetectorProfileProposal proposal = new DetectorProfileProposal(snapshotId, "glow.grp", 12, type,
                 List.of("owner.acct"),
                 List.of(new MarkerCluster("0000", 6, List.of("owner.acct"), List.of("sc-1", "sc-2"))),
                 0.94, escalate, "TIER_0_DHASH");
+        List<OwnerCandidate> candidates = List.of(new OwnerCandidate("owner.acct", 6, 6, 1.0, 0.9, 0.8, 3.8));
+        List<MarkerReference> references = List.of(new MarkerReference("0000", 6, List.of("sc-1", "sc-2"), 0.95));
+        ScheduleFacet schedule = new ScheduleFacet(MarkerGroupType.TWO_MARKER, 0.88,
+                new RoundTime("09:00", 0.8), new RoundTime("17:00", 0.7), null,
+                List.of(1, 2), 0.6, RoundState.OPEN);
+        return new SnapshotAnalysis(proposal, candidates, references, schedule);
     }
 
     @Test
-    void detectMapsFlatBannerProposalAndPersistsOnConfig() {
+    void detectMapsFlatBannerAnalysisAndPersistsOnConfig() {
         UUID snap = UUID.randomUUID();
-        when(proposals.propose(snap)).thenReturn(proposal(snap, ProposedType.FLAT_BANNER, false));
+        when(proposals.analyze(snap)).thenReturn(analysis(snap, ProposedType.FLAT_BANNER, false));
         SupportGroupConfig config = SupportGroupConfig.createRequested("glow.grp");
         when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
 
@@ -69,7 +81,18 @@ class DetectedProfileServiceTest {
             assertThat(r.dHash()).isEqualTo("0000");
             assertThat(r.distinctPosts()).isEqualTo(6);
             assertThat(r.sampleShortcodes()).containsExactly("sc-1", "sc-2");
+            assertThat(r.confidence()).isEqualTo(0.95);
         });
+        assertThat(p.candidates()).singleElement().satisfies(c -> {
+            assertThat(c.author()).isEqualTo("owner.acct");
+            assertThat(c.recurrence()).isEqualTo(6);
+            assertThat(c.score()).isEqualTo(3.8);
+        });
+        assertThat(p.schedule().groupType()).isEqualTo(MarkerGroupType.TWO_MARKER);
+        assertThat(p.schedule().start().timeOfDayUtc()).isEqualTo("09:00");
+        assertThat(p.schedule().end().timeOfDayUtc()).isEqualTo("17:00");
+        assertThat(p.schedule().openWeekdays()).containsExactly(1, 2);
+        assertThat(p.schedule().currentState()).isEqualTo(RoundState.OPEN);
         assertThat(config.getDetectedProfile()).isSameAs(p);
         verify(configs).save(config);
     }
@@ -77,7 +100,7 @@ class DetectedProfileServiceTest {
     @Test
     void detectMapsTextOverlayStyle() {
         UUID snap = UUID.randomUUID();
-        when(proposals.propose(snap)).thenReturn(proposal(snap, ProposedType.TEXT_OVERLAY, true));
+        when(proposals.analyze(snap)).thenReturn(analysis(snap, ProposedType.TEXT_OVERLAY, true));
         SupportGroupConfig config = SupportGroupConfig.createRequested("glow.grp");
         when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
 
@@ -90,7 +113,7 @@ class DetectedProfileServiceTest {
     @Test
     void detectMapsUnknownStyle() {
         UUID snap = UUID.randomUUID();
-        when(proposals.propose(snap)).thenReturn(proposal(snap, ProposedType.UNKNOWN, false));
+        when(proposals.analyze(snap)).thenReturn(analysis(snap, ProposedType.UNKNOWN, false));
         SupportGroupConfig config = SupportGroupConfig.createRequested("glow.grp");
         when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
 
@@ -102,7 +125,7 @@ class DetectedProfileServiceTest {
     @Test
     void detectIsNotFoundWhenNoConfigForTheGroup() {
         UUID snap = UUID.randomUUID();
-        when(proposals.propose(snap)).thenReturn(proposal(snap, ProposedType.FLAT_BANNER, false));
+        when(proposals.analyze(snap)).thenReturn(analysis(snap, ProposedType.FLAT_BANNER, false));
         when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.empty());
 
         ResponseStatusException ex = assertThrows(ResponseStatusException.class, () -> service.detect(snap));
