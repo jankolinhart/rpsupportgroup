@@ -35,3 +35,6 @@ databaseChangeLog:
   - include:
       file: changes/012-vetted-profile.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/013-uploaded-marker-image.sql
+      relativeToChangelogFile: true

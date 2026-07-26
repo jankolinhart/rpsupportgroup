@@ -1,10 +1,16 @@
 package com.reelypops.rpsupportgroup.vetting;
 
 import com.reelypops.rpsupportgroup.group.DetectedProfile;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.UUID;
@@ -20,10 +26,13 @@ public class InternalVettingController {
 
     private final VettingProposalService service;
     private final DetectedProfileService detectedProfiles;
+    private final MarkerImageService markerImages;
 
-    public InternalVettingController(VettingProposalService service, DetectedProfileService detectedProfiles) {
+    public InternalVettingController(VettingProposalService service, DetectedProfileService detectedProfiles,
+                                     MarkerImageService markerImages) {
         this.service = service;
         this.detectedProfiles = detectedProfiles;
+        this.markerImages = markerImages;
     }
 
     /** The advisory vetting proposal derived from a snapshot's corpus (404 if the snapshot is unknown). */
@@ -39,5 +48,26 @@ public class InternalVettingController {
     @PostMapping("/snapshots/{snapshotId}/detect")
     public DetectedProfile detect(@PathVariable UUID snapshotId) {
         return detectedProfiles.detect(snapshotId);
+    }
+
+    /**
+     * Store a marker image an operator uploaded by hand in the Vetting Portal (M3 follow-up) when the auto-detected
+     * corpus missed a marker. Returns the new id (for serving) and its best-effort perceptual dHash (for matching).
+     * 400 when the body is empty or not a decodable image.
+     */
+    @PostMapping("/marker-images")
+    @ResponseStatus(HttpStatus.CREATED)
+    public MarkerImageResponse uploadMarkerImage(
+            @RequestHeader(value = "Content-Type", required = false) String contentType,
+            @RequestBody(required = false) byte[] image) {
+        return MarkerImageResponse.of(markerImages.upload(image, contentType));
+    }
+
+    /** Serve an uploaded marker image's bytes (404 when the id is unknown). */
+    @GetMapping("/marker-images/{id}")
+    public ResponseEntity<byte[]> getMarkerImage(@PathVariable UUID id) {
+        return markerImages.get(id)
+                .map(m -> ResponseEntity.ok().contentType(MediaType.parseMediaType(m.getContentType())).body(m.getImage()))
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 }
