@@ -30,10 +30,11 @@ import java.util.TreeSet;
  *   <li><b>Round times</b> — the circular mean time-of-day (UTC) of each cluster's {@code postedAt}; confidence = how
  *       tight that distribution is. Timing needs ≥2 dated posts, else confidence 0 (judgment point 2).</li>
  *   <li><b>End day offset</b> — the median whole-day gap from a START to its paired END (0 when the round opens + closes
- *       on the same calendar day).</li>
+ *       on the same calendar day); its confidence is how consistently the rounds share that offset.</li>
  *   <li><b>Opening days</b> — the <em>open span</em>: every weekday a round is active (START → END), so a round that
- *       spans a weekend marks Sat + Sun open even though no marker was posted then. Confidence = how consistently the
- *       rounds cover the same weekday set.</li>
+ *       spans a weekend marks Sat + Sun open even though no marker was posted then. Confidence = how confident we are
+ *       that the discovered set is correct = the fraction of those open days on which a boundary marker was directly
+ *       observed (1.0 when every open day carries a marker; lower when some are only inferred as mid-round days).</li>
  *   <li><b>Current state</b> — the trailing marker: a trailing START ⇒ round OPEN, a trailing END ⇒ CLOSED_PERIOD.</li>
  * </ul>
  *
@@ -61,7 +62,7 @@ final class ScheduleDeriver {
     /** The empty advisory when there is no clean owner to derive a schedule from. */
     static ScheduleFacet empty() {
         return new ScheduleFacet(MarkerGroupType.UNKNOWN, 0.0, null, null, null, List.of(), 0.0,
-                RoundState.UNKNOWN, null, 0.0, 0.0, 0);
+                RoundState.UNKNOWN, null, 0.0, 0.0, 0.0, 0);
     }
 
     /** Derive the schedule from the accepted owner's clusters (ordered strongest-first). */
@@ -80,7 +81,7 @@ final class ScheduleDeriver {
         double confidence = Math.min(1.0, cluster.recurrence() / 3.0);
         // A single-marker group has no END, so it is always open — no opening-day restriction or end offset to derive.
         return new ScheduleFacet(MarkerGroupType.SINGLE_MARKER, confidence, null, null, single,
-                List.of(), 0.0, RoundState.OPEN, null, 0.0, 0.0, cluster.recurrence());
+                List.of(), 0.0, RoundState.OPEN, null, 0.0, 0.0, 0.0, cluster.recurrence());
     }
 
     /** Two clusters ⇒ a two-marker group: label START/END, reconstruct rounds, then derive times, offset + open span. */
@@ -96,17 +97,19 @@ final class ScheduleDeriver {
         RoundTime end = time(labelled.end().posts());
         List<Round> rounds = reconstructRounds(ordered, labelled.startIndex());
         Integer endMarkerDayOffset = endDayOffset(rounds);
+        double endMarkerDayOffsetConfidence = offsetConsistency(rounds, endMarkerDayOffset);
         List<Integer> openWeekdays = openSpan(rounds);
-        double openingDaysConfidence = spanConsistency(rounds, openWeekdays);
+        double openingDaysConfidence = openingDaysConfidence(labelled, openWeekdays);
         RoundState state = currentState(ordered, labelled);
         return new ScheduleFacet(MarkerGroupType.TWO_MARKER, groupTypeConfidence, start, end, null,
-                openWeekdays, openingDaysConfidence, state, endMarkerDayOffset, symmetry, pairing, rounds.size());
+                openWeekdays, openingDaysConfidence, state, endMarkerDayOffset, endMarkerDayOffsetConfidence,
+                symmetry, pairing, rounds.size());
     }
 
     /** Three or more owner clusters is ambiguous (marker types vs per-weekday variants) — do not guess a schedule. */
     private static ScheduleFacet ambiguous() {
         return new ScheduleFacet(MarkerGroupType.UNKNOWN, 0.0, null, null, null, List.of(), 0.0,
-                RoundState.UNKNOWN, null, 0.0, 0.0, 0);
+                RoundState.UNKNOWN, null, 0.0, 0.0, 0.0, 0);
     }
 
     /**
@@ -176,20 +179,39 @@ final class ScheduleDeriver {
     }
 
     /**
-     * Opening-days confidence = how CONSISTENTLY the rounds cover the derived open span (not how many days): the average
-     * fraction of the span each round covers. Every round covering the full span ⇒ 1.0; scattered rounds ⇒ lower.
+     * Opening-days confidence = how confident we are that the discovered open-weekday set is correct: the fraction of
+     * those open days on which a boundary marker (a START or an END) was actually observed. Every open day carrying a
+     * marker ⇒ 1.0 (we <em>saw</em> the group open on each); a day that is only inferred as mid-round (spanned by a
+     * longer round but with no marker of its own) lowers it, since we did not directly witness it.
      */
-    private static double spanConsistency(List<Round> rounds, List<Integer> span) {
-        if (rounds.isEmpty() || span.isEmpty()) {
+    private static double openingDaysConfidence(Labelled labelled, List<Integer> span) {
+        if (span.isEmpty()) {
             return 0.0;
         }
-        double total = 0.0;
-        for (Round r : rounds) {
-            Set<Integer> rd = weekdaysBetween(r.start(), r.end());
-            long covered = span.stream().filter(rd::contains).count();
-            total += (double) covered / span.size();
+        Set<Integer> attested = new TreeSet<>();
+        for (Post p : labelled.start().posts()) {
+            if (p.postedAt() != null) {
+                attested.add(weekday(p.postedAt()));
+            }
         }
-        return total / rounds.size();
+        for (Post p : labelled.end().posts()) {
+            if (p.postedAt() != null) {
+                attested.add(weekday(p.postedAt()));
+            }
+        }
+        long covered = span.stream().filter(attested::contains).count();
+        return (double) covered / span.size();
+    }
+
+    /** End-offset confidence = the fraction of rounds whose whole-day START→END span matches the derived offset. */
+    private static double offsetConsistency(List<Round> rounds, Integer offset) {
+        if (rounds.isEmpty() || offset == null) {
+            return 0.0;
+        }
+        long matching = rounds.stream()
+                .filter(r -> ChronoUnit.DAYS.between(utcDate(r.start()), utcDate(r.end())) == offset)
+                .count();
+        return (double) matching / rounds.size();
     }
 
     /** The UTC weekdays (0=Sun … 6=Sat) spanned from {@code start} to {@code end} inclusive (all 7 once the span ≥ 6). */
@@ -211,6 +233,11 @@ final class ScheduleDeriver {
 
     private static LocalDate utcDate(Instant instant) {
         return instant.atZone(ZoneOffset.UTC).toLocalDate();
+    }
+
+    /** The UTC weekday of an instant (0=Sun … 6=Sat). */
+    private static int weekday(Instant instant) {
+        return utcDate(instant).getDayOfWeek().getValue() % 7;
     }
 
     /** Median of a list of longs; 0 when empty. */
