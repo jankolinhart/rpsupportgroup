@@ -32,3 +32,6 @@ databaseChangeLog:
   - include:
       file: changes/011-detected-profile.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/012-vetted-profile.sql
+      relativeToChangelogFile: true
