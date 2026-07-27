@@ -374,6 +374,34 @@ class VettingProposalServiceTest {
     }
 
     @Test
+    void aiSamplesIncludeCapturedOwnerSingletonsTheClusterGateDrops() {
+        // The proposed owner posts a STRONG clean marker (H0 ×3 → a size>=min-cluster candidate) plus a low-recurrence
+        // weekend VARIANT banner that appears ONCE over a unique background (H_FAR2 ×1): a dHash SINGLETON the
+        // size>=min-cluster gate drops from the candidates. Because that singleton is a captured marker candidate (it
+        // carries a representative image the admin sees in the grid), the broadened AI sample must still carry it — else a
+        // "START Sonntag" posted once never reaches the vision model. An image-LESS owner singleton (H_FAR ×1) stays out.
+        MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
+        UUID id = snap.getId();
+        List<CorpusSnapshotItem> grid = List.of(
+                at(id, "owner.acct", H0, 0), at(id, "owner.acct", H0, 1), at(id, "owner.acct", H0, 2), // strong marker
+                at(id, "owner.acct", H_FAR2, 3), // captured singleton variant (sc-3) — dropped by the size gate
+                at(id, "owner.acct", H_FAR, 4));  // image-less singleton (sc-4) — must NOT reach the AI
+        when(snapshots.findById(id)).thenReturn(Optional.of(snap));
+        when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
+        when(representatives.findShortcodesBySnapshotId(id)).thenReturn(List.of("sc-3")); // only the variant is captured
+
+        SnapshotAnalysis a = service.analyze(id);
+
+        // The size>=min-cluster gate keeps only the strong H0 marker as a scored candidate…
+        assertThat(a.candidates()).singleElement().satisfies(c -> assertThat(c.author()).isEqualTo("owner.acct"));
+        // …but the AI sample carries the strong marker AND the captured singleton variant (not the image-less singleton).
+        assertThat(a.aiSamples()).hasSize(2);
+        assertThat(a.aiSamples()).allSatisfy(s -> assertThat(s.author()).isEqualTo("owner.acct"));
+        assertThat(a.aiSamples()).anyMatch(s -> s.sampleShortcodes().contains("sc-3")); // captured variant reaches the AI
+        assertThat(a.aiSamples()).noneMatch(s -> s.sampleShortcodes().contains("sc-4")); // image-less singleton does not
+    }
+
+    @Test
     void gridWindowPreservesGridOrderAndFlagsTheOwnersMarkers() {
         // The AI reconstructs rounds from the grid IN ORDER with the owner's markers flagged; members are the rows between.
         MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");

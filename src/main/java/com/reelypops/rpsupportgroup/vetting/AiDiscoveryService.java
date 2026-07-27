@@ -93,26 +93,26 @@ public class AiDiscoveryService {
         List<AiMarkerSample> samples = analysis.aiSamples();
         List<VettingRequest.Cluster> clusters = new ArrayList<>();
         List<String> clusterShortcodes = new ArrayList<>();
-        for (int i = 0; i < samples.size() && clusters.size() < maxImages; i++) {
-            AiMarkerSample s = samples.get(i);
-            // M4.9: send up to perClusterSamples DISTINCT captured images from this owner cluster (not just the first), so
-            // a weekday variant the dHash pass absorbed into the cluster still reaches the vision model. If the cluster has
-            // NO captured representative, still send one image-less entry so its metadata contributes.
-            int sent = 0;
-            for (String shortcode : s.sampleShortcodes()) {
-                if (clusters.size() >= maxImages || sent >= perClusterSamples) {
-                    break;
+        // M4.10: send ONE representative image per owner cluster FIRST, THEN deepen up to perClusterSamples (round-robin
+        // by depth), so every distinct cluster reaches the model before any single cluster claims a second slot under the
+        // maxImages cap — a low-recurrence weekend variant (e.g. a "START Sonntag" that dHash-shattered into its own
+        // sub-threshold singleton) is a WHOLE cluster and must not be starved by a high-recurrence cluster's extra samples.
+        // A cluster with no captured image contributes one image-less entry so its occurrence timings still inform the schedule.
+        int coverable = Math.min(samples.size(), maxImages);
+        List<List<CapturedImage>> imagesPerCluster = new ArrayList<>();
+        for (int i = 0; i < coverable; i++) {
+            imagesPerCluster.add(capturedImages(snapshotId, samples.get(i)));
+        }
+        for (int depth = 0; depth < perClusterSamples && clusters.size() < maxImages; depth++) {
+            for (int i = 0; i < coverable && clusters.size() < maxImages; i++) {
+                List<CapturedImage> images = imagesPerCluster.get(i);
+                if (depth < images.size()) {
+                    clusters.add(sampleCluster(samples.get(i), images.get(depth).dataUrl()));
+                    clusterShortcodes.add(images.get(depth).shortcode());
+                } else if (depth == 0) {
+                    clusters.add(sampleCluster(samples.get(i), null));
+                    clusterShortcodes.add(representativeShortcode(samples.get(i).sampleShortcodes()));
                 }
-                Optional<CorpusRepresentative> rep = corpus.getRepresentative(snapshotId, shortcode);
-                if (rep.isPresent()) {
-                    clusters.add(sampleCluster(s, dataUrl(rep.get())));
-                    clusterShortcodes.add(shortcode);
-                    sent++;
-                }
-            }
-            if (sent == 0) {
-                clusters.add(sampleCluster(s, null));
-                clusterShortcodes.add(representativeShortcode(s.sampleShortcodes()));
             }
         }
         if (clusters.isEmpty()) {
@@ -151,6 +151,25 @@ public class AiDiscoveryService {
     private static VettingRequest.Cluster sampleCluster(AiMarkerSample s, String image) {
         return new VettingRequest.Cluster(s.distinctPosts(), List.of(s.author()), s.recurrence(),
                 s.cadenceRegularity(), s.coverage(), s.score(), image, occurrences(s.postedAt()));
+    }
+
+    /** This owner cluster's captured representative images ({@code data:} URLs) paired with their shortcodes — image-first order, capped at perClusterSamples. */
+    private List<CapturedImage> capturedImages(UUID snapshotId, AiMarkerSample sample) {
+        List<CapturedImage> images = new ArrayList<>();
+        for (String shortcode : sample.sampleShortcodes()) {
+            if (images.size() >= perClusterSamples) {
+                break;
+            }
+            Optional<CorpusRepresentative> rep = corpus.getRepresentative(snapshotId, shortcode);
+            if (rep.isPresent()) {
+                images.add(new CapturedImage(shortcode, dataUrl(rep.get())));
+            }
+        }
+        return images;
+    }
+
+    /** A captured representative image ({@code data:} URL) paired with the shortcode of the post it came from. */
+    private record CapturedImage(String shortcode, String dataUrl) {
     }
 
     /** Map the analysis grid window (M4.7) onto the request contract — the ordered timeline for round reconstruction. */

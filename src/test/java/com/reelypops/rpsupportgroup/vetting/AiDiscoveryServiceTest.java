@@ -289,4 +289,27 @@ class AiDiscoveryServiceTest {
         assertThat(request.getValue().clusters()).hasSize(3); // 4 captured samples, capped at perClusterSamples = 3
         assertThat(request.getValue().clusters()).allSatisfy(c -> assertThat(c.imageUrl()).isNotNull());
     }
+
+    @Test
+    void sendsOneImagePerClusterBeforeDeepeningSoEveryVariantIsRepresented() {
+        when(detected.detect(SNAP)).thenReturn(base());
+        // Two owner clusters, each with TWO captured images. With maxImages = 3 the round-robin must give BOTH clusters a
+        // representative image (depth 0: one of each) BEFORE spending the third slot deepening the first — so a
+        // low-recurrence variant cluster is never starved by another cluster's extra samples under the image cap.
+        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(),
+                List.of(new AiMarkerSample(8, "glow", 8, 0.7, 0.8, 4.0, List.of("a1", "a2"), List.of()),
+                        new AiMarkerSample(2, "glow", 2, 0.5, 0.2, 0.2, List.of("b1", "b2"), List.of())), List.of()));
+        when(corpus.getRepresentative(eq(SNAP), anyString())).thenReturn(Optional.of(rep()));
+        when(gateway.vet(any())).thenReturn(Optional.empty());
+
+        service(3).runAiDiscovery(SNAP); // maxImages = 3
+
+        ArgumentCaptor<VettingRequest> request = ArgumentCaptor.forClass(VettingRequest.class);
+        verify(gateway).vet(request.capture());
+        List<VettingRequest.Cluster> sent = request.getValue().clusters();
+        assertThat(sent).hasSize(3);
+        // depth 0 sends one image of EACH cluster first (the size-8 marker, then the size-2 variant), then the third slot
+        // deepens the first cluster — the size-2 variant is represented, not starved by the size-8 cluster's extra sample.
+        assertThat(sent).extracting(VettingRequest.Cluster::size).containsExactly(8, 2, 8);
+    }
 }
