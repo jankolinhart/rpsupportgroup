@@ -11,6 +11,8 @@ import com.reelypops.rpsupportgroup.group.DetectedProfile.AiDiscovery.WeeklySche
 import com.reelypops.rpsupportgroup.group.MarkerStyle;
 import com.reelypops.rpsupportgroup.group.SupportGroupConfig;
 import com.reelypops.rpsupportgroup.group.SupportGroupConfigRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -47,17 +49,21 @@ public class AiDiscoveryService {
     private final RpAiGatewayClient gateway;
     private final SupportGroupConfigRepository configs;
     private final int maxImages;
+    private final int perClusterSamples;
+    private static final Logger log = LoggerFactory.getLogger(AiDiscoveryService.class);
 
     public AiDiscoveryService(DetectedProfileService detected, VettingProposalService proposals,
                               MarkerCorpusService corpus, RpAiGatewayClient gateway,
                               SupportGroupConfigRepository configs,
-                              @Value("${rp.aigateway.max-images:24}") int maxImages) {
+                              @Value("${rp.aigateway.max-images:24}") int maxImages,
+                              @Value("${rp.aigateway.samples-per-cluster:3}") int perClusterSamples) {
         this.detected = detected;
         this.proposals = proposals;
         this.corpus = corpus;
         this.gateway = gateway;
         this.configs = configs;
         this.maxImages = Math.max(1, maxImages);
+        this.perClusterSamples = Math.max(1, perClusterSamples);
     }
 
     /**
@@ -89,16 +95,25 @@ public class AiDiscoveryService {
         List<String> clusterShortcodes = new ArrayList<>();
         for (int i = 0; i < samples.size() && clusters.size() < maxImages; i++) {
             AiMarkerSample s = samples.get(i);
-            clusters.add(new VettingRequest.Cluster(
-                    s.distinctPosts(),
-                    List.of(s.author()),
-                    s.recurrence(),
-                    s.cadenceRegularity(),
-                    s.coverage(),
-                    s.score(),
-                    dataUrl(snapshotId, s.sampleShortcodes()),
-                    occurrences(s.postedAt())));
-            clusterShortcodes.add(representativeShortcode(s.sampleShortcodes()));
+            // M4.9: send up to perClusterSamples DISTINCT captured images from this owner cluster (not just the first), so
+            // a weekday variant the dHash pass absorbed into the cluster still reaches the vision model. If the cluster has
+            // NO captured representative, still send one image-less entry so its metadata contributes.
+            int sent = 0;
+            for (String shortcode : s.sampleShortcodes()) {
+                if (clusters.size() >= maxImages || sent >= perClusterSamples) {
+                    break;
+                }
+                Optional<CorpusRepresentative> rep = corpus.getRepresentative(snapshotId, shortcode);
+                if (rep.isPresent()) {
+                    clusters.add(sampleCluster(s, dataUrl(rep.get())));
+                    clusterShortcodes.add(shortcode);
+                    sent++;
+                }
+            }
+            if (sent == 0) {
+                clusters.add(sampleCluster(s, null));
+                clusterShortcodes.add(representativeShortcode(s.sampleShortcodes()));
+            }
         }
         if (clusters.isEmpty()) {
             for (String shortcode : corpus.detail(snapshotId).representativeShortcodes()) {
@@ -114,6 +129,9 @@ public class AiDiscoveryService {
         }
         VettingRequest request = new VettingRequest(base.igAccount(), base.itemCount(), base.imageStyle().value().name(),
                 base.owner().roster(), clusters, TIMEZONE, gridWindow(analysis.gridWindow()));
+        log.info("AI_DISCOVERY_DIAG ig={} ownerClusters={} entriesSent={} withImage={}",
+                base.igAccount(), samples.size(), clusters.size(),
+                clusters.stream().filter(c -> c.imageUrl() != null).count());
         return new AiRequest(request, clusterShortcodes);
     }
 
@@ -129,6 +147,12 @@ public class AiDiscoveryService {
         return sampleShortcodes.isEmpty() ? null : sampleShortcodes.get(0);
     }
 
+    /** One request cluster carrying this owner sample's Tier-0 metrics + the given (possibly null) representative image. */
+    private static VettingRequest.Cluster sampleCluster(AiMarkerSample s, String image) {
+        return new VettingRequest.Cluster(s.distinctPosts(), List.of(s.author()), s.recurrence(),
+                s.cadenceRegularity(), s.coverage(), s.score(), image, occurrences(s.postedAt()));
+    }
+
     /** Map the analysis grid window (M4.7) onto the request contract — the ordered timeline for round reconstruction. */
     private static List<VettingRequest.GridRow> gridWindow(List<GridRow> window) {
         return window.stream()
@@ -141,11 +165,15 @@ public class AiDiscoveryService {
         for (String shortcode : shortcodes) {
             Optional<CorpusRepresentative> rep = corpus.getRepresentative(snapshotId, shortcode);
             if (rep.isPresent()) {
-                CorpusRepresentative r = rep.get();
-                return "data:" + r.getContentType() + ";base64," + Base64.getEncoder().encodeToString(r.getImage());
+                return dataUrl(rep.get());
             }
         }
         return null;
+    }
+
+    /** A captured representative as a base64 {@code data:} URL. */
+    private static String dataUrl(CorpusRepresentative r) {
+        return "data:" + r.getContentType() + ";base64," + Base64.getEncoder().encodeToString(r.getImage());
     }
 
     /**
