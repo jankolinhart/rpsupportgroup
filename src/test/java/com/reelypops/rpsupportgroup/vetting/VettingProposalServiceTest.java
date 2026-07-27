@@ -411,4 +411,28 @@ class VettingProposalServiceTest {
         assertThat(a.gridWindow()).allSatisfy(r -> assertThat(r.marker()).isTrue());
         assertThat(a.gridWindow().get(11).ordinal()).isEqualTo(11);     // the 12th marker is the last row included
     }
+
+    @Test
+    void gridWindowEndsOnAMarkerNotMidRound() {
+        // Round-complete: the window must end on a marker (a round boundary), never on a member row — else the oldest
+        // round's START (the bottom-most post) is cut off, the missing-Sunday-START symptom. Owner markers interleaved
+        // with member posts; the window ends exactly on the 12th owner marker, its trailing member excluded.
+        MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
+        UUID id = snap.getId();
+        List<CorpusSnapshotItem> grid = new ArrayList<>();
+        int ord = 0;
+        for (int round = 0; round < 14; round++) {          // 14 owner markers (more than the cap)...
+            grid.add(at(id, "owner.acct", H0, ord++));       // ...each a marker; members only in the first rounds so
+            if (round < 6) {                                 // the owner clearly dominates (14 posts vs 6).
+                grid.add(at(id, "member.acct", H_FAR, ord++));
+            }
+        }
+        when(snapshots.findById(id)).thenReturn(Optional.of(snap));
+        when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
+
+        SnapshotAnalysis a = service.analyze(id);
+
+        assertThat(a.gridWindow().stream().filter(GridRow::marker).count()).isEqualTo(12L); // spanned the marker cap
+        assertThat(a.gridWindow().get(a.gridWindow().size() - 1).marker()).isTrue();        // ends ON a marker, not mid-round
+    }
 }
