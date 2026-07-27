@@ -108,8 +108,8 @@ public class RpAiGatewayClient {
                                   String ocrTargetText, double confidence, String reasoning,
                                   List<DaySchedule> schedule) {
 
-        /** One AI-confirmed marker reference: its round slot + OCR text. */
-        public record Reference(String markerType, String ocrText) {
+        /** One AI-confirmed marker reference: its round slot, OCR text, and the 1-based cited cluster index (A2/B7b). */
+        public record Reference(String markerType, String ocrText, Integer clusterIndex) {
         }
 
         /**

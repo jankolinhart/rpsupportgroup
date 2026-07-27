@@ -74,13 +74,13 @@ class AiDiscoveryServiceTest {
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
         when(corpus.getRepresentative(SNAP, "sc2")).thenReturn(Optional.empty()); // uncaptured ⇒ null image
         when(gateway.vet(any())).thenReturn(Optional.of(new VettingResponse("TEXT_OVERLAY", "TWO_MARKER", "glow",
-                List.of(new VettingResponse.Reference("start", "Los geht's"),
-                        new VettingResponse.Reference("end", "Das war's")),
+                List.of(new VettingResponse.Reference("start", "Los geht's", 2),
+                        new VettingResponse.Reference("end", "Das war's", 1)),
                 "Glow", 0.82, "two banners",
                 List.of(
                         new VettingResponse.DaySchedule("MON", true, "TWO_MARKER", "TEXT_OVERLAY",
-                                List.of(new VettingResponse.Reference("start", "Los geht's"),
-                                        new VettingResponse.Reference("end", "Das war's")),
+                                List.of(new VettingResponse.Reference("start", "Los geht's", 2),
+                                        new VettingResponse.Reference("end", "Das war's", 1)),
                                 "09:00", "17:00", 0, 2, 0.9),
                         new VettingResponse.DaySchedule("SAT", false, null, null, null, null, null, null, null, null)))));
         SupportGroupConfig config = mock(SupportGroupConfig.class);
@@ -131,6 +131,10 @@ class AiDiscoveryServiceTest {
         assertThat(ai.confidence()).isEqualTo(0.82);
         assertThat(ai.references()).extracting(DetectedProfile.AiDiscovery.AiReference::markerType)
                 .containsExactly("start", "end");
+        // A2/B7b: each AI reference resolves to its cited cluster's representative shortcode (start cited cluster 2 = sc2,
+        // end cited cluster 1 = sc1) so the admin can see every marker variation's image.
+        assertThat(ai.references()).extracting(DetectedProfile.AiDiscovery.AiReference::shortcode)
+                .containsExactly("sc2", "sc1");
         DetectedProfile.AiDiscovery.WeeklySchedule ws = ai.weeklySchedule();
         assertThat(ws.timezone()).isEqualTo("UTC");
         assertThat(ws.days()).hasSize(2);
@@ -141,6 +145,8 @@ class AiDiscoveryServiceTest {
             assertThat(d.style()).isEqualTo("TEXT_OVERLAY");
             assertThat(d.markers()).extracting(DetectedProfile.AiDiscovery.AiReference::markerType)
                     .containsExactly("start", "end");
+            assertThat(d.markers()).extracting(DetectedProfile.AiDiscovery.AiReference::shortcode)
+                    .containsExactly("sc2", "sc1");
             assertThat(d.start()).isEqualTo("09:00");
             assertThat(d.end()).isEqualTo("17:00");
             assertThat(d.endMarkerDayOffset()).isEqualTo(0);
@@ -203,7 +209,8 @@ class AiDiscoveryServiceTest {
                 List.of(new AiMarkerSample(4, "glow", 4, 0.9, 0.8, 3.8, List.of("sc1"), List.of())), List.of()));
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
         when(gateway.vet(any())).thenReturn(Optional.of(
-                new VettingResponse("WHAT", "CONTINUOUS", null, List.of(), null, 0.1, "?", List.of())));
+                new VettingResponse("WHAT", "CONTINUOUS", null,
+                        List.of(new VettingResponse.Reference("single", "x", null)), null, 0.1, "?", List.of())));
         SupportGroupConfig config = mock(SupportGroupConfig.class);
         when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
 
@@ -211,6 +218,9 @@ class AiDiscoveryServiceTest {
 
         assertThat(result.aiDiscovery().style()).isEqualTo(MarkerStyle.UNKNOWN);
         assertThat(result.aiDiscovery().owner()).isNull();
+        // A reference the AI did not tie to a cluster (null clusterIndex) resolves to a null shortcode.
+        assertThat(result.aiDiscovery().references()).singleElement()
+                .satisfies(r -> assertThat(r.shortcode()).isNull());
     }
 
     @Test

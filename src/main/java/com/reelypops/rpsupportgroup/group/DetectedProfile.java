@@ -100,8 +100,12 @@ public record DetectedProfile(
                               String ocrTargetText, double confidence, String reasoning, long generatedAtMs,
                               WeeklySchedule weeklySchedule) {
 
-        /** One AI-confirmed marker reference: its round slot ({@code start}/{@code end}/{@code single}) + OCR text. */
-        public record AiReference(String markerType, String ocrText) {
+        /**
+         * One AI-confirmed marker reference: its round slot ({@code start}/{@code end}/{@code single}), OCR text, and
+         * the representative {@code shortcode} of the cluster the AI cited — the marker VARIATION's image the admin can
+         * see (A2/B7b); null when the AI cited no cluster or it had no captured representative.
+         */
+        public record AiReference(String markerType, String ocrText, String shortcode) {
         }
 
         /**

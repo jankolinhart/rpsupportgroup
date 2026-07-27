@@ -67,11 +67,12 @@ public class AiDiscoveryService {
     @Transactional
     public DetectedProfile runAiDiscovery(UUID snapshotId) {
         DetectedProfile base = detected.detect(snapshotId);
-        Optional<VettingResponse> verdict = gateway.vet(buildRequest(snapshotId, base));
+        AiRequest aiRequest = buildRequest(snapshotId, base);
+        Optional<VettingResponse> verdict = gateway.vet(aiRequest.request());
         if (verdict.isEmpty()) {
             return base;
         }
-        DetectedProfile enriched = withAi(base, toDiscovery(verdict.get()));
+        DetectedProfile enriched = withAi(base, toDiscovery(verdict.get(), aiRequest.clusterShortcodes()));
         SupportGroupConfig config = configs.findByIgAccount(base.igAccount())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "no config for " + base.igAccount()));
@@ -81,10 +82,11 @@ public class AiDiscoveryService {
     }
 
     /** Reduce the broadened per-owner marker sample (+ representative images) to the gateway request; fall back to raw representatives. */
-    private VettingRequest buildRequest(UUID snapshotId, DetectedProfile base) {
+    private AiRequest buildRequest(UUID snapshotId, DetectedProfile base) {
         SnapshotAnalysis analysis = proposals.analyze(snapshotId);
         List<AiMarkerSample> samples = analysis.aiSamples();
         List<VettingRequest.Cluster> clusters = new ArrayList<>();
+        List<String> clusterShortcodes = new ArrayList<>();
         for (int i = 0; i < samples.size() && clusters.size() < maxImages; i++) {
             AiMarkerSample s = samples.get(i);
             clusters.add(new VettingRequest.Cluster(
@@ -96,6 +98,7 @@ public class AiDiscoveryService {
                     s.score(),
                     dataUrl(snapshotId, s.sampleShortcodes()),
                     occurrences(s.postedAt())));
+            clusterShortcodes.add(representativeShortcode(s.sampleShortcodes()));
         }
         if (clusters.isEmpty()) {
             for (String shortcode : corpus.detail(snapshotId).representativeShortcodes()) {
@@ -105,11 +108,25 @@ public class AiDiscoveryService {
                 String image = dataUrl(snapshotId, List.of(shortcode));
                 if (image != null) {
                     clusters.add(new VettingRequest.Cluster(1, List.of(), 1, 0.0, 0.0, 0.0, image, List.of()));
+                    clusterShortcodes.add(shortcode);
                 }
             }
         }
-        return new VettingRequest(base.igAccount(), base.itemCount(), base.imageStyle().value().name(),
+        VettingRequest request = new VettingRequest(base.igAccount(), base.itemCount(), base.imageStyle().value().name(),
                 base.owner().roster(), clusters, TIMEZONE, gridWindow(analysis.gridWindow()));
+        return new AiRequest(request, clusterShortcodes);
+    }
+
+    /**
+     * The built gateway request paired with each cluster's representative shortcode (in cluster order), so the AI's
+     * cited {@code clusterIndex} resolves back to the marker variation's image (A2/B7b).
+     */
+    private record AiRequest(VettingRequest request, List<String> clusterShortcodes) {
+    }
+
+    /** A cluster's representative shortcode — its image-backed first sample (A2/B7b); null when the cluster has none. */
+    private static String representativeShortcode(List<String> sampleShortcodes) {
+        return sampleShortcodes.isEmpty() ? null : sampleShortcodes.get(0);
     }
 
     /** Map the analysis grid window (M4.7) onto the request contract — the ordered timeline for round reconstruction. */
@@ -146,21 +163,21 @@ public class AiDiscoveryService {
         return occ;
     }
 
-    /** Map the gateway verdict onto the persisted {@link AiDiscovery} facet. */
-    private static AiDiscovery toDiscovery(VettingResponse v) {
+    /** Map the gateway verdict onto the persisted {@link AiDiscovery} facet, resolving each cited clusterIndex to its image. */
+    private static AiDiscovery toDiscovery(VettingResponse v, List<String> clusterShortcodes) {
         List<AiDiscovery.AiReference> references = new ArrayList<>();
         if (v.references() != null) {
             for (VettingResponse.Reference r : v.references()) {
-                references.add(new AiDiscovery.AiReference(r.markerType(), r.ocrText()));
+                references.add(toAiReference(r, clusterShortcodes));
             }
         }
         return new AiDiscovery(toStyle(v.style()), v.markerType(), v.owner(), references,
                 v.ocrTargetText(), v.confidence(), v.reasoning(), System.currentTimeMillis(),
-                toWeeklySchedule(v.schedule()));
+                toWeeklySchedule(v.schedule(), clusterShortcodes));
     }
 
     /** Map the gateway's per-weekday verdict onto the persisted {@link WeeklySchedule}; null when the model returned none. */
-    private static WeeklySchedule toWeeklySchedule(List<VettingResponse.DaySchedule> days) {
+    private static WeeklySchedule toWeeklySchedule(List<VettingResponse.DaySchedule> days, List<String> clusterShortcodes) {
         if (days == null || days.isEmpty()) {
             return null;
         }
@@ -169,13 +186,26 @@ public class AiDiscoveryService {
             List<AiDiscovery.AiReference> markers = new ArrayList<>();
             if (d.markers() != null) {
                 for (VettingResponse.Reference m : d.markers()) {
-                    markers.add(new AiDiscovery.AiReference(m.markerType(), m.ocrText()));
+                    markers.add(toAiReference(m, clusterShortcodes));
                 }
             }
             mapped.add(new WeeklySchedule.DaySchedule(d.weekday(), d.open(), d.groupType(), d.style(), markers,
                     d.start(), d.end(), d.endMarkerDayOffset(), d.maxTaggedPosts(), d.confidence()));
         }
         return new WeeklySchedule(TIMEZONE, mapped);
+    }
+
+    /** One AI reference with the representative shortcode of its cited cluster resolved (A2/B7b). */
+    private static AiDiscovery.AiReference toAiReference(VettingResponse.Reference r, List<String> clusterShortcodes) {
+        return new AiDiscovery.AiReference(r.markerType(), r.ocrText(), shortcodeFor(r.clusterIndex(), clusterShortcodes));
+    }
+
+    /** Resolve the AI's 1-based clusterIndex to the cluster's representative shortcode; null when unset / out of range. */
+    private static String shortcodeFor(Integer clusterIndex, List<String> clusterShortcodes) {
+        if (clusterIndex == null || clusterIndex < 1 || clusterIndex > clusterShortcodes.size()) {
+            return null;
+        }
+        return clusterShortcodes.get(clusterIndex - 1);
     }
 
     private static MarkerStyle toStyle(String style) {
