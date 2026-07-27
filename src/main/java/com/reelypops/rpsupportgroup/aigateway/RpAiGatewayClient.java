@@ -64,13 +64,21 @@ public class RpAiGatewayClient {
      * @param tier0Style  the local pass's style guess
      * @param ownerRoster the Tier-0 candidate marker-owners
      * @param clusters    the recurring-image clusters (metrics + one representative image each)
+     * @param timezone    the timezone the cluster occurrence times are expressed in (M4.5); {@code UTC} in v1
      */
     public record VettingRequest(String igAccount, int itemCount, String tier0Style, List<String> ownerRoster,
-                                 List<Cluster> clusters) {
+                                 List<Cluster> clusters, String timezone) {
 
-        /** One cluster: its Tier-0 metrics + a representative image (a {@code data:} URL, or null when uncaptured). */
+        /**
+         * One cluster: its Tier-0 metrics, a representative image (a {@code data:} URL, or null when uncaptured), and
+         * its marker posts' {@link Occurrence timings} so the AI can derive a per-weekday schedule (M4.5).
+         */
         public record Cluster(int size, List<String> authors, int recurrence, double cadenceRegularity,
-                              double coverage, double score, String imageUrl) {
+                              double coverage, double score, String imageUrl, List<Occurrence> occurrences) {
+        }
+
+        /** One marker post's timing (weekday + {@code HH:mm}) in the request {@code timezone}, for M4.5. */
+        public record Occurrence(String weekday, String timeOfDayLocal) {
         }
     }
 
@@ -84,12 +92,23 @@ public class RpAiGatewayClient {
      * @param ocrTargetText the stable overlay text for a text-overlay group, else null
      * @param confidence    0..1
      * @param reasoning     a short justification
+     * @param schedule      the per-weekday schedule verdict (M4.5) — one entry per weekday the model reported
      */
     public record VettingResponse(String style, String markerType, String owner, List<Reference> references,
-                                  String ocrTargetText, double confidence, String reasoning) {
+                                  String ocrTargetText, double confidence, String reasoning,
+                                  List<DaySchedule> schedule) {
 
         /** One AI-confirmed marker reference: its round slot + OCR text. */
         public record Reference(String markerType, String ocrText) {
+        }
+
+        /**
+         * One weekday's schedule in the AI's per-weekday verdict (M4.5): open/closed + the day's type, style, markers,
+         * round times ({@code HH:mm}), end-marker day offset, per-member max-tagged-posts, and confidence.
+         */
+        public record DaySchedule(String weekday, boolean open, String groupType, String style,
+                                  List<Reference> markers, String start, String end,
+                                  Integer endMarkerDayOffset, Integer maxTaggedPosts, Double confidence) {
         }
     }
 }

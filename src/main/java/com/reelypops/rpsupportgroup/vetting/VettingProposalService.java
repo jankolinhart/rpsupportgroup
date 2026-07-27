@@ -101,7 +101,8 @@ public class VettingProposalService {
         Set<String> withImages = new HashSet<>(representatives.findShortcodesBySnapshotId(snapshotId));
         SnapshotAnalysis analysis = buildAnalysis(snapshot, gridItems, withImages);
         DetectorProfileProposal enriched = enricher.enrich(analysis.proposal(), gridItems);
-        return new SnapshotAnalysis(enriched, analysis.candidates(), analysis.references(), analysis.schedule());
+        return new SnapshotAnalysis(enriched, analysis.candidates(), analysis.references(), analysis.schedule(),
+                analysis.referencePostedAt());
     }
 
     private SnapshotAnalysis buildAnalysis(MarkerCorpusSnapshot snapshot, List<CorpusSnapshotItem> gridItems,
@@ -183,18 +184,27 @@ public class VettingProposalService {
             referenceCandidates = candidates.stream().limit(maxClusters).toList();
         }
         List<MarkerReference> references = referenceCandidates.stream().map(c -> c.toReference(minScore)).toList();
+        // M4.5: parallel to references, the sorted marker-post timestamps of each reference cluster — the AI's
+        // per-weekday occurrence source (bucketed by weekday + time in AiDiscoveryService).
+        List<List<Instant>> referencePostedAt = referenceCandidates.stream()
+                .map(c -> c.ownerPosts().stream()
+                        .map(ScheduleDeriver.Post::postedAt)
+                        .filter(t -> t != null)
+                        .sorted()
+                        .toList())
+                .toList();
         List<ScheduleDeriver.ClusterPosts> ownerClusters = candidates.stream()
                 .filter(c -> c.dominantAuthor().equals(top.dominantAuthor()))
                 .map(c -> new ScheduleDeriver.ClusterPosts(c.ownerPosts()))
                 .toList();
         ScheduleFacet schedule = ScheduleDeriver.derive(ownerClusters);
         logScheduleDiagnostics(id, top.dominantAuthor(), ownerClusters, schedule);
-        return new SnapshotAnalysis(proposal, ownerCandidates, references, schedule);
+        return new SnapshotAnalysis(proposal, ownerCandidates, references, schedule, referencePostedAt);
     }
 
     /** The analysis for a snapshot with no clean owner: just the proposal, no candidates / references / schedule. */
     private static SnapshotAnalysis emptyAnalysis(DetectorProfileProposal proposal) {
-        return new SnapshotAnalysis(proposal, List.of(), List.of(), ScheduleDeriver.empty());
+        return new SnapshotAnalysis(proposal, List.of(), List.of(), ScheduleDeriver.empty(), List.of());
     }
 
     /** Calibration diagnostic (M2): per-candidate marker-signature metrics + the accept/escalate decision (cloud log). */
