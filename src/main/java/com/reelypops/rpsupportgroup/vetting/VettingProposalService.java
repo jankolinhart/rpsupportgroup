@@ -45,6 +45,11 @@ public class VettingProposalService {
     // neutral, non-committal cadence rather than a falsely-perfect one.
     private static final double NEUTRAL_CADENCE = 0.5;
 
+    // M4.7: how much of the recent tagged grid to hand the AI as an ordered window — enough recent owner markers to
+    // reconstruct several rounds (each round is ~2 markers), bounded so a huge grid can't blow up the request.
+    private static final int GRID_WINDOW_MARKERS = 12;
+    private static final int GRID_WINDOW_MAX_ROWS = 400;
+
     private static final Logger log = LoggerFactory.getLogger(VettingProposalService.class);
 
     private final MarkerCorpusSnapshotRepository snapshots;
@@ -102,7 +107,7 @@ public class VettingProposalService {
         SnapshotAnalysis analysis = buildAnalysis(snapshot, gridItems, withImages);
         DetectorProfileProposal enriched = enricher.enrich(analysis.proposal(), gridItems);
         return new SnapshotAnalysis(enriched, analysis.candidates(), analysis.references(), analysis.schedule(),
-                analysis.referencePostedAt(), analysis.aiSamples());
+                analysis.referencePostedAt(), analysis.aiSamples(), analysis.gridWindow());
     }
 
     private SnapshotAnalysis buildAnalysis(MarkerCorpusSnapshot snapshot, List<CorpusSnapshotItem> gridItems,
@@ -206,12 +211,37 @@ public class VettingProposalService {
                 .filter(c -> c.dominantAuthor().equals(top.dominantAuthor()))
                 .map(MarkerCandidate::toAiSample)
                 .toList();
-        return new SnapshotAnalysis(proposal, ownerCandidates, references, schedule, referencePostedAt, aiSamples);
+        // M4.7: the recent tagged-grid window in true order — the owner's markers interleaved with member posts — so the
+        // AI can reconstruct rounds from the sequence (START→ENDE pairs) and count per-round members (maxTaggedPosts).
+        List<GridRow> gridWindow = buildGridWindow(gridItems, top.dominantAuthor());
+        return new SnapshotAnalysis(proposal, ownerCandidates, references, schedule, referencePostedAt, aiSamples,
+                gridWindow);
     }
 
     /** The analysis for a snapshot with no clean owner: just the proposal, no candidates / references / schedule. */
     private static SnapshotAnalysis emptyAnalysis(DetectorProfileProposal proposal) {
-        return new SnapshotAnalysis(proposal, List.of(), List.of(), ScheduleDeriver.empty(), List.of(), List.of());
+        return new SnapshotAnalysis(proposal, List.of(), List.of(), ScheduleDeriver.empty(), List.of(), List.of(),
+                List.of());
+    }
+
+    /**
+     * The most recent slice of the grid (newest tag first, directive P5) as an ordered {@link GridRow} window: each
+     * (post × author) row is flagged {@code marker} when its author is the proposed owner. Stops once it has spanned
+     * {@link #GRID_WINDOW_MARKERS} owner markers (≈ that many round boundaries) or {@link #GRID_WINDOW_MAX_ROWS} rows,
+     * whichever comes first, so the AI sees a handful of complete recent rounds — not the whole grid.
+     */
+    private static List<GridRow> buildGridWindow(List<CorpusSnapshotItem> gridItems, String owner) {
+        List<GridRow> rows = new ArrayList<>();
+        int markers = 0;
+        for (int i = 0; i < gridItems.size() && markers < GRID_WINDOW_MARKERS && rows.size() < GRID_WINDOW_MAX_ROWS; i++) {
+            CorpusSnapshotItem item = gridItems.get(i);
+            boolean marker = owner.equals(item.getAuthorUsername());
+            rows.add(new GridRow(item.getOrdinal(), item.getAuthorUsername(), marker));
+            if (marker) {
+                markers++;
+            }
+        }
+        return rows;
     }
 
     /** Calibration diagnostic (M2): per-candidate marker-signature metrics + the accept/escalate decision (cloud log). */

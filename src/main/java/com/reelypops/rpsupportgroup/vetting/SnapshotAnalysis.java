@@ -24,11 +24,16 @@ import java.util.List;
  * PROPOSED owner, including the sub-threshold fragments the {@code minScore} gate keeps out of {@link #references}, so
  * the model sees the owner's full banner vocabulary (a shattered high-variation "START" as well as a clean "END") — see
  * {@link AiMarkerSample}.
+ *
+ * <p>{@code gridWindow} is the recent tagged-grid window in true order (M4.7): the owner's marker posts interleaved with
+ * member posts, so the model can reconstruct rounds from the sequence (a START→ENDE pair per round) and count the
+ * per-round member posts ({@code maxTaggedPosts}) — the ordering a per-cluster summary loses. See {@link GridRow}.
  */
 record SnapshotAnalysis(DetectorProfileProposal proposal,
                         List<OwnerCandidate> candidates,
                         List<MarkerReference> references,
                         ScheduleFacet schedule,
                         List<List<Instant>> referencePostedAt,
-                        List<AiMarkerSample> aiSamples) {
+                        List<AiMarkerSample> aiSamples,
+                        List<GridRow> gridWindow) {
 }

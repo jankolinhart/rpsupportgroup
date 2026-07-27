@@ -31,7 +31,8 @@ class RpAiGatewayClientTest {
         return new VettingRequest("glow.grp", 10, "TEXT_OVERLAY", List.of("glow"),
                 List.of(new VettingRequest.Cluster(8, List.of("glow"), 8, 0.71, 0.86, 4.85, "data:image/jpeg;base64,AQID",
                         List.of(new VettingRequest.Occurrence("MON", "09:03")))),
-                "UTC");
+                "UTC",
+                List.of(new VettingRequest.GridRow(0, "glow", true), new VettingRequest.GridRow(1, "member.a", false)));
     }
 
     @Test
@@ -52,6 +53,8 @@ class RpAiGatewayClientTest {
                 .andExpect(header("X-Internal-Api-Key", "gw-key"))
                 .andExpect(jsonPath("$.igAccount").value("glow.grp"))
                 .andExpect(jsonPath("$.clusters[0].imageUrl").value("data:image/jpeg;base64,AQID"))
+                .andExpect(jsonPath("$.gridWindow[0].marker").value(true))
+                .andExpect(jsonPath("$.gridWindow[1].author").value("member.a"))
                 .andRespond(withSuccess("""
                         {"style":"TEXT_OVERLAY","markerType":"TWO_MARKER","owner":"glow",
                          "references":[{"markerType":"start","ocrText":"Los geht's"}],

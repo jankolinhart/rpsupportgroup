@@ -65,9 +65,11 @@ public class RpAiGatewayClient {
      * @param ownerRoster the Tier-0 candidate marker-owners
      * @param clusters    the recurring-image clusters (metrics + one representative image each)
      * @param timezone    the timezone the cluster occurrence times are expressed in (M4.5); {@code UTC} in v1
+     * @param gridWindow  the recent tagged-grid window in true order (M4.7) — the ordered timeline the AI reconstructs
+     *                    rounds + per-round member counts from
      */
     public record VettingRequest(String igAccount, int itemCount, String tier0Style, List<String> ownerRoster,
-                                 List<Cluster> clusters, String timezone) {
+                                 List<Cluster> clusters, String timezone, List<GridRow> gridWindow) {
 
         /**
          * One cluster: its Tier-0 metrics, a representative image (a {@code data:} URL, or null when uncaptured), and
@@ -79,6 +81,14 @@ public class RpAiGatewayClient {
 
         /** One marker post's timing (weekday + {@code HH:mm}) in the request {@code timezone}, for M4.5. */
         public record Occurrence(String weekday, String timeOfDayLocal) {
+        }
+
+        /**
+         * One recent tagged-grid row (M4.7): its grid {@code ordinal} (taggedAt order — newest tag first, P5), the
+         * {@code author}, and whether it is a {@code marker} (a post by the proposed owner). The ordered sequence lets
+         * the AI bracket rounds (a START→END marker pair) and count the member posts inside each round.
+         */
+        public record GridRow(int ordinal, String author, boolean marker) {
         }
     }
 

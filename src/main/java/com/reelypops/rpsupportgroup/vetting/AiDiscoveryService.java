@@ -109,7 +109,14 @@ public class AiDiscoveryService {
             }
         }
         return new VettingRequest(base.igAccount(), base.itemCount(), base.imageStyle().value().name(),
-                base.owner().roster(), clusters, TIMEZONE);
+                base.owner().roster(), clusters, TIMEZONE, gridWindow(analysis.gridWindow()));
+    }
+
+    /** Map the analysis grid window (M4.7) onto the request contract — the ordered timeline for round reconstruction. */
+    private static List<VettingRequest.GridRow> gridWindow(List<GridRow> window) {
+        return window.stream()
+                .map(r -> new VettingRequest.GridRow(r.ordinal(), r.author(), r.marker()))
+                .toList();
     }
 
     /** The first captured representative among the shortcodes, as a base64 {@code data:} URL; null when none captured. */
