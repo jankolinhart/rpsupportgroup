@@ -29,7 +29,9 @@ class RpAiGatewayClientTest {
 
     private static VettingRequest request() {
         return new VettingRequest("glow.grp", 10, "TEXT_OVERLAY", List.of("glow"),
-                List.of(new VettingRequest.Cluster(8, List.of("glow"), 8, 0.71, 0.86, 4.85, "data:image/jpeg;base64,AQID")));
+                List.of(new VettingRequest.Cluster(8, List.of("glow"), 8, 0.71, 0.86, 4.85, "data:image/jpeg;base64,AQID",
+                        List.of(new VettingRequest.Occurrence("MON", "09:03")))),
+                "UTC");
     }
 
     @Test

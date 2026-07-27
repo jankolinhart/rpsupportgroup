@@ -7,6 +7,7 @@ import com.reelypops.rpsupportgroup.corpus.CorpusRepresentative;
 import com.reelypops.rpsupportgroup.corpus.MarkerCorpusService;
 import com.reelypops.rpsupportgroup.group.DetectedProfile;
 import com.reelypops.rpsupportgroup.group.DetectedProfile.AiDiscovery;
+import com.reelypops.rpsupportgroup.group.DetectedProfile.AiDiscovery.WeeklySchedule;
 import com.reelypops.rpsupportgroup.group.DetectedProfile.MarkerReference;
 import com.reelypops.rpsupportgroup.group.DetectedProfile.OwnerCandidate;
 import com.reelypops.rpsupportgroup.group.MarkerStyle;
@@ -18,6 +19,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -34,6 +38,10 @@ import java.util.UUID;
  */
 @Service
 public class AiDiscoveryService {
+
+    // M4.5 v1: marker-post occurrence times are sent to the AI in UTC (the same frame the derived schedule uses until
+    // the admin sets the group timezone in the Vetting Portal); the per-weekday verdict comes back in the same frame.
+    private static final String TIMEZONE = "UTC";
 
     private final DetectedProfileService detected;
     private final VettingProposalService proposals;
@@ -79,6 +87,7 @@ public class AiDiscoveryService {
         SnapshotAnalysis analysis = proposals.analyze(snapshotId);
         List<MarkerReference> refs = analysis.references();
         List<OwnerCandidate> candidates = analysis.candidates();
+        List<List<Instant>> refPostedAt = analysis.referencePostedAt();
         List<VettingRequest.Cluster> clusters = new ArrayList<>();
         for (int i = 0; i < refs.size() && clusters.size() < maxImages; i++) {
             OwnerCandidate c = i < candidates.size() ? candidates.get(i) : null;
@@ -89,7 +98,8 @@ public class AiDiscoveryService {
                     c == null ? 0.0 : c.cadenceRegularity(),
                     c == null ? 0.0 : c.coverage(),
                     c == null ? 0.0 : c.score(),
-                    dataUrl(snapshotId, refs.get(i).sampleShortcodes())));
+                    dataUrl(snapshotId, refs.get(i).sampleShortcodes()),
+                    occurrences(refPostedAt, i)));
         }
         if (clusters.isEmpty()) {
             for (String shortcode : corpus.detail(snapshotId).representativeShortcodes()) {
@@ -98,12 +108,12 @@ public class AiDiscoveryService {
                 }
                 String image = dataUrl(snapshotId, List.of(shortcode));
                 if (image != null) {
-                    clusters.add(new VettingRequest.Cluster(1, List.of(), 1, 0.0, 0.0, 0.0, image));
+                    clusters.add(new VettingRequest.Cluster(1, List.of(), 1, 0.0, 0.0, 0.0, image, List.of()));
                 }
             }
         }
         return new VettingRequest(base.igAccount(), base.itemCount(), base.imageStyle().value().name(),
-                base.owner().roster(), clusters);
+                base.owner().roster(), clusters, TIMEZONE);
     }
 
     /** The first captured representative among the shortcodes, as a base64 {@code data:} URL; null when none captured. */
@@ -118,6 +128,24 @@ public class AiDiscoveryService {
         return null;
     }
 
+    /**
+     * The i-th reference cluster's marker-post timings as {@code (weekday, HH:mm)} occurrences in {@link #TIMEZONE}
+     * (UTC in v1) — the per-weekday signal the AI buckets to derive the schedule. Empty when the cluster has no timings.
+     */
+    private static List<VettingRequest.Occurrence> occurrences(List<List<Instant>> referencePostedAt, int i) {
+        if (i >= referencePostedAt.size()) {
+            return List.of();
+        }
+        List<VettingRequest.Occurrence> occ = new ArrayList<>();
+        for (Instant t : referencePostedAt.get(i)) {
+            ZonedDateTime z = t.atZone(ZoneOffset.UTC);
+            occ.add(new VettingRequest.Occurrence(
+                    z.getDayOfWeek().name().substring(0, 3),
+                    String.format("%02d:%02d", z.getHour(), z.getMinute())));
+        }
+        return occ;
+    }
+
     /** Map the gateway verdict onto the persisted {@link AiDiscovery} facet. */
     private static AiDiscovery toDiscovery(VettingResponse v) {
         List<AiDiscovery.AiReference> references = new ArrayList<>();
@@ -127,7 +155,27 @@ public class AiDiscoveryService {
             }
         }
         return new AiDiscovery(toStyle(v.style()), v.markerType(), v.owner(), references,
-                v.ocrTargetText(), v.confidence(), v.reasoning(), System.currentTimeMillis());
+                v.ocrTargetText(), v.confidence(), v.reasoning(), System.currentTimeMillis(),
+                toWeeklySchedule(v.schedule()));
+    }
+
+    /** Map the gateway's per-weekday verdict onto the persisted {@link WeeklySchedule}; null when the model returned none. */
+    private static WeeklySchedule toWeeklySchedule(List<VettingResponse.DaySchedule> days) {
+        if (days == null || days.isEmpty()) {
+            return null;
+        }
+        List<WeeklySchedule.DaySchedule> mapped = new ArrayList<>();
+        for (VettingResponse.DaySchedule d : days) {
+            List<AiDiscovery.AiReference> markers = new ArrayList<>();
+            if (d.markers() != null) {
+                for (VettingResponse.Reference m : d.markers()) {
+                    markers.add(new AiDiscovery.AiReference(m.markerType(), m.ocrText()));
+                }
+            }
+            mapped.add(new WeeklySchedule.DaySchedule(d.weekday(), d.open(), d.groupType(), d.style(), markers,
+                    d.start(), d.end(), d.endMarkerDayOffset(), d.maxTaggedPosts(), d.confidence()));
+        }
+        return new WeeklySchedule(TIMEZONE, mapped);
     }
 
     private static MarkerStyle toStyle(String style) {

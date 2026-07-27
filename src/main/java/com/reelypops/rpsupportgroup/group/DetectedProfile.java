@@ -92,14 +92,49 @@ public record DetectedProfile(
      * The AI tier's advisory verdict (M4, {@code marker-auto-discovery.md} §5) — the judgment Tier&nbsp;0 cannot make
      * for a text-overlay group: the marker {@link #style}, the round {@link #markerType}, the {@link #owner}, the typed
      * {@link #references} (with OCR target text for text-overlay), an overall {@link #ocrTargetText}, a
-     * {@link #confidence} and a short {@link #reasoning}. Produced only on the explicit admin "Run AI discovery" action;
-     * {@code null} until then. Advisory only — it pre-fills the Vetting Portal, never auto-vets.
+     * {@link #confidence}, a short {@link #reasoning}, and the per-weekday {@link WeeklySchedule} (M4.5). Produced only
+     * on the explicit admin "Run AI discovery" action; {@code null} until then. Advisory only — it pre-fills the Vetting
+     * Portal, never auto-vets.
      */
     public record AiDiscovery(MarkerStyle style, String markerType, String owner, List<AiReference> references,
-                              String ocrTargetText, double confidence, String reasoning, long generatedAtMs) {
+                              String ocrTargetText, double confidence, String reasoning, long generatedAtMs,
+                              WeeklySchedule weeklySchedule) {
 
         /** One AI-confirmed marker reference: its round slot ({@code start}/{@code end}/{@code single}) + OCR text. */
         public record AiReference(String markerType, String ocrText) {
+        }
+
+        /**
+         * The AI's <strong>per-weekday</strong> schedule verdict (M4.5, vision §5c) — the canonical model where each
+         * weekday is OPEN with its own round shape or CLOSED. {@code null} until a text-overlay-aware AI run fills it;
+         * advisory, pre-fills the Vetting Portal per weekday. Times are {@code HH:mm} in {@code timezone} (UTC in v1
+         * until the admin sets the group timezone).
+         *
+         * @param timezone the zone the day times are expressed in (UTC in v1)
+         * @param days     one entry per weekday the model reported (MON…SUN)
+         */
+        public record WeeklySchedule(String timezone, List<DaySchedule> days) {
+
+            /**
+             * One weekday's schedule. {@code groupType} + {@code style} are the AI's raw strings (kept untyped so a
+             * {@code CONTINUOUS} day and any novel value survive fail-open). When {@code open} is false the day is
+             * CLOSED and the remaining fields are ignored.
+             *
+             * @param weekday            the weekday, {@code MON}…{@code SUN}
+             * @param open               true when a round runs that day; false = CLOSED
+             * @param groupType          the day's round structure (SINGLE_MARKER / TWO_MARKER / CONTINUOUS), or null
+             * @param style              the day's marker style (FLAT_BANNER / TEXT_OVERLAY), or null
+             * @param markers            the day's marker references (start / end / single) with OCR text
+             * @param start              the round start time-of-day ({@code HH:mm}), or null
+             * @param end                the round end time-of-day ({@code HH:mm}), or null
+             * @param endMarkerDayOffset whole days from the start marker to the end marker (0 = same day), or null
+             * @param maxTaggedPosts     the per-member cap (max non-marker posts per round), or null
+             * @param confidence         0..1 — the model's confidence in this day, or null
+             */
+            public record DaySchedule(String weekday, boolean open, String groupType, String style,
+                                      List<AiReference> markers, String start, String end,
+                                      Integer endMarkerDayOffset, Integer maxTaggedPosts, Double confidence) {
+            }
         }
     }
 }
