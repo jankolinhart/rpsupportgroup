@@ -45,10 +45,11 @@ public class VettingProposalService {
     // neutral, non-committal cadence rather than a falsely-perfect one.
     private static final double NEUTRAL_CADENCE = 0.5;
 
-    // M4.7: how much of the recent tagged grid to hand the AI as an ordered window — enough recent owner markers to
-    // reconstruct several rounds (each round is ~2 markers), bounded so a huge grid can't blow up the request.
+    // M4.7/M4.8: how much of the recent tagged grid to hand the AI as an ordered window — enough recent owner markers to
+    // reconstruct several rounds (each round is ~2 markers). The row cap is a SOFT bound (the window still extends to the
+    // next marker to close a round) that only guards a pathologically member-heavy grid.
     private static final int GRID_WINDOW_MARKERS = 12;
-    private static final int GRID_WINDOW_MAX_ROWS = 400;
+    private static final int GRID_WINDOW_MAX_ROWS = 800;
 
     private static final Logger log = LoggerFactory.getLogger(VettingProposalService.class);
 
@@ -226,19 +227,25 @@ public class VettingProposalService {
 
     /**
      * The most recent slice of the grid (newest tag first, directive P5) as an ordered {@link GridRow} window: each
-     * (post × author) row is flagged {@code marker} when its author is the proposed owner. Stops once it has spanned
-     * {@link #GRID_WINDOW_MARKERS} owner markers (≈ that many round boundaries) or {@link #GRID_WINDOW_MAX_ROWS} rows,
-     * whichever comes first, so the AI sees a handful of complete recent rounds — not the whole grid.
+     * (post × author) row is flagged {@code marker} when its author is the proposed owner. The window is ROUND-COMPLETE
+     * — it only ends on a marker (a round boundary), never mid-round, so the oldest round's START is never truncated
+     * below the edge (which would leave that round with an END but no START — the missing-Sunday-START symptom). It
+     * spans up to {@link #GRID_WINDOW_MARKERS} owner markers; a pathologically member-heavy grid trips
+     * {@link #GRID_WINDOW_MAX_ROWS} but still extends to the next marker to close the current round.
      */
     private static List<GridRow> buildGridWindow(List<CorpusSnapshotItem> gridItems, String owner) {
         List<GridRow> rows = new ArrayList<>();
         int markers = 0;
-        for (int i = 0; i < gridItems.size() && markers < GRID_WINDOW_MARKERS && rows.size() < GRID_WINDOW_MAX_ROWS; i++) {
+        boolean complete = false;
+        for (int i = 0; i < gridItems.size() && !complete; i++) {
             CorpusSnapshotItem item = gridItems.get(i);
             boolean marker = owner.equals(item.getAuthorUsername());
             rows.add(new GridRow(item.getOrdinal(), item.getAuthorUsername(), marker));
             if (marker) {
                 markers++;
+                // Close the window only on a marker (a round boundary), once we've spanned enough markers or overrun
+                // the soft row cap — so a round is never cut mid-way (which would drop the oldest round's START).
+                complete = markers >= GRID_WINDOW_MARKERS || rows.size() >= GRID_WINDOW_MAX_ROWS;
             }
         }
         return rows;
