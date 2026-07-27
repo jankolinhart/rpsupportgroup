@@ -343,4 +343,32 @@ class VettingProposalServiceTest {
         assertThat(s.endMarkerDayOffset()).isEqualTo(6);                   // Sun → the following Sat
         assertThat(s.currentState()).isEqualTo(RoundState.CLOSED_PERIOD);  // trailing marker is an END
     }
+
+    @Test
+    void aiSamplesCarryTheOwnersFullBannerSetIncludingSubThresholdFragments() {
+        // The proposed owner posts a STRONG clean marker (H0, four posts spanning the grid → score ≥ minScore, so a
+        // reference) AND a WEAK fragment (H_FAR, two bunched posts → score < minScore, NOT a reference). The broadened
+        // AI sample must carry BOTH, so a high-variation banner that shattered below the gate still reaches the model.
+        MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
+        UUID id = snap.getId();
+        List<CorpusSnapshotItem> grid = List.of(
+                at(id, "owner.acct", H0, 0), at(id, "owner.acct", H0, 1),
+                at(id, "owner.acct", H0, 2), at(id, "owner.acct", H0, 3),        // strong: 4 posts spanning → score 2.4
+                at(id, "owner.acct", H_FAR, 4), at(id, "owner.acct", H_FAR, 5)); // weak: 2 bunched posts → score 0.2
+        when(snapshots.findById(id)).thenReturn(Optional.of(snap));
+        when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
+
+        SnapshotAnalysis a = service.analyze(id);
+
+        // The score gate keeps only the strong cluster as a reference…
+        assertThat(a.references()).singleElement().satisfies(r -> assertThat(r.confidence()).isEqualTo(1.0));
+        // …but the AI sample carries BOTH the strong marker and the sub-threshold fragment, all the proposed owner's.
+        assertThat(a.aiSamples()).hasSize(2);
+        assertThat(a.aiSamples()).allSatisfy(s -> {
+            assertThat(s.author()).isEqualTo("owner.acct");
+            assertThat(s.sampleShortcodes()).isNotEmpty();
+        });
+        assertThat(a.aiSamples()).anyMatch(s -> s.score() >= 2.0); // the reference-grade marker
+        assertThat(a.aiSamples()).anyMatch(s -> s.score() < 2.0);  // the fragment the gate dropped but the AI now sees
+    }
 }

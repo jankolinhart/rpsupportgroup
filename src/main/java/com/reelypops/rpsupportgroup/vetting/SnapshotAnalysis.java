@@ -19,10 +19,16 @@ import java.util.List;
  *
  * <p>{@code referencePostedAt} carries, parallel to {@link #references}, the sorted marker-post timestamps of each
  * reference cluster (the owner's posts) — the per-weekday occurrence source the AI-discovery request needs (M4.5).
+ *
+ * <p>{@code aiSamples} is the broadened marker set the AI-discovery request actually sends (M4.6): every cluster of the
+ * PROPOSED owner, including the sub-threshold fragments the {@code minScore} gate keeps out of {@link #references}, so
+ * the model sees the owner's full banner vocabulary (a shattered high-variation "START" as well as a clean "END") — see
+ * {@link AiMarkerSample}.
  */
 record SnapshotAnalysis(DetectorProfileProposal proposal,
                         List<OwnerCandidate> candidates,
                         List<MarkerReference> references,
                         ScheduleFacet schedule,
-                        List<List<Instant>> referencePostedAt) {
+                        List<List<Instant>> referencePostedAt,
+                        List<AiMarkerSample> aiSamples) {
 }

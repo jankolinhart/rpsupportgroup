@@ -38,7 +38,7 @@ rp:
   aigateway:
     base-url: ${RPAIGATEWAY_BASE_URL:}
     internal-api-key: ${RPAIGATEWAY_INTERNAL_API_KEY:}
-    max-images: ${RP_AIGATEWAY_MAX_IMAGES:12}
+    max-images: ${RP_AIGATEWAY_MAX_IMAGES:24}
 
 logging:
   level:
