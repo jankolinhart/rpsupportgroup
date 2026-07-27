@@ -55,7 +55,7 @@ class DetectedProfileServiceTest {
         ScheduleFacet schedule = new ScheduleFacet(MarkerGroupType.TWO_MARKER, 0.88,
                 new RoundTime("09:00", 0.8), new RoundTime("17:00", 0.7), null,
                 List.of(1, 2), 0.6, RoundState.OPEN, 1, 1.0, 0.9, 1.0, 4);
-        return new SnapshotAnalysis(proposal, candidates, references, schedule, List.of(), List.of());
+        return new SnapshotAnalysis(proposal, candidates, references, schedule, List.of(), List.of(), List.of());
     }
 
     @Test

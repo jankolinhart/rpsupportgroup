@@ -66,8 +66,11 @@ class AiDiscoveryServiceTest {
                 new AiMarkerSample(8, "glow", 8, 0.71, 0.86, 4.85, List.of("sc1"),
                         List.of(Instant.parse("2026-01-05T09:03:00Z"), Instant.parse("2026-01-06T09:05:00Z"))), // Mon, Tue
                 new AiMarkerSample(2, "glow", 2, 0.5, 0.2, 0.2, List.of("sc2"), List.of())); // uncaptured image, no timings
+        // M4.7: the recent grid window in order — two owner markers bracketing a member post.
+        List<GridRow> gridWindow = List.of(
+                new GridRow(0, "glow", true), new GridRow(1, "member.a", false), new GridRow(2, "glow", true));
         when(proposals.analyze(SNAP)).thenReturn(
-                new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(), samples));
+                new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(), samples, gridWindow));
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
         when(corpus.getRepresentative(SNAP, "sc2")).thenReturn(Optional.empty()); // uncaptured ⇒ null image
         when(gateway.vet(any())).thenReturn(Optional.of(new VettingResponse("TEXT_OVERLAY", "TWO_MARKER", "glow",
@@ -111,6 +114,11 @@ class AiDiscoveryServiceTest {
             assertThat(c.imageUrl()).isNull(); // sc2 uncaptured
             assertThat(c.occurrences()).isEmpty();
         });
+        // M4.7: the ordered grid window is relayed verbatim (markers flagged, in grid order).
+        assertThat(sent.gridWindow()).hasSize(3);
+        assertThat(sent.gridWindow()).extracting(VettingRequest.GridRow::ordinal).containsExactly(0, 1, 2);
+        assertThat(sent.gridWindow()).extracting(VettingRequest.GridRow::marker).containsExactly(true, false, true);
+        assertThat(sent.gridWindow().get(1).author()).isEqualTo("member.a");
 
         ArgumentCaptor<DetectedProfile> saved = ArgumentCaptor.forClass(DetectedProfile.class);
         verify(config).updateDetectedProfile(saved.capture());
@@ -151,7 +159,7 @@ class AiDiscoveryServiceTest {
     void failsOpenReturningTheBaseAdvisoryWhenTheGatewayIsOff() {
         DetectedProfile base = base();
         when(detected.detect(SNAP)).thenReturn(base);
-        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(), List.of()));
+        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(), List.of(), List.of()));
         when(corpus.detail(SNAP)).thenReturn(new MarkerCorpusService.SnapshotDetail(null, null, List.of()));
         when(gateway.vet(any())).thenReturn(Optional.empty());
 
@@ -166,7 +174,7 @@ class AiDiscoveryServiceTest {
     @Test
     void fallsBackToRepresentativeImagesForATextOverlayGroup() {
         when(detected.detect(SNAP)).thenReturn(base());
-        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(), List.of()));
+        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(), List.of(), List.of()));
         when(corpus.detail(SNAP)).thenReturn(
                 new MarkerCorpusService.SnapshotDetail(null, null, List.of("sc1", "sc2", "sc3")));
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
@@ -192,7 +200,7 @@ class AiDiscoveryServiceTest {
     void mapsAnUnrecognisedStyleToUnknown() {
         when(detected.detect(SNAP)).thenReturn(base());
         when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(),
-                List.of(new AiMarkerSample(4, "glow", 4, 0.9, 0.8, 3.8, List.of("sc1"), List.of()))));
+                List.of(new AiMarkerSample(4, "glow", 4, 0.9, 0.8, 3.8, List.of("sc1"), List.of())), List.of()));
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
         when(gateway.vet(any())).thenReturn(Optional.of(
                 new VettingResponse("WHAT", "CONTINUOUS", null, List.of(), null, 0.1, "?", List.of())));
@@ -209,7 +217,7 @@ class AiDiscoveryServiceTest {
     void throws404WhenTheConfigIsMissing() {
         when(detected.detect(SNAP)).thenReturn(base());
         when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(),
-                List.of(new AiMarkerSample(4, "glow", 4, 0.9, 0.8, 3.8, List.of("sc1"), List.of()))));
+                List.of(new AiMarkerSample(4, "glow", 4, 0.9, 0.8, 3.8, List.of("sc1"), List.of())), List.of()));
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
         when(gateway.vet(any())).thenReturn(Optional.of(
                 new VettingResponse("FLAT_BANNER", "SINGLE_MARKER", "glow", List.of(), null, 0.9, "ok", null)));
@@ -225,7 +233,7 @@ class AiDiscoveryServiceTest {
         when(detected.detect(SNAP)).thenReturn(base());
         when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(),
                 List.of(new AiMarkerSample(8, "glow", 8, 0.71, 0.86, 4.85, List.of("sc1"), List.of()),
-                        new AiMarkerSample(6, "glow", 6, 0.6, 0.7, 3.0, List.of("sc2"), List.of()))));
+                        new AiMarkerSample(6, "glow", 6, 0.6, 0.7, 3.0, List.of("sc2"), List.of())), List.of()));
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
         when(gateway.vet(any())).thenReturn(Optional.empty());
 
@@ -239,7 +247,7 @@ class AiDiscoveryServiceTest {
     @Test
     void capsRepresentativeFallbackAtMaxImages() {
         when(detected.detect(SNAP)).thenReturn(base());
-        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(), List.of()));
+        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(), List.of(), List.of()));
         when(corpus.detail(SNAP)).thenReturn(
                 new MarkerCorpusService.SnapshotDetail(null, null, List.of("sc1", "sc2")));
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));

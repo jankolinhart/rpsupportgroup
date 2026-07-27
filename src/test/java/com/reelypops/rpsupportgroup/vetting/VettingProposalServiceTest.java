@@ -16,6 +16,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -370,5 +371,44 @@ class VettingProposalServiceTest {
         });
         assertThat(a.aiSamples()).anyMatch(s -> s.score() >= 2.0); // the reference-grade marker
         assertThat(a.aiSamples()).anyMatch(s -> s.score() < 2.0);  // the fragment the gate dropped but the AI now sees
+    }
+
+    @Test
+    void gridWindowPreservesGridOrderAndFlagsTheOwnersMarkers() {
+        // The AI reconstructs rounds from the grid IN ORDER with the owner's markers flagged; members are the rows between.
+        MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
+        UUID id = snap.getId();
+        List<CorpusSnapshotItem> grid = List.of(
+                at(id, "owner.acct", H0, 0), at(id, "alice", H_FAR, 1), at(id, "bob", H_FAR2, 2),
+                at(id, "owner.acct", H0, 3), at(id, "owner.acct", H0, 4));
+        when(snapshots.findById(id)).thenReturn(Optional.of(snap));
+        when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
+
+        SnapshotAnalysis a = service.analyze(id);
+
+        assertThat(a.gridWindow()).extracting(GridRow::ordinal).containsExactly(0, 1, 2, 3, 4);
+        assertThat(a.gridWindow()).extracting(GridRow::author)
+                .containsExactly("owner.acct", "alice", "bob", "owner.acct", "owner.acct");
+        assertThat(a.gridWindow()).extracting(GridRow::marker)
+                .containsExactly(true, false, false, true, true); // only the proposed owner's posts are markers
+    }
+
+    @Test
+    void gridWindowStopsAtTheMarkerCap() {
+        // A long grid is windowed to the most recent markers so the request can't blow up (GRID_WINDOW_MARKERS = 12).
+        MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
+        UUID id = snap.getId();
+        List<CorpusSnapshotItem> grid = new ArrayList<>();
+        for (int i = 0; i < 15; i++) {
+            grid.add(at(id, "owner.acct", H0, i)); // 15 owner markers, more than the window cap
+        }
+        when(snapshots.findById(id)).thenReturn(Optional.of(snap));
+        when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
+
+        SnapshotAnalysis a = service.analyze(id);
+
+        assertThat(a.gridWindow()).hasSize(12);                          // capped at GRID_WINDOW_MARKERS
+        assertThat(a.gridWindow()).allSatisfy(r -> assertThat(r.marker()).isTrue());
+        assertThat(a.gridWindow().get(11).ordinal()).isEqualTo(11);     // the 12th marker is the last row included
     }
 }
