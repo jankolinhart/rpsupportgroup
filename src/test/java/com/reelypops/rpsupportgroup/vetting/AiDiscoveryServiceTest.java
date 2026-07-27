@@ -21,6 +21,8 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -42,7 +44,7 @@ class AiDiscoveryServiceTest {
     private final SupportGroupConfigRepository configs = mock(SupportGroupConfigRepository.class);
 
     private AiDiscoveryService service(int maxImages) {
-        return new AiDiscoveryService(detected, proposals, corpus, gateway, configs, maxImages);
+        return new AiDiscoveryService(detected, proposals, corpus, gateway, configs, maxImages, 3);
     }
 
     private DetectedProfile base() {
@@ -268,5 +270,23 @@ class AiDiscoveryServiceTest {
         ArgumentCaptor<VettingRequest> request = ArgumentCaptor.forClass(VettingRequest.class);
         verify(gateway).vet(request.capture());
         assertThat(request.getValue().clusters()).hasSize(1); // stops after the first captured representative
+    }
+
+    @Test
+    void sendsUpToPerClusterSamplesCapturedImagesPerCluster() {
+        when(detected.detect(SNAP)).thenReturn(base());
+        // One owner cluster whose sample list has FOUR captured posts (a plain marker + weekday variants the dHash pass
+        // absorbed into it). We send at most perClusterSamples (3) images of the cluster so the absorbed variants surface.
+        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(),
+                List.of(new AiMarkerSample(8, "glow", 8, 0.71, 0.86, 4.85, List.of("a", "b", "c", "d"), List.of())), List.of()));
+        when(corpus.getRepresentative(eq(SNAP), anyString())).thenReturn(Optional.of(rep()));
+        when(gateway.vet(any())).thenReturn(Optional.empty());
+
+        service(12).runAiDiscovery(SNAP);
+
+        ArgumentCaptor<VettingRequest> request = ArgumentCaptor.forClass(VettingRequest.class);
+        verify(gateway).vet(request.capture());
+        assertThat(request.getValue().clusters()).hasSize(3); // 4 captured samples, capped at perClusterSamples = 3
+        assertThat(request.getValue().clusters()).allSatisfy(c -> assertThat(c.imageUrl()).isNotNull());
     }
 }
