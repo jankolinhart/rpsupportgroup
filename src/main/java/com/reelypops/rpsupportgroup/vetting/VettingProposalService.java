@@ -102,7 +102,7 @@ public class VettingProposalService {
         SnapshotAnalysis analysis = buildAnalysis(snapshot, gridItems, withImages);
         DetectorProfileProposal enriched = enricher.enrich(analysis.proposal(), gridItems);
         return new SnapshotAnalysis(enriched, analysis.candidates(), analysis.references(), analysis.schedule(),
-                analysis.referencePostedAt());
+                analysis.referencePostedAt(), analysis.aiSamples());
     }
 
     private SnapshotAnalysis buildAnalysis(MarkerCorpusSnapshot snapshot, List<CorpusSnapshotItem> gridItems,
@@ -199,12 +199,19 @@ public class VettingProposalService {
                 .toList();
         ScheduleFacet schedule = ScheduleDeriver.derive(ownerClusters);
         logScheduleDiagnostics(id, top.dominantAuthor(), ownerClusters, schedule);
-        return new SnapshotAnalysis(proposal, ownerCandidates, references, schedule, referencePostedAt);
+        // M4.6: the broadened marker sample for the AI — EVERY cluster of the proposed owner (not just the score>=minScore
+        // references), so a high-variation banner that shattered into sub-threshold fragments (e.g. a "START" caption over
+        // changing backgrounds) still reaches the model alongside the clean marker, each with its image + post timestamps.
+        List<AiMarkerSample> aiSamples = candidates.stream()
+                .filter(c -> c.dominantAuthor().equals(top.dominantAuthor()))
+                .map(MarkerCandidate::toAiSample)
+                .toList();
+        return new SnapshotAnalysis(proposal, ownerCandidates, references, schedule, referencePostedAt, aiSamples);
     }
 
     /** The analysis for a snapshot with no clean owner: just the proposal, no candidates / references / schedule. */
     private static SnapshotAnalysis emptyAnalysis(DetectorProfileProposal proposal) {
-        return new SnapshotAnalysis(proposal, List.of(), List.of(), ScheduleDeriver.empty(), List.of());
+        return new SnapshotAnalysis(proposal, List.of(), List.of(), ScheduleDeriver.empty(), List.of(), List.of());
     }
 
     /** Calibration diagnostic (M2): per-candidate marker-signature metrics + the accept/escalate decision (cloud log). */
@@ -369,6 +376,17 @@ public class VettingProposalService {
         /** One recurring-image cluster as an untyped reference; confidence = normalised marker-signature strength. */
         MarkerReference toReference(double minScore) {
             return new MarkerReference(dHash, distinctPosts, sampleShortcodes, Math.min(1.0, score / minScore));
+        }
+
+        /** This cluster as a broadened {@link AiMarkerSample} for the AI request — image + sorted post timestamps (M4.6). */
+        AiMarkerSample toAiSample() {
+            List<Instant> postedAt = ownerPosts.stream()
+                    .map(ScheduleDeriver.Post::postedAt)
+                    .filter(t -> t != null)
+                    .sorted()
+                    .toList();
+            return new AiMarkerSample(distinctPosts, dominantAuthor, recurrence, cadenceRegularity, coverage, score,
+                    sampleShortcodes, postedAt);
         }
 
         /** Regularity of the gaps between successive posts (1 = perfectly even); needs >= 3 posts to mean anything. */

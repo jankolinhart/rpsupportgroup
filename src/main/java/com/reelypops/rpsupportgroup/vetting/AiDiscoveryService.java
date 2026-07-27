@@ -8,8 +8,6 @@ import com.reelypops.rpsupportgroup.corpus.MarkerCorpusService;
 import com.reelypops.rpsupportgroup.group.DetectedProfile;
 import com.reelypops.rpsupportgroup.group.DetectedProfile.AiDiscovery;
 import com.reelypops.rpsupportgroup.group.DetectedProfile.AiDiscovery.WeeklySchedule;
-import com.reelypops.rpsupportgroup.group.DetectedProfile.MarkerReference;
-import com.reelypops.rpsupportgroup.group.DetectedProfile.OwnerCandidate;
 import com.reelypops.rpsupportgroup.group.MarkerStyle;
 import com.reelypops.rpsupportgroup.group.SupportGroupConfig;
 import com.reelypops.rpsupportgroup.group.SupportGroupConfigRepository;
@@ -53,7 +51,7 @@ public class AiDiscoveryService {
     public AiDiscoveryService(DetectedProfileService detected, VettingProposalService proposals,
                               MarkerCorpusService corpus, RpAiGatewayClient gateway,
                               SupportGroupConfigRepository configs,
-                              @Value("${rp.aigateway.max-images:12}") int maxImages) {
+                              @Value("${rp.aigateway.max-images:24}") int maxImages) {
         this.detected = detected;
         this.proposals = proposals;
         this.corpus = corpus;
@@ -82,24 +80,22 @@ public class AiDiscoveryService {
         return enriched;
     }
 
-    /** Reduce the Tier-0 clusters (+ representative images) to the gateway request; fall back to raw representatives. */
+    /** Reduce the broadened per-owner marker sample (+ representative images) to the gateway request; fall back to raw representatives. */
     private VettingRequest buildRequest(UUID snapshotId, DetectedProfile base) {
         SnapshotAnalysis analysis = proposals.analyze(snapshotId);
-        List<MarkerReference> refs = analysis.references();
-        List<OwnerCandidate> candidates = analysis.candidates();
-        List<List<Instant>> refPostedAt = analysis.referencePostedAt();
+        List<AiMarkerSample> samples = analysis.aiSamples();
         List<VettingRequest.Cluster> clusters = new ArrayList<>();
-        for (int i = 0; i < refs.size() && clusters.size() < maxImages; i++) {
-            OwnerCandidate c = i < candidates.size() ? candidates.get(i) : null;
+        for (int i = 0; i < samples.size() && clusters.size() < maxImages; i++) {
+            AiMarkerSample s = samples.get(i);
             clusters.add(new VettingRequest.Cluster(
-                    refs.get(i).distinctPosts(),
-                    c == null ? List.of() : List.of(c.author()),
-                    c == null ? 0 : c.recurrence(),
-                    c == null ? 0.0 : c.cadenceRegularity(),
-                    c == null ? 0.0 : c.coverage(),
-                    c == null ? 0.0 : c.score(),
-                    dataUrl(snapshotId, refs.get(i).sampleShortcodes()),
-                    occurrences(refPostedAt, i)));
+                    s.distinctPosts(),
+                    List.of(s.author()),
+                    s.recurrence(),
+                    s.cadenceRegularity(),
+                    s.coverage(),
+                    s.score(),
+                    dataUrl(snapshotId, s.sampleShortcodes()),
+                    occurrences(s.postedAt())));
         }
         if (clusters.isEmpty()) {
             for (String shortcode : corpus.detail(snapshotId).representativeShortcodes()) {
@@ -129,15 +125,12 @@ public class AiDiscoveryService {
     }
 
     /**
-     * The i-th reference cluster's marker-post timings as {@code (weekday, HH:mm)} occurrences in {@link #TIMEZONE}
-     * (UTC in v1) — the per-weekday signal the AI buckets to derive the schedule. Empty when the cluster has no timings.
+     * A reference cluster's marker-post timings as {@code (weekday, HH:mm)} occurrences in {@link #TIMEZONE} (UTC in v1)
+     * — the per-weekday signal the AI buckets to derive the schedule. Empty when the cluster has no captured timings.
      */
-    private static List<VettingRequest.Occurrence> occurrences(List<List<Instant>> referencePostedAt, int i) {
-        if (i >= referencePostedAt.size()) {
-            return List.of();
-        }
+    private static List<VettingRequest.Occurrence> occurrences(List<Instant> postedAt) {
         List<VettingRequest.Occurrence> occ = new ArrayList<>();
-        for (Instant t : referencePostedAt.get(i)) {
+        for (Instant t : postedAt) {
             ZonedDateTime z = t.atZone(ZoneOffset.UTC);
             occ.add(new VettingRequest.Occurrence(
                     z.getDayOfWeek().name().substring(0, 3),

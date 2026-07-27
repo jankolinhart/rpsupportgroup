@@ -6,8 +6,6 @@ import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.VettingResponse;
 import com.reelypops.rpsupportgroup.corpus.CorpusRepresentative;
 import com.reelypops.rpsupportgroup.corpus.MarkerCorpusService;
 import com.reelypops.rpsupportgroup.group.DetectedProfile;
-import com.reelypops.rpsupportgroup.group.DetectedProfile.MarkerReference;
-import com.reelypops.rpsupportgroup.group.DetectedProfile.OwnerCandidate;
 import com.reelypops.rpsupportgroup.group.MarkerStyle;
 import com.reelypops.rpsupportgroup.group.SupportGroupConfig;
 import com.reelypops.rpsupportgroup.group.SupportGroupConfigRepository;
@@ -62,14 +60,14 @@ class AiDiscoveryServiceTest {
     @Test
     void attachesTheVerdictWithClusterMetricsAndRepresentativeImages() {
         when(detected.detect(SNAP)).thenReturn(base());
-        List<MarkerReference> refs = List.of(
-                new MarkerReference("h0", 8, List.of("sc1"), 0.9),
-                new MarkerReference("h1", 2, List.of("sc2"), 0.2)); // no aligned candidate ⇒ default metrics
-        List<OwnerCandidate> candidates = List.of(new OwnerCandidate("glow", 8, 8, 1.0, 0.71, 0.86, 4.85));
-        List<List<Instant>> refPostedAt = List.of(
-                List.of(Instant.parse("2026-01-05T09:03:00Z"), Instant.parse("2026-01-06T09:05:00Z")), // Mon, Tue (UTC)
-                List.of()); // second ref has no captured timings
-        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, candidates, refs, null, refPostedAt));
+        // The broadened AI sample (M4.6): the clean END banner (image sc1, Mon+Tue timings) plus a sub-threshold START
+        // fragment (uncaptured image sc2, no timings) — both the proposed owner's, sent PAST the Tier-0 reference gate.
+        List<AiMarkerSample> samples = List.of(
+                new AiMarkerSample(8, "glow", 8, 0.71, 0.86, 4.85, List.of("sc1"),
+                        List.of(Instant.parse("2026-01-05T09:03:00Z"), Instant.parse("2026-01-06T09:05:00Z"))), // Mon, Tue
+                new AiMarkerSample(2, "glow", 2, 0.5, 0.2, 0.2, List.of("sc2"), List.of())); // uncaptured image, no timings
+        when(proposals.analyze(SNAP)).thenReturn(
+                new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(), samples));
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
         when(corpus.getRepresentative(SNAP, "sc2")).thenReturn(Optional.empty()); // uncaptured ⇒ null image
         when(gateway.vet(any())).thenReturn(Optional.of(new VettingResponse("TEXT_OVERLAY", "TWO_MARKER", "glow",
@@ -107,9 +105,10 @@ class AiDiscoveryServiceTest {
                     .containsExactly("09:03", "09:05");
         });
         assertThat(sent.clusters().get(1)).satisfies(c -> {
-            assertThat(c.authors()).isEmpty();
-            assertThat(c.recurrence()).isZero();
-            assertThat(c.imageUrl()).isNull();
+            assertThat(c.size()).isEqualTo(2);
+            assertThat(c.authors()).containsExactly("glow"); // every sample carries the proposed owner
+            assertThat(c.recurrence()).isEqualTo(2);
+            assertThat(c.imageUrl()).isNull(); // sc2 uncaptured
             assertThat(c.occurrences()).isEmpty();
         });
 
@@ -152,7 +151,7 @@ class AiDiscoveryServiceTest {
     void failsOpenReturningTheBaseAdvisoryWhenTheGatewayIsOff() {
         DetectedProfile base = base();
         when(detected.detect(SNAP)).thenReturn(base);
-        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of()));
+        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(), List.of()));
         when(corpus.detail(SNAP)).thenReturn(new MarkerCorpusService.SnapshotDetail(null, null, List.of()));
         when(gateway.vet(any())).thenReturn(Optional.empty());
 
@@ -167,7 +166,7 @@ class AiDiscoveryServiceTest {
     @Test
     void fallsBackToRepresentativeImagesForATextOverlayGroup() {
         when(detected.detect(SNAP)).thenReturn(base());
-        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of()));
+        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(), List.of()));
         when(corpus.detail(SNAP)).thenReturn(
                 new MarkerCorpusService.SnapshotDetail(null, null, List.of("sc1", "sc2", "sc3")));
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
@@ -192,9 +191,8 @@ class AiDiscoveryServiceTest {
     @Test
     void mapsAnUnrecognisedStyleToUnknown() {
         when(detected.detect(SNAP)).thenReturn(base());
-        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null,
-                List.of(new OwnerCandidate("glow", 4, 4, 1.0, 0.9, 0.8, 3.8)),
-                List.of(new MarkerReference("h0", 4, List.of("sc1"), 0.9)), null, List.of()));
+        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(),
+                List.of(new AiMarkerSample(4, "glow", 4, 0.9, 0.8, 3.8, List.of("sc1"), List.of()))));
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
         when(gateway.vet(any())).thenReturn(Optional.of(
                 new VettingResponse("WHAT", "CONTINUOUS", null, List.of(), null, 0.1, "?", List.of())));
@@ -210,9 +208,8 @@ class AiDiscoveryServiceTest {
     @Test
     void throws404WhenTheConfigIsMissing() {
         when(detected.detect(SNAP)).thenReturn(base());
-        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null,
-                List.of(new OwnerCandidate("glow", 4, 4, 1.0, 0.9, 0.8, 3.8)),
-                List.of(new MarkerReference("h0", 4, List.of("sc1"), 0.9)), null, List.of()));
+        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(),
+                List.of(new AiMarkerSample(4, "glow", 4, 0.9, 0.8, 3.8, List.of("sc1"), List.of()))));
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
         when(gateway.vet(any())).thenReturn(Optional.of(
                 new VettingResponse("FLAT_BANNER", "SINGLE_MARKER", "glow", List.of(), null, 0.9, "ok", null)));
@@ -224,13 +221,11 @@ class AiDiscoveryServiceTest {
     }
 
     @Test
-    void capsClustersFromReferencesAtMaxImages() {
+    void capsClustersFromSamplesAtMaxImages() {
         when(detected.detect(SNAP)).thenReturn(base());
-        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null,
-                List.of(new OwnerCandidate("glow", 8, 8, 1.0, 0.71, 0.86, 4.85),
-                        new OwnerCandidate("glow", 6, 6, 1.0, 0.6, 0.7, 3.0)),
-                List.of(new MarkerReference("h0", 8, List.of("sc1"), 0.9),
-                        new MarkerReference("h1", 6, List.of("sc2"), 0.7)), null, List.of()));
+        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(),
+                List.of(new AiMarkerSample(8, "glow", 8, 0.71, 0.86, 4.85, List.of("sc1"), List.of()),
+                        new AiMarkerSample(6, "glow", 6, 0.6, 0.7, 3.0, List.of("sc2"), List.of()))));
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
         when(gateway.vet(any())).thenReturn(Optional.empty());
 
@@ -238,13 +233,13 @@ class AiDiscoveryServiceTest {
 
         ArgumentCaptor<VettingRequest> request = ArgumentCaptor.forClass(VettingRequest.class);
         verify(gateway).vet(request.capture());
-        assertThat(request.getValue().clusters()).hasSize(1); // second reference dropped by the cap
+        assertThat(request.getValue().clusters()).hasSize(1); // second sample dropped by the cap
     }
 
     @Test
     void capsRepresentativeFallbackAtMaxImages() {
         when(detected.detect(SNAP)).thenReturn(base());
-        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of()));
+        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(), List.of()));
         when(corpus.detail(SNAP)).thenReturn(
                 new MarkerCorpusService.SnapshotDetail(null, null, List.of("sc1", "sc2")));
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
