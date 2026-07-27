@@ -120,7 +120,8 @@ public class VettingProposalService {
             return emptyAnalysis(new DetectorProfileProposal(id, ig, 0, ProposedType.UNKNOWN, List.of(), List.of(),
                     0.0, false, PROVENANCE_TIER0));
         }
-        List<Cluster> strong = cluster(gridItems).stream().filter(c -> c.size() >= minClusterSize).toList();
+        List<Cluster> allClusters = cluster(gridItems);
+        List<Cluster> strong = allClusters.stream().filter(c -> c.size() >= minClusterSize).toList();
         if (strong.isEmpty()) {
             // No image recurs across the grid: a text-overlay style — Tier 0 cannot judge it, so escalate to vision.
             return emptyAnalysis(new DetectorProfileProposal(id, ig, itemCount, ProposedType.TEXT_OVERLAY, List.of(),
@@ -205,11 +206,22 @@ public class VettingProposalService {
                 .toList();
         ScheduleFacet schedule = ScheduleDeriver.derive(ownerClusters);
         logScheduleDiagnostics(id, top.dominantAuthor(), ownerClusters, schedule);
-        // M4.6: the broadened marker sample for the AI — EVERY cluster of the proposed owner (not just the score>=minScore
-        // references), so a high-variation banner that shattered into sub-threshold fragments (e.g. a "START" caption over
-        // changing backgrounds) still reaches the model alongside the clean marker, each with its image + post timestamps.
-        List<AiMarkerSample> aiSamples = candidates.stream()
+        // M4.6/M4.10: the broadened marker sample for the AI — EVERY captured cluster of the proposed owner, not only the
+        // score>=minScore references and not only the size>=minClusterSize candidates. A high-variation banner shatters two
+        // ways: into sub-SCORE fragments (M4.6) AND into sub-SIZE dHash SINGLETONS — a weekend-only "START Sonntag" posted
+        // once or twice over changing backgrounds never clusters, so the `strong` gate drops it and it never reaches the
+        // model even though it is a preselected marker candidate the admin SEES in the corpus grid. Rebuild from ALL
+        // clusters and keep every owner-dominant one that is EITHER a scored candidate (size>=minClusterSize, single-owner,
+        // as before) OR carries a captured representative image (the dropped singleton variants); an image-less owner
+        // singleton stays out (pure noise). AiDiscoveryService round-robins one image per cluster first, so the extra
+        // low-score singletons here are not starved by the maxImages cap.
+        List<AiMarkerSample> aiSamples = allClusters.stream()
+                .map(c -> MarkerCandidate.from(c.representative(), c.members(), maxSamples, itemCount, withImages))
                 .filter(c -> c.dominantAuthor().equals(top.dominantAuthor()))
+                .filter(c -> (c.distinctPosts() >= minClusterSize && c.purity() >= minPurity)
+                        || c.sampleShortcodes().stream().anyMatch(withImages::contains))
+                .sorted(Comparator.comparingDouble(MarkerCandidate::score).reversed()
+                        .thenComparing(MarkerCandidate::dominantAuthor))
                 .map(MarkerCandidate::toAiSample)
                 .toList();
         // M4.7: the recent tagged-grid window in true order — the owner's markers interleaved with member posts — so the
