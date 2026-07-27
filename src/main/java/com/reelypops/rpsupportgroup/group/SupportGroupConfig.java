@@ -242,9 +242,10 @@ public class SupportGroupConfig {
      * definition changed).
      */
     public void saveVettedProfile(VettedProfile profile) {
-        this.vettedProfile = profile;
-        this.definition = profile.definition().canonicalized();
-        this.description = profile.description();
+        VettedProfile p = profile.withDerivedDefinition();
+        this.vettedProfile = p;
+        this.definition = p.definition().canonicalized();
+        this.description = p.description();
         this.version++;
     }
 
