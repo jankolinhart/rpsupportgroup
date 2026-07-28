@@ -94,11 +94,12 @@ public record DetectedProfile(
      * {@link #references} (with OCR target text for text-overlay), an overall {@link #ocrTargetText}, a
      * {@link #confidence}, a short {@link #reasoning}, and the per-weekday {@link WeeklySchedule} (M4.5). Produced only
      * on the explicit admin "Run AI discovery" action; {@code null} until then. Advisory only — it pre-fills the Vetting
-     * Portal, never auto-vets.
+     * Portal, never auto-vets. The {@link #passes} list is the run HISTORY (the metrics pass + any refinement passes,
+     * each with its own timestamp + spend) so the discovery-progress UI survives a reload — not only the last {@link #usage}.
      */
     public record AiDiscovery(MarkerStyle style, String markerType, String owner, List<AiReference> references,
                               String ocrTargetText, double confidence, String reasoning, long generatedAtMs,
-                              WeeklySchedule weeklySchedule, Usage usage) {
+                              WeeklySchedule weeklySchedule, Usage usage, List<AiPass> passes) {
 
         /**
          * The provider token spend + ESTIMATED cost of the MOST RECENT AI pass on this advisory (metrics pass, or the
@@ -108,6 +109,18 @@ public record DetectedProfile(
          */
         public record Usage(String model, long promptTokens, long completionTokens, String costEstimate,
                             String currency) {
+        }
+
+        /**
+         * One recorded AI pass in this advisory's RUN HISTORY — a {@code METRICS} pass or a {@code REFINE} pass — so the
+         * admin discovery-progress UI can show the FULL last-run breakdown (per-pass timestamp + token spend + how many
+         * markers it added + whether it converged) after a reload, not only the live in-session progress. {@code kind} is
+         * {@code METRICS} or {@code REFINE}; {@code ranAtMs} is epoch millis; {@code markersAdded} is the distinct markers
+         * this pass contributed (the metrics pass's whole gallery, or a refine pass's NEW templates); {@code converged} is
+         * true when a refinement pass added none (a metrics pass is always {@code false}).
+         */
+        public record AiPass(String kind, long ranAtMs, String model, long promptTokens, long completionTokens,
+                             String costEstimate, String currency, int markersAdded, boolean converged) {
         }
 
         /**
