@@ -97,6 +97,51 @@ class DetectedProfileServiceTest {
         verify(configs).save(config);
     }
 
+    /** A prior stored advisory carrying an explicit AI verdict (+ a one-pass run history) for {@code snapshotId}. */
+    private DetectedProfile priorProfileWithAi(UUID snapshotId) {
+        DetectedProfile.AiDiscovery ai = new DetectedProfile.AiDiscovery(MarkerStyle.TEXT_OVERLAY, "TWO_MARKER", "glow",
+                List.of(), "START|ENDE", 0.8, "prior run", 5L, null, null,
+                List.of(new DetectedProfile.AiDiscovery.AiPass("METRICS", 5L, "gpt-5", 100, 50, "0.0100", "USD", 3, false)));
+        ScheduleFacet sched = new ScheduleFacet(MarkerGroupType.TWO_MARKER, 0.8, null, null, null,
+                List.of(), 0.0, RoundState.UNKNOWN, null, 0.0, 0.0, 0.0, 0);
+        return new DetectedProfile(snapshotId, "glow.grp", 10, 1L, "TIER_0_DHASH", true,
+                new DetectedProfile.StyleFacet(MarkerStyle.TEXT_OVERLAY, 0.5),
+                new DetectedProfile.OwnerFacet(List.of("glow"), 0.5),
+                List.of(), List.of(), sched, ai);
+    }
+
+    @Test
+    void detectPreservesTheAiVerdictAndRunHistoryForTheSameSnapshot() {
+        UUID snap = UUID.randomUUID();
+        when(proposals.analyze(snap)).thenReturn(analysis(snap, ProposedType.FLAT_BANNER, false));
+        SupportGroupConfig config = SupportGroupConfig.createRequested("glow.grp");
+        config.updateDetectedProfile(priorProfileWithAi(snap)); // the operator ran AI earlier for THIS snapshot
+        when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
+
+        DetectedProfile p = service.detect(snap);
+
+        // A plain Tier-0 re-detect (reopening the Advisory Dashboard) KEEPS the AI verdict + its run history.
+        assertThat(p.aiDiscovery()).isNotNull();
+        assertThat(p.aiDiscovery().owner()).isEqualTo("glow");
+        assertThat(p.aiDiscovery().passes()).singleElement()
+                .satisfies(pass -> assertThat(pass.kind()).isEqualTo("METRICS"));
+        assertThat(p.imageStyle().value()).isEqualTo(MarkerStyle.FLAT_BANNER); // Tier-0 facets still regenerated
+    }
+
+    @Test
+    void detectDropsAnAiVerdictStoredForADifferentSnapshot() {
+        UUID snap = UUID.randomUUID();
+        UUID otherSnap = UUID.randomUUID();
+        when(proposals.analyze(snap)).thenReturn(analysis(snap, ProposedType.FLAT_BANNER, false));
+        SupportGroupConfig config = SupportGroupConfig.createRequested("glow.grp");
+        config.updateDetectedProfile(priorProfileWithAi(otherSnap)); // the verdict was for a DIFFERENT snapshot
+        when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
+
+        DetectedProfile p = service.detect(snap);
+
+        assertThat(p.aiDiscovery()).isNull(); // its cited clusters / shortcodes don't apply to this snapshot
+    }
+
     @Test
     void detectMapsTextOverlayStyle() {
         UUID snap = UUID.randomUUID();

@@ -38,6 +38,16 @@ public class DetectedProfileService {
     public DetectedProfile detect(UUID snapshotId) {
         SnapshotAnalysis analysis = proposals.analyze(snapshotId);
         DetectorProfileProposal proposal = analysis.proposal();
+        SupportGroupConfig config = configs.findByIgAccount(proposal.igAccount())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "no config for " + proposal.igAccount()));
+        // Preserve the explicit AI verdict (+ its run history) already stored for THIS snapshot: a plain Tier-0
+        // re-detect — e.g. reopening the Advisory Dashboard, which auto-detects the latest snapshot — must NOT silently
+        // wipe an AI discovery the operator ran. A stored verdict for a DIFFERENT snapshot is dropped (its cited
+        // clusters / shortcodes don't apply here); the explicit AiDiscoveryService action (re-)generates it.
+        DetectedProfile existing = config.getDetectedProfile();
+        DetectedProfile.AiDiscovery priorAi =
+                (existing != null && snapshotId.equals(existing.snapshotId())) ? existing.aiDiscovery() : null;
         DetectedProfile profile = new DetectedProfile(
                 proposal.snapshotId(), proposal.igAccount(), proposal.itemCount(), System.currentTimeMillis(),
                 proposal.provenance(), proposal.escalate(),
@@ -46,10 +56,7 @@ public class DetectedProfileService {
                 analysis.references(),
                 analysis.candidates(),
                 analysis.schedule(),
-                null); // AI discovery (M4) is attached only by the explicit AiDiscoveryService action
-        SupportGroupConfig config = configs.findByIgAccount(proposal.igAccount())
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
-                        "no config for " + proposal.igAccount()));
+                priorAi); // preserve the same-snapshot AI verdict (M4); (re-)generated only by the explicit AI action
         config.updateDetectedProfile(profile);
         configs.save(config);
         return profile;
