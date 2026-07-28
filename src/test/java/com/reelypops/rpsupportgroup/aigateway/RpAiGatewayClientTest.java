@@ -1,5 +1,7 @@
 package com.reelypops.rpsupportgroup.aigateway;
 
+import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.ReadRequest;
+import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.ReadResponse;
 import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.RefineRequest;
 import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.RefineResponse;
 import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.VettingRequest;
@@ -147,6 +149,60 @@ class RpAiGatewayClientTest {
         server.expect(requestTo(BASE + "/aigateway/v1/internal/vetting/refine")).andRespond(withServerError());
 
         assertThat(client.refine(refineRequest())).isEmpty();
+        server.verify();
+    }
+
+    private static ReadRequest readRequest() {
+        return new ReadRequest("glow.grp",
+                List.of(new VettingRequest.Cluster(1, List.of("glow"), 1, 0, 0, 0, "data:image/jpeg;base64,AQID", null)));
+    }
+
+    @Test
+    void disabledWhenNoBaseUrl_readIsNoOp() {
+        RpAiGatewayClient client = new RpAiGatewayClient(RestClient.builder(), "", "gw-key");
+
+        assertThat(client.read(readRequest())).isEmpty();
+    }
+
+    @Test
+    void read_sendsKeyAndBody_parsesMarkersAndUsage() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        RpAiGatewayClient client = new RpAiGatewayClient(builder, BASE, "gw-key");
+        server.expect(requestTo(BASE + "/aigateway/v1/internal/vetting/read"))
+                .andExpect(method(POST))
+                .andExpect(header("X-Internal-Api-Key", "gw-key"))
+                .andExpect(jsonPath("$.igAccount").value("glow.grp"))
+                .andExpect(jsonPath("$.clusters[0].imageUrl").value("data:image/jpeg;base64,AQID"))
+                .andRespond(withSuccess("""
+                        {"markers":[{"markerType":"end","ocrText":"GB AGENCY ENDE Sonntag","clusterIndex":2}],
+                         "usage":{"model":"gpt-5","promptTokens":210,"completionTokens":18,"costEstimate":"0.0270",
+                                  "currency":"USD"}}""",
+                        MediaType.APPLICATION_JSON));
+
+        Optional<ReadResponse> read = client.read(readRequest());
+
+        assertThat(read).isPresent();
+        ReadResponse r = read.get();
+        assertThat(r.markers()).singleElement().satisfies(m -> {
+            assertThat(m.markerType()).isEqualTo("end");
+            assertThat(m.ocrText()).isEqualTo("GB AGENCY ENDE Sonntag");
+            assertThat(m.clusterIndex()).isEqualTo(2);
+        });
+        assertThat(r.usage().model()).isEqualTo("gpt-5");
+        assertThat(r.usage().promptTokens()).isEqualTo(210);
+        assertThat(r.usage().costEstimate()).isEqualTo("0.0270");
+        server.verify();
+    }
+
+    @Test
+    void read_providerFailure_fallsBackToEmpty() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        RpAiGatewayClient client = new RpAiGatewayClient(builder, BASE, "gw-key");
+        server.expect(requestTo(BASE + "/aigateway/v1/internal/vetting/read")).andRespond(withServerError());
+
+        assertThat(client.read(readRequest())).isEmpty();
         server.verify();
     }
 }

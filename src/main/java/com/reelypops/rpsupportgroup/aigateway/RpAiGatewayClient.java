@@ -23,6 +23,7 @@ public class RpAiGatewayClient {
     static final String API_KEY_HEADER = "X-Internal-Api-Key";
     static final String VETTING_PATH = "/aigateway/v1/internal/vetting";
     static final String REFINE_PATH = "/aigateway/v1/internal/vetting/refine";
+    static final String READ_PATH = "/aigateway/v1/internal/vetting/read";
 
     private static final Logger log = LoggerFactory.getLogger(RpAiGatewayClient.class);
 
@@ -75,6 +76,24 @@ public class RpAiGatewayClient {
     }
 
     /**
+     * The isolated per-image OCR pass: read each candidate image on its own so the returned marker text always matches
+     * its image (no cross-image confabulation). Empty when disabled or on any failure (the caller keeps the compound
+     * verdict / treats a refine as converged).
+     */
+    public Optional<ReadResponse> read(ReadRequest request) {
+        if (!enabled) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.ofNullable(restClient.post().uri(READ_PATH).body(request)
+                    .retrieve().body(ReadResponse.class));
+        } catch (RestClientException e) {
+            log.warn("AI read (per-image OCR) call failed, keeping the compound gallery: {}", e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    /**
      * The refinement request (mirrors the gateway's contract): the same numbered candidate {@link VettingRequest.Cluster
      * clusters} (representative images) plus the marker texts already identified, so the AI returns only the DISTINCT
      * templates still missing.
@@ -91,6 +110,24 @@ public class RpAiGatewayClient {
      * converged) plus the pass's token {@link Usage usage}.
      */
     public record RefineResponse(List<VettingResponse.Reference> newMarkers, Usage usage) {
+    }
+
+    /**
+     * The isolated per-image OCR request (mirrors the gateway's contract): the image-bearing candidate
+     * {@link VettingRequest.Cluster clusters} to read one-by-one. Only image-bearing clusters are sent, so a returned
+     * {@code clusterIndex} (1-based image number) lines up with the caller's aligned shortcode list.
+     *
+     * @param igAccount the support group's Instagram account
+     * @param clusters  the image-bearing candidate clusters, in the order their images are read
+     */
+    public record ReadRequest(String igAccount, List<VettingRequest.Cluster> clusters) {
+    }
+
+    /**
+     * The isolated per-image OCR verdict (mirrors the gateway's contract): the DISTINCT markers read from the images,
+     * each grounded to the image number it was read from, plus the pass's token {@link Usage usage}.
+     */
+    public record ReadResponse(List<VettingResponse.Reference> markers, Usage usage) {
     }
 
     /**

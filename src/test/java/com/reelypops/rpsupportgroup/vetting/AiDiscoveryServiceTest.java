@@ -314,6 +314,81 @@ class AiDiscoveryServiceTest {
         assertThat(sent).extracting(VettingRequest.Cluster::size).containsExactly(8, 2, 8);
     }
 
+    @Test
+    void readGroundsTheGalleryToImageBearingClustersOverridingTheCompoundVerdict() {
+        when(detected.detect(SNAP)).thenReturn(base());
+        // sample 0 = captured sc1, sample 1 = UNCAPTURED sc2 (image-less), sample 2 = captured sc3.
+        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(),
+                List.of(new AiMarkerSample(8, "glow", 8, 0.7, 0.8, 4.0, List.of("sc1"), List.of()),
+                        new AiMarkerSample(2, "glow", 2, 0.5, 0.2, 0.2, List.of("sc2"), List.of()),
+                        new AiMarkerSample(3, "glow", 3, 0.6, 0.5, 1.5, List.of("sc3"), List.of())), List.of()));
+        when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
+        when(corpus.getRepresentative(SNAP, "sc2")).thenReturn(Optional.empty()); // image-less → skipped from the read
+        when(corpus.getRepresentative(SNAP, "sc3")).thenReturn(Optional.of(rep()));
+        // vet (compound) supplies style / type / owner / schedule + usage; its OWN reference is the mis-grounded bug we drop.
+        when(gateway.vet(any())).thenReturn(Optional.of(new VettingResponse("TEXT_OVERLAY", "TWO_MARKER", "glow",
+                List.of(new VettingResponse.Reference("start", "GB AGENCY START Sonntag", 1)),
+                "START|ENDE", 0.8, "compound", List.of(),
+                new RpAiGatewayClient.Usage("gpt-5", 200, 50, "0.0100", "USD"))));
+        // read (per-image OCR) supplies the GROUNDED gallery: image 1 = plain START, image 2 = ENDE Sonntag.
+        when(gateway.read(any())).thenReturn(Optional.of(new RpAiGatewayClient.ReadResponse(
+                List.of(new VettingResponse.Reference("start", "GB AGENCY START", 1),
+                        new VettingResponse.Reference("end", "GB AGENCY ENDE Sonntag", 2)),
+                new RpAiGatewayClient.Usage("gpt-5", 40, 10, "0.0025", "USD"))));
+        SupportGroupConfig config = mock(SupportGroupConfig.class);
+        when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
+
+        DetectedProfile result = service(12).runAiDiscovery(SNAP);
+
+        // The read pass is sent ONLY image-bearing clusters (sc1, sc3) — the image-less sc2 is skipped.
+        ArgumentCaptor<RpAiGatewayClient.ReadRequest> readReq =
+                ArgumentCaptor.forClass(RpAiGatewayClient.ReadRequest.class);
+        verify(gateway).read(readReq.capture());
+        assertThat(readReq.getValue().clusters()).extracting(VettingRequest.Cluster::imageUrl)
+                .containsExactly("data:image/jpeg;base64,AQID", "data:image/jpeg;base64,AQID"); // sc1, sc3 (sc2 dropped)
+
+        DetectedProfile.AiDiscovery ai = result.aiDiscovery();
+        // Gallery = the grounded per-image reads (NOT the compound verdict's mis-grounded reference).
+        assertThat(ai.references()).extracting(DetectedProfile.AiDiscovery.AiReference::ocrText)
+                .containsExactly("GB AGENCY START", "GB AGENCY ENDE Sonntag");
+        // Alignment: read image 1 → sc1, image 2 → sc3 (the image-less sc2 did NOT shift the mapping).
+        assertThat(ai.references()).extracting(DetectedProfile.AiDiscovery.AiReference::shortcode)
+                .containsExactly("sc1", "sc3");
+        // Style / type / owner / OCR-target still come from the compound vet verdict.
+        assertThat(ai.style()).isEqualTo(MarkerStyle.TEXT_OVERLAY);
+        assertThat(ai.markerType()).isEqualTo("TWO_MARKER");
+        assertThat(ai.ocrTargetText()).isEqualTo("START|ENDE");
+        // Metrics-pass cost = vet + read summed: tokens 200+40 / 50+10, cost 0.0100 + 0.0025 = 0.0125.
+        assertThat(ai.usage().promptTokens()).isEqualTo(240);
+        assertThat(ai.usage().completionTokens()).isEqualTo(60);
+        assertThat(ai.usage().costEstimate()).isEqualTo("0.0125");
+        assertThat(ai.usage().model()).isEqualTo("gpt-5");
+    }
+
+    @Test
+    void usesTheCompoundGalleryAndVetUsageWhenTheReadPassIsDown() {
+        when(detected.detect(SNAP)).thenReturn(base());
+        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(),
+                List.of(new AiMarkerSample(8, "glow", 8, 0.7, 0.8, 4.0, List.of("sc1"), List.of())), List.of()));
+        when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
+        when(gateway.vet(any())).thenReturn(Optional.of(new VettingResponse("TEXT_OVERLAY", "TWO_MARKER", "glow",
+                List.of(new VettingResponse.Reference("start", "GB AGENCY START", 1)), "START|ENDE", 0.8, "compound",
+                List.of(), new RpAiGatewayClient.Usage("gpt-5", 200, 50, "0.0100", "USD"))));
+        when(gateway.read(any())).thenReturn(Optional.empty()); // read pass down → keep the compound gallery + vet usage
+        SupportGroupConfig config = mock(SupportGroupConfig.class);
+        when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
+
+        DetectedProfile.AiDiscovery ai = service(12).runAiDiscovery(SNAP).aiDiscovery();
+
+        // Read down → gallery falls back to the compound verdict's reference (grounded via the N-space shortcodes).
+        assertThat(ai.references()).extracting(DetectedProfile.AiDiscovery.AiReference::ocrText)
+                .containsExactly("GB AGENCY START");
+        assertThat(ai.references().get(0).shortcode()).isEqualTo("sc1");
+        // Usage = vet's only (read contributed nothing).
+        assertThat(ai.usage().promptTokens()).isEqualTo(200);
+        assertThat(ai.usage().costEstimate()).isEqualTo("0.0100");
+    }
+
     // ── Convergent refinement pass ──────────────────────────────────────────────────────────────────────────────────
 
     private DetectedProfile storedWithAi(List<DetectedProfile.AiDiscovery.AiReference> refs) {
@@ -345,7 +420,7 @@ class AiDiscoveryServiceTest {
         when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
         when(config.getDetectedProfile()).thenReturn(stored);
         when(corpus.getRepresentative(SNAP, "sc3")).thenReturn(Optional.of(rep()));
-        when(gateway.refine(any())).thenReturn(Optional.of(new RpAiGatewayClient.RefineResponse(
+        when(gateway.read(any())).thenReturn(Optional.of(new RpAiGatewayClient.ReadResponse(
                 List.of(new VettingResponse.Reference("end", "GB AGENCY ENDE Samstag", 1),
                         new VettingResponse.Reference("start", "GB AGENCY START", 1),      // already found → dropped
                         new VettingResponse.Reference("single", null, 1),                  // null text → dropped
@@ -378,7 +453,7 @@ class AiDiscoveryServiceTest {
 
         assertThat(out.added()).isZero();
         assertThat(out.profile()).isSameAs(stored);
-        verify(gateway, never()).refine(any());
+        verify(gateway, never()).read(any());
         verify(config, never()).updateDetectedProfile(any());
     }
 
@@ -392,7 +467,7 @@ class AiDiscoveryServiceTest {
         when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
         when(config.getDetectedProfile()).thenReturn(stored);
         when(corpus.getRepresentative(SNAP, "sc3")).thenReturn(Optional.of(rep()));
-        when(gateway.refine(any())).thenReturn(Optional.empty()); // disabled / transport failure → converged
+        when(gateway.read(any())).thenReturn(Optional.empty()); // disabled / transport failure → converged
 
         AiRefineResult out = service(12).refineAiDiscovery(SNAP);
 
