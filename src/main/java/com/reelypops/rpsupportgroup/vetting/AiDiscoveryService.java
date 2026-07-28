@@ -1,8 +1,8 @@
 package com.reelypops.rpsupportgroup.vetting;
 
 import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient;
-import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.RefineRequest;
-import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.RefineResponse;
+import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.ReadRequest;
+import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.ReadResponse;
 import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.VettingRequest;
 import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.VettingResponse;
 import com.reelypops.rpsupportgroup.corpus.CorpusRepresentative;
@@ -21,6 +21,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
@@ -31,6 +32,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * The explicit AI-discovery action (marker-auto-discovery M4): the admin's "Run AI discovery" triggers this to enrich a
@@ -78,11 +80,26 @@ public class AiDiscoveryService {
     public DetectedProfile runAiDiscovery(UUID snapshotId) {
         DetectedProfile base = detected.detect(snapshotId);
         AiRequest aiRequest = buildRequest(snapshotId, base);
-        Optional<VettingResponse> verdict = gateway.vet(aiRequest.request());
+        ImageSubset images = imageSubset(aiRequest);
+        // The metrics pass is TWO gateway calls run CONCURRENTLY so latency stays ~flat: vet (the compound verdict —
+        // style / type / owner / schedule) and read (the isolated per-image OCR that GROUNDS the marker gallery so a
+        // marker's text always matches its image). Both fail open (Optional), so the joins never throw.
+        CompletableFuture<Optional<VettingResponse>> vetFuture =
+                CompletableFuture.supplyAsync(() -> gateway.vet(aiRequest.request()));
+        CompletableFuture<Optional<ReadResponse>> readFuture =
+                CompletableFuture.supplyAsync(() -> gateway.read(new ReadRequest(base.igAccount(), images.clusters())));
+        Optional<VettingResponse> verdict = vetFuture.join();
+        Optional<ReadResponse> read = readFuture.join();
         if (verdict.isEmpty()) {
-            return base;
+            return base; // vet is the only source of style / type / owner / schedule — without it we stay Tier-0
         }
-        DetectedProfile enriched = withAi(base, toDiscovery(verdict.get(), aiRequest.clusterShortcodes()));
+        // Marker gallery: prefer the grounded per-image OCR read; fall back to the compound verdict when read is down.
+        List<AiDiscovery.AiReference> references = read.isPresent()
+                ? toReferences(read.get().markers(), images.shortcodes())
+                : toReferences(verdict.get().references(), aiRequest.clusterShortcodes());
+        AiDiscovery.Usage usage = combineUsage(verdict.get().usage(), read.map(ReadResponse::usage).orElse(null));
+        DetectedProfile enriched = withAi(base,
+                toDiscovery(verdict.get(), references, usage, aiRequest.clusterShortcodes()));
         SupportGroupConfig config = configs.findByIgAccount(base.igAccount())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "no config for " + base.igAccount()));
@@ -109,33 +126,33 @@ public class AiDiscoveryService {
             return new AiRefineResult(stored, 0); // nothing to refine — the metrics pass has not run
         }
         AiRequest aiRequest = buildRequest(snapshotId, stored);
-        List<String> alreadyFound = ai.references().stream()
-                .map(AiDiscovery.AiReference::ocrText).filter(t -> t != null && !t.isBlank()).toList();
-        Optional<RefineResponse> refined = gateway.refine(
-                new RefineRequest(igAccount, aiRequest.request().clusters(), alreadyFound));
-        if (refined.isEmpty()) {
+        ImageSubset images = imageSubset(aiRequest);
+        Optional<ReadResponse> read = gateway.read(new ReadRequest(igAccount, images.clusters()));
+        if (read.isEmpty()) {
             return new AiRefineResult(stored, 0); // gateway off / failed → treated as converged (loop stops)
         }
         List<AiDiscovery.AiReference> merged = new ArrayList<>(ai.references());
         Set<String> seen = new HashSet<>();
-        for (String t : alreadyFound) {
-            seen.add(normalise(t));
+        for (AiDiscovery.AiReference r : ai.references()) {
+            if (r.ocrText() != null && !r.ocrText().isBlank()) {
+                seen.add(normalise(r.ocrText()));
+            }
         }
         int added = 0;
-        List<VettingResponse.Reference> newMarkers = refined.get().newMarkers();
-        if (newMarkers != null) {
-            for (VettingResponse.Reference r : newMarkers) {
+        List<VettingResponse.Reference> markers = read.get().markers();
+        if (markers != null) {
+            for (VettingResponse.Reference r : markers) {
                 if (r.ocrText() == null || r.ocrText().isBlank() || !seen.add(normalise(r.ocrText()))) {
-                    continue; // blank or a text we already carry — never duplicate a variation
+                    continue; // blank or a text we already carry — a re-read of the complete set adds nothing (converged)
                 }
                 merged.add(new AiDiscovery.AiReference(r.markerType(), r.ocrText(),
-                        shortcodeFor(r.clusterIndex(), aiRequest.clusterShortcodes())));
+                        shortcodeFor(r.clusterIndex(), images.shortcodes())));
                 added++;
             }
         }
         AiDiscovery updated = new AiDiscovery(ai.style(), ai.markerType(), ai.owner(), merged, ai.ocrTargetText(),
                 ai.confidence(), ai.reasoning(), System.currentTimeMillis(), ai.weeklySchedule(),
-                toUsage(refined.get().usage()));
+                toUsage(read.get().usage()));
         DetectedProfile result = withAi(stored, updated);
         config.updateDetectedProfile(result);
         configs.save(config);
@@ -270,17 +287,57 @@ public class AiDiscoveryService {
         return occ;
     }
 
-    /** Map the gateway verdict onto the persisted {@link AiDiscovery} facet, resolving each cited clusterIndex to its image. */
-    private static AiDiscovery toDiscovery(VettingResponse v, List<String> clusterShortcodes) {
-        List<AiDiscovery.AiReference> references = new ArrayList<>();
-        if (v.references() != null) {
-            for (VettingResponse.Reference r : v.references()) {
-                references.add(toAiReference(r, clusterShortcodes));
-            }
-        }
+    /** Map the gateway verdict + the grounded marker references onto the persisted {@link AiDiscovery} facet. */
+    private static AiDiscovery toDiscovery(VettingResponse v, List<AiDiscovery.AiReference> references,
+                                           AiDiscovery.Usage usage, List<String> clusterShortcodes) {
         return new AiDiscovery(toStyle(v.style()), v.markerType(), v.owner(), references,
                 v.ocrTargetText(), v.confidence(), v.reasoning(), System.currentTimeMillis(),
-                toWeeklySchedule(v.schedule(), clusterShortcodes), toUsage(v.usage()));
+                toWeeklySchedule(v.schedule(), clusterShortcodes), usage);
+    }
+
+    /** Resolve gateway references (compound OR per-image OCR) to persisted references, each cited image → its shortcode. */
+    private static List<AiDiscovery.AiReference> toReferences(List<VettingResponse.Reference> refs,
+                                                             List<String> shortcodes) {
+        List<AiDiscovery.AiReference> out = new ArrayList<>();
+        if (refs != null) {
+            for (VettingResponse.Reference r : refs) {
+                out.add(toAiReference(r, shortcodes));
+            }
+        }
+        return out;
+    }
+
+    /** Sum the metrics pass's two gateway calls' spend (compound vet + per-image read) into one figure for the cost UI. */
+    private static AiDiscovery.Usage combineUsage(RpAiGatewayClient.Usage vet, RpAiGatewayClient.Usage read) {
+        if (vet == null) {
+            return toUsage(read);
+        }
+        if (read == null) {
+            return toUsage(vet);
+        }
+        String cost = new BigDecimal(vet.costEstimate()).add(new BigDecimal(read.costEstimate())).toPlainString();
+        return new AiDiscovery.Usage(vet.model(), vet.promptTokens() + read.promptTokens(),
+                vet.completionTokens() + read.completionTokens(), cost, vet.currency());
+    }
+
+    /** The image-bearing subset of the request — cluster + aligned shortcode — for the isolated per-image OCR read pass. */
+    private static ImageSubset imageSubset(AiRequest aiRequest) {
+        List<VettingRequest.Cluster> clusters = new ArrayList<>();
+        List<String> shortcodes = new ArrayList<>();
+        List<VettingRequest.Cluster> all = aiRequest.request().clusters();
+        List<String> allShortcodes = aiRequest.clusterShortcodes();
+        for (int i = 0; all != null && i < all.size(); i++) {
+            VettingRequest.Cluster c = all.get(i);
+            if (c.imageUrl() != null && !c.imageUrl().isBlank()) {
+                clusters.add(c);
+                shortcodes.add(allShortcodes.get(i));
+            }
+        }
+        return new ImageSubset(clusters, shortcodes);
+    }
+
+    /** The image-bearing clusters + their aligned shortcodes — the image-number space the OCR read pass cites into. */
+    private record ImageSubset(List<VettingRequest.Cluster> clusters, List<String> shortcodes) {
     }
 
     /** Map the gateway's per-pass token usage onto the persisted {@link AiDiscovery.Usage}; null when the gateway sent none. */
