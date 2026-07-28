@@ -138,6 +138,12 @@ class AiDiscoveryServiceTest {
         // end cited cluster 1 = sc1) so the admin can see every marker variation's image.
         assertThat(ai.references()).extracting(DetectedProfile.AiDiscovery.AiReference::shortcode)
                 .containsExactly("sc2", "sc1");
+        // Run history: the metrics pass is recorded (markersAdded = the 2-marker gallery it produced; not converged).
+        assertThat(ai.passes()).singleElement().satisfies(p -> {
+            assertThat(p.kind()).isEqualTo("METRICS");
+            assertThat(p.markersAdded()).isEqualTo(2);
+            assertThat(p.converged()).isFalse();
+        });
         DetectedProfile.AiDiscovery.WeeklySchedule ws = ai.weeklySchedule();
         assertThat(ws.timezone()).isEqualTo("UTC");
         assertThat(ws.days()).hasSize(2);
@@ -364,6 +370,15 @@ class AiDiscoveryServiceTest {
         assertThat(ai.usage().completionTokens()).isEqualTo(60);
         assertThat(ai.usage().costEstimate()).isEqualTo("0.0125");
         assertThat(ai.usage().model()).isEqualTo("gpt-5");
+        // The metrics pass in the run history carries the SAME combined spend + the 2-marker gallery it produced.
+        assertThat(ai.passes()).singleElement().satisfies(p -> {
+            assertThat(p.kind()).isEqualTo("METRICS");
+            assertThat(p.markersAdded()).isEqualTo(2);
+            assertThat(p.promptTokens()).isEqualTo(240);
+            assertThat(p.costEstimate()).isEqualTo("0.0125");
+            assertThat(p.model()).isEqualTo("gpt-5");
+            assertThat(p.converged()).isFalse();
+        });
     }
 
     @Test
@@ -455,8 +470,10 @@ class AiDiscoveryServiceTest {
 
     private DetectedProfile storedWithAi(List<DetectedProfile.AiDiscovery.AiReference> refs) {
         DetectedProfile b = base();
+        DetectedProfile.AiDiscovery.AiPass metrics = new DetectedProfile.AiDiscovery.AiPass(
+                "METRICS", 1L, "gpt-5", 100, 50, "0.0100", "USD", refs.size(), false);
         DetectedProfile.AiDiscovery ai = new DetectedProfile.AiDiscovery(MarkerStyle.TEXT_OVERLAY, "TWO_MARKER", "glow",
-                refs, "START|ENDE", 0.7, "metrics pass", 1L, null, null);
+                refs, "START|ENDE", 0.7, "metrics pass", 1L, null, null, List.of(metrics));
         return new DetectedProfile(b.snapshotId(), b.igAccount(), b.itemCount(), b.generatedAtMs(), b.provenance(),
                 b.escalate(), b.imageStyle(), b.owner(), b.references(), b.candidates(), b.schedule(), ai);
     }
@@ -499,8 +516,44 @@ class AiDiscoveryServiceTest {
         assertThat(out.profile().aiDiscovery().references().get(2).shortcode()).isEqualTo("sc3"); // clusterIndex 1 → sc3
         assertThat(out.profile().aiDiscovery().usage().model()).isEqualTo("gpt-5");
         assertThat(out.profile().aiDiscovery().usage().costEstimate()).isEqualTo("0.0021");
+        // Run history: the stored metrics pass + an appended REFINE pass (markersAdded = 1, not converged).
+        assertThat(out.profile().aiDiscovery().passes()).hasSize(2);
+        assertThat(out.profile().aiDiscovery().passes().get(0).kind()).isEqualTo("METRICS");
+        DetectedProfile.AiDiscovery.AiPass refinePass = out.profile().aiDiscovery().passes().get(1);
+        assertThat(refinePass.kind()).isEqualTo("REFINE");
+        assertThat(refinePass.markersAdded()).isEqualTo(1);
+        assertThat(refinePass.converged()).isFalse();
+        assertThat(refinePass.model()).isEqualTo("gpt-5");
+        assertThat(refinePass.costEstimate()).isEqualTo("0.0021");
         verify(config).updateDetectedProfile(any());
         verify(configs).save(config);
+    }
+
+    @Test
+    void refineRecordsAConvergedPassWhenItAddsNoNewMarkers() {
+        // The read re-reports ONLY markers already in the gallery → nothing new → the appended pass is CONVERGED.
+        DetectedProfile stored = storedWithAi(List.of(
+                new DetectedProfile.AiDiscovery.AiReference("start", "GB AGENCY START", "sc1", null),
+                new DetectedProfile.AiDiscovery.AiReference("end", "ENDE", "sc2", null)));
+        when(proposals.analyze(SNAP)).thenReturn(
+                analysisWith(List.of(new AiMarkerSample(2, "glow", 2, 0.5, 0.5, 1.0, List.of("sc3"), List.of()))));
+        SupportGroupConfig config = mock(SupportGroupConfig.class);
+        when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
+        when(config.getDetectedProfile()).thenReturn(stored);
+        when(corpus.getRepresentative(SNAP, "sc3")).thenReturn(Optional.of(rep()));
+        when(gateway.read(any())).thenReturn(Optional.of(new RpAiGatewayClient.ReadResponse(
+                List.of(new VettingResponse.Reference("start", "GB AGENCY START", 1),
+                        new VettingResponse.Reference("end", "ENDE", 1)),
+                List.of(), new RpAiGatewayClient.Usage("gpt-5", 40, 10, "0.0005", "USD"))));
+
+        AiRefineResult out = service(12).refineAiDiscovery(SNAP);
+
+        assertThat(out.added()).isZero();
+        assertThat(out.profile().aiDiscovery().passes()).hasSize(2);
+        DetectedProfile.AiDiscovery.AiPass converged = out.profile().aiDiscovery().passes().get(1);
+        assertThat(converged.kind()).isEqualTo("REFINE");
+        assertThat(converged.markersAdded()).isZero();
+        assertThat(converged.converged()).isTrue();
     }
 
     @Test

@@ -52,6 +52,10 @@ public class AiDiscoveryService {
     // the admin sets the group timezone in the Vetting Portal); the per-weekday verdict comes back in the same frame.
     private static final String TIMEZONE = "UTC";
 
+    // Run-history pass kinds (persisted on AiDiscovery.passes): the first compound+read metrics pass, then refine passes.
+    private static final String PASS_METRICS = "METRICS";
+    private static final String PASS_REFINE = "REFINE";
+
     private final DetectedProfileService detected;
     private final VettingProposalService proposals;
     private final MarkerCorpusService corpus;
@@ -105,8 +109,11 @@ public class AiDiscoveryService {
         Map<String, List<AiDiscovery.AiReference>> weekdayMarkers =
                 read.map(r -> groundedWeekdayMarkers(r.markerReads(), images)).orElse(null);
         AiDiscovery.Usage usage = combineUsage(verdict.get().usage(), read.map(ReadResponse::usage).orElse(null));
+        // Record the metrics pass in the run history (markersAdded = the whole gallery it produced; never "converged").
+        AiDiscovery.AiPass metricsPass = pass(PASS_METRICS, usage, references.size(), false);
         DetectedProfile enriched = withAi(base,
-                toDiscovery(verdict.get(), references, usage, aiRequest.clusterShortcodes(), weekdayMarkers));
+                toDiscovery(verdict.get(), references, usage, aiRequest.clusterShortcodes(), weekdayMarkers,
+                        List.of(metricsPass)));
         SupportGroupConfig config = configs.findByIgAccount(base.igAccount())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "no config for " + base.igAccount()));
@@ -157,9 +164,12 @@ public class AiDiscoveryService {
                 added++;
             }
         }
+        AiDiscovery.Usage refineUsage = toUsage(read.get().usage());
+        List<AiDiscovery.AiPass> passes = new ArrayList<>(ai.passes() == null ? List.of() : ai.passes());
+        passes.add(pass(PASS_REFINE, refineUsage, added, added == 0));
         AiDiscovery updated = new AiDiscovery(ai.style(), ai.markerType(), ai.owner(), merged, ai.ocrTargetText(),
                 ai.confidence(), ai.reasoning(), System.currentTimeMillis(), ai.weeklySchedule(),
-                toUsage(read.get().usage()));
+                refineUsage, passes);
         DetectedProfile result = withAi(stored, updated);
         config.updateDetectedProfile(result);
         configs.save(config);
@@ -297,10 +307,11 @@ public class AiDiscoveryService {
     /** Map the gateway verdict + the grounded marker references onto the persisted {@link AiDiscovery} facet. */
     private static AiDiscovery toDiscovery(VettingResponse v, List<AiDiscovery.AiReference> references,
                                            AiDiscovery.Usage usage, List<String> clusterShortcodes,
-                                           Map<String, List<AiDiscovery.AiReference>> weekdayMarkers) {
+                                           Map<String, List<AiDiscovery.AiReference>> weekdayMarkers,
+                                           List<AiDiscovery.AiPass> passes) {
         return new AiDiscovery(toStyle(v.style()), v.markerType(), v.owner(), references,
                 v.ocrTargetText(), v.confidence(), v.reasoning(), System.currentTimeMillis(),
-                toWeeklySchedule(v.schedule(), clusterShortcodes, weekdayMarkers), usage);
+                toWeeklySchedule(v.schedule(), clusterShortcodes, weekdayMarkers), usage, passes);
     }
 
     /** Resolve gateway references (compound OR per-image OCR) to persisted references, each cited image → its shortcode. */
@@ -352,6 +363,16 @@ public class AiDiscoveryService {
     private static AiDiscovery.Usage toUsage(RpAiGatewayClient.Usage u) {
         return u == null ? null : new AiDiscovery.Usage(u.model(), u.promptTokens(), u.completionTokens(),
                 u.costEstimate(), u.currency());
+    }
+
+    /** One run-history entry built from a pass's usage (null usage → a zero-spend entry) + how many markers it added. */
+    private static AiDiscovery.AiPass pass(String kind, AiDiscovery.Usage usage, int markersAdded, boolean converged) {
+        long ranAtMs = System.currentTimeMillis();
+        if (usage == null) {
+            return new AiDiscovery.AiPass(kind, ranAtMs, null, 0, 0, null, null, markersAdded, converged);
+        }
+        return new AiDiscovery.AiPass(kind, ranAtMs, usage.model(), usage.promptTokens(), usage.completionTokens(),
+                usage.costEstimate(), usage.currency(), markersAdded, converged);
     }
 
     /**
