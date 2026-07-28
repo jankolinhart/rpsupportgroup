@@ -12,7 +12,9 @@ import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -59,33 +61,51 @@ final class ScheduleDeriver {
     record Post(int ordinal, Instant postedAt) {
     }
 
+    /** The deterministic per-member cap: {@code value} (median round cap, or null when unbounded) + its confidence. */
+    record MaxTagged(Integer value, double confidence) {
+        static MaxTagged none() {
+            return new MaxTagged(null, 0.0);
+        }
+    }
+
     /** The empty advisory when there is no clean owner to derive a schedule from. */
     static ScheduleFacet empty() {
         return new ScheduleFacet(MarkerGroupType.UNKNOWN, 0.0, null, null, null, List.of(), 0.0,
-                RoundState.UNKNOWN, null, 0.0, 0.0, 0.0, 0);
+                RoundState.UNKNOWN, null, 0.0, 0.0, 0.0, 0, null, 0.0);
     }
 
-    /** Derive the schedule from the accepted owner's clusters (ordered strongest-first). */
+    /** Derive the schedule from the accepted owner's clusters (ordered strongest-first) — no member counting. */
     static ScheduleFacet derive(List<ClusterPosts> ownerClusters) {
+        return derive(ownerClusters, List.of());
+    }
+
+    /**
+     * Derive the schedule AND the deterministic per-member {@code maxTaggedPosts} cap. {@code allRows} is the full
+     * tagged-grid in order (one {@link GridRow} per (post × author), directive P4); rounds are bounded by consecutive
+     * markers and each member's non-marker posts counted within. An empty {@code allRows} yields a null cap.
+     */
+    static ScheduleFacet derive(List<ClusterPosts> ownerClusters, List<GridRow> allRows) {
+        MaxTagged mt = deriveMaxTagged(allRows);
         return switch (ownerClusters.size()) {
             case 0 -> empty();
-            case 1 -> single(ownerClusters.get(0));
-            case 2 -> two(ownerClusters.get(0), ownerClusters.get(1));
+            case 1 -> single(ownerClusters.get(0), mt);
+            case 2 -> two(ownerClusters.get(0), ownerClusters.get(1), mt);
             default -> ambiguous();
         };
     }
 
     /** One cluster ⇒ a single-marker group: one round time, always-open (the marker only delimits transitions). */
-    private static ScheduleFacet single(ClusterPosts cluster) {
+    private static ScheduleFacet single(ClusterPosts cluster, MaxTagged mt) {
         RoundTime single = time(cluster.posts());
         double confidence = Math.min(1.0, cluster.recurrence() / 3.0);
         // A single-marker group has no END, so it is always open — no opening-day restriction or end offset to derive.
         return new ScheduleFacet(MarkerGroupType.SINGLE_MARKER, confidence, null, null, single,
-                List.of(), 0.0, RoundState.OPEN, null, 0.0, 0.0, 0.0, cluster.recurrence());
+                List.of(), 0.0, RoundState.OPEN, null, 0.0, 0.0, 0.0, cluster.recurrence(),
+                mt.value(), mt.confidence());
     }
 
     /** Two clusters ⇒ a two-marker group: label START/END, reconstruct rounds, then derive times, offset + open span. */
-    private static ScheduleFacet two(ClusterPosts a, ClusterPosts b) {
+    private static ScheduleFacet two(ClusterPosts a, ClusterPosts b, MaxTagged mt) {
         double symmetry = 1.0 - (double) Math.abs(a.recurrence() - b.recurrence())
                 / Math.max(a.recurrence(), b.recurrence());
         List<Tagged> ordered = datedByTime(a, b);
@@ -103,13 +123,53 @@ final class ScheduleDeriver {
         RoundState state = currentState(ordered, labelled);
         return new ScheduleFacet(MarkerGroupType.TWO_MARKER, groupTypeConfidence, start, end, null,
                 openWeekdays, openingDaysConfidence, state, endMarkerDayOffset, endMarkerDayOffsetConfidence,
-                symmetry, pairing, rounds.size());
+                symmetry, pairing, rounds.size(), mt.value(), mt.confidence());
     }
 
     /** Three or more owner clusters is ambiguous (marker types vs per-weekday variants) — do not guess a schedule. */
     private static ScheduleFacet ambiguous() {
         return new ScheduleFacet(MarkerGroupType.UNKNOWN, 0.0, null, null, null, List.of(), 0.0,
-                RoundState.UNKNOWN, null, 0.0, 0.0, 0.0, 0);
+                RoundState.UNKNOWN, null, 0.0, 0.0, 0.0, 0, null, 0.0);
+    }
+
+    /**
+     * The deterministic per-member {@code maxTaggedPosts} cap (vision §5.6): bound each round by consecutive markers in
+     * the ordered grid, count each member's NON-marker posts inside it (one row per (post × author), P4), and take that
+     * round's cap = the MAX any single member reached. The group cap = the MEDIAN of those per-round caps (robust to a
+     * member who over-posts once); confidence = how cleanly that cap holds (share of rounds AT the median) scaled by the
+     * number of rounds observed (full weight at ≥ 3). Fewer than two markers ⇒ no round to bound ⇒ none.
+     */
+    static MaxTagged deriveMaxTagged(List<GridRow> allRows) {
+        List<Integer> markerIdx = new ArrayList<>();
+        for (int i = 0; i < allRows.size(); i++) {
+            if (allRows.get(i).marker()) {
+                markerIdx.add(i);
+            }
+        }
+        if (markerIdx.size() < 2) {
+            return MaxTagged.none();
+        }
+        List<Long> caps = new ArrayList<>();
+        for (int k = 0; k < markerIdx.size() - 1; k++) {
+            Map<String, Integer> perAuthor = new HashMap<>();
+            for (int i = markerIdx.get(k) + 1; i < markerIdx.get(k + 1); i++) {
+                GridRow row = allRows.get(i);
+                if (!row.marker()) {
+                    perAuthor.merge(row.author(), 1, Integer::sum);
+                }
+            }
+            if (!perAuthor.isEmpty()) {
+                caps.add((long) perAuthor.values().stream().max(Integer::compare).orElse(0));
+            }
+        }
+        if (caps.isEmpty()) {
+            return MaxTagged.none();
+        }
+        int cap = (int) Math.round(median(caps));
+        long atCap = caps.stream().filter(c -> c == cap).count();
+        double consistency = (double) atCap / caps.size();
+        double sampleFactor = Math.min(1.0, caps.size() / 3.0);
+        return new MaxTagged(cap, consistency * sampleFactor);
     }
 
     /**

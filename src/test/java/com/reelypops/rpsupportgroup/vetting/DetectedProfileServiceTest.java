@@ -54,7 +54,7 @@ class DetectedProfileServiceTest {
         List<MarkerReference> references = List.of(new MarkerReference("0000", 6, List.of("sc-1", "sc-2"), 0.95));
         ScheduleFacet schedule = new ScheduleFacet(MarkerGroupType.TWO_MARKER, 0.88,
                 new RoundTime("09:00", 0.8), new RoundTime("17:00", 0.7), null,
-                List.of(1, 2), 0.6, RoundState.OPEN, 1, 1.0, 0.9, 1.0, 4);
+                List.of(1, 2), 0.6, RoundState.OPEN, 1, 1.0, 0.9, 1.0, 4, 2, 0.75);
         return new SnapshotAnalysis(proposal, candidates, references, schedule, List.of(), List.of(), List.of());
     }
 
@@ -93,6 +93,8 @@ class DetectedProfileServiceTest {
         assertThat(p.schedule().end().timeOfDayUtc()).isEqualTo("17:00");
         assertThat(p.schedule().openWeekdays()).containsExactly(1, 2);
         assertThat(p.schedule().currentState()).isEqualTo(RoundState.OPEN);
+        assertThat(p.schedule().maxTaggedPosts()).isEqualTo(2);
+        assertThat(p.schedule().maxTaggedPostsConfidence()).isEqualTo(0.75);
         assertThat(config.getDetectedProfile()).isSameAs(p);
         verify(configs).save(config);
     }
@@ -103,7 +105,7 @@ class DetectedProfileServiceTest {
                 List.of(), "START|ENDE", 0.8, "prior run", 5L, null, null,
                 List.of(new DetectedProfile.AiDiscovery.AiPass("METRICS", 5L, "gpt-5", 100, 50, "0.0100", "USD", 3, false)));
         ScheduleFacet sched = new ScheduleFacet(MarkerGroupType.TWO_MARKER, 0.8, null, null, null,
-                List.of(), 0.0, RoundState.UNKNOWN, null, 0.0, 0.0, 0.0, 0);
+                List.of(), 0.0, RoundState.UNKNOWN, null, 0.0, 0.0, 0.0, 0, null, 0.0);
         return new DetectedProfile(snapshotId, "glow.grp", 10, 1L, "TIER_0_DHASH", true,
                 new DetectedProfile.StyleFacet(MarkerStyle.TEXT_OVERLAY, 0.5),
                 new DetectedProfile.OwnerFacet(List.of("glow"), 0.5),

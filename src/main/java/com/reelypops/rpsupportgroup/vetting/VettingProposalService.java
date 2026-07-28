@@ -204,7 +204,13 @@ public class VettingProposalService {
                 .filter(c -> c.dominantAuthor().equals(top.dominantAuthor()))
                 .map(c -> new ScheduleDeriver.ClusterPosts(c.ownerPosts()))
                 .toList();
-        ScheduleFacet schedule = ScheduleDeriver.derive(ownerClusters);
+        // The FULL ordered grid (one row per post × author, directive P4) — not the capped AI window — so the
+        // deterministic maxTaggedPosts count spans every round the corpus captured (vision §5.6).
+        List<GridRow> allRows = gridItems.stream()
+                .map(it -> new GridRow(it.getOrdinal(), it.getAuthorUsername(),
+                        top.dominantAuthor().equals(it.getAuthorUsername())))
+                .toList();
+        ScheduleFacet schedule = ScheduleDeriver.derive(ownerClusters, allRows);
         logScheduleDiagnostics(id, top.dominantAuthor(), ownerClusters, schedule);
         // M4.6/M4.10: the broadened marker sample for the AI — EVERY captured cluster of the proposed owner, not only the
         // score>=minScore references and not only the size>=minClusterSize candidates. A high-variation banner shatters two

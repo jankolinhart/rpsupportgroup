@@ -240,4 +240,132 @@ class ScheduleDeriverTest {
         assertThat(s.pairing()).isGreaterThanOrEqualTo(0.0).isLessThan(1.0);
         assertThat(s.groupTypeConfidence()).isCloseTo((s.symmetry() + s.pairing()) / 2, offset(0.001));
     }
+
+    // --- Deterministic maxTaggedPosts counting (vision §5.6) ---------------------------------------------------------
+
+    @Test
+    void deriveMaxTaggedCountsThePerMemberCapPerRound() {
+        // Three rounds bounded by owner markers; each round's cap = the MAX any one member posts in it. All show 2.
+        List<GridRow> grid = List.of(
+                new GridRow(0, "owner", true),
+                new GridRow(1, "m1", false), new GridRow(2, "m1", false), new GridRow(3, "m2", false),
+                new GridRow(4, "owner", true),
+                new GridRow(5, "m1", false), new GridRow(6, "m2", false), new GridRow(7, "m2", false),
+                new GridRow(8, "owner", true),
+                new GridRow(9, "m1", false), new GridRow(10, "m1", false), new GridRow(11, "m2", false),
+                new GridRow(12, "m2", false),
+                new GridRow(13, "owner", true));
+
+        ScheduleDeriver.MaxTagged mt = ScheduleDeriver.deriveMaxTagged(grid);
+
+        assertThat(mt.value()).isEqualTo(2);
+        assertThat(mt.confidence()).isEqualTo(1.0); // every bounded round shows the same cap, ≥3 rounds
+    }
+
+    @Test
+    void deriveMaxTaggedIsNoneWithoutTwoBoundingMarkers() {
+        List<GridRow> grid = List.of(new GridRow(0, "owner", true),
+                new GridRow(1, "m1", false), new GridRow(2, "m1", false));
+
+        ScheduleDeriver.MaxTagged mt = ScheduleDeriver.deriveMaxTagged(grid);
+
+        assertThat(mt.value()).isNull();
+        assertThat(mt.confidence()).isZero();
+    }
+
+    @Test
+    void deriveMaxTaggedMedianResistsASingleOverPoster() {
+        // Round caps are [1, 1, 3] — one member over-posts once; the MEDIAN (1) holds, confidence reflects the 2/3 hit.
+        List<GridRow> grid = List.of(
+                new GridRow(0, "owner", true),
+                new GridRow(1, "m1", false),
+                new GridRow(2, "owner", true),
+                new GridRow(3, "m2", false),
+                new GridRow(4, "owner", true),
+                new GridRow(5, "m1", false), new GridRow(6, "m1", false), new GridRow(7, "m1", false),
+                new GridRow(8, "owner", true));
+
+        ScheduleDeriver.MaxTagged mt = ScheduleDeriver.deriveMaxTagged(grid);
+
+        assertThat(mt.value()).isEqualTo(1);
+        assertThat(mt.confidence()).isCloseTo(0.667, offset(0.01)); // 2 of 3 rounds at the median cap
+    }
+
+    @Test
+    void deriveMaxTaggedSkipsEmptyClosedSegments() {
+        // Two adjacent markers bound a member-less CLOSED segment (END→next START) — it must not count as a 0-cap round.
+        List<GridRow> grid = List.of(
+                new GridRow(0, "owner", true),
+                new GridRow(1, "m1", false), new GridRow(2, "m1", false),
+                new GridRow(3, "owner", true),
+                new GridRow(4, "owner", true), // adjacent marker ⇒ empty closed segment, skipped
+                new GridRow(5, "m2", false), new GridRow(6, "m2", false),
+                new GridRow(7, "owner", true));
+
+        ScheduleDeriver.MaxTagged mt = ScheduleDeriver.deriveMaxTagged(grid);
+
+        assertThat(mt.value()).isEqualTo(2);
+        assertThat(mt.confidence()).isCloseTo(0.667, offset(0.01)); // 2 member-bearing rounds ⇒ sampleFactor 2/3
+    }
+
+    @Test
+    void deriveWithGridSetsMaxTaggedOnTheTwoMarkerFacet() {
+        ClusterPosts start = new ClusterPosts(List.of(
+                post(0, "2026-01-04T09:00:00Z"), post(4, "2026-01-11T09:00:00Z")));
+        ClusterPosts end = new ClusterPosts(List.of(
+                post(3, "2026-01-04T17:00:00Z"), post(7, "2026-01-11T17:00:00Z")));
+        List<GridRow> grid = List.of(
+                new GridRow(0, "owner", true),
+                new GridRow(1, "m1", false), new GridRow(2, "m1", false),
+                new GridRow(3, "owner", true),
+                new GridRow(4, "owner", true),
+                new GridRow(5, "m1", false), new GridRow(6, "m1", false),
+                new GridRow(7, "owner", true));
+
+        ScheduleFacet s = ScheduleDeriver.derive(List.of(start, end), grid);
+
+        assertThat(s.groupType()).isEqualTo(MarkerGroupType.TWO_MARKER);
+        assertThat(s.maxTaggedPosts()).isEqualTo(2);
+        assertThat(s.maxTaggedPostsConfidence()).isGreaterThan(0.0);
+    }
+
+    @Test
+    void deriveWithoutAGridLeavesMaxTaggedNull() {
+        ClusterPosts cluster = new ClusterPosts(List.of(
+                post(0, "2026-01-05T09:00:00Z"), post(1, "2026-01-06T09:00:00Z")));
+
+        ScheduleFacet s = ScheduleDeriver.derive(List.of(cluster));
+
+        assertThat(s.maxTaggedPosts()).isNull();
+        assertThat(s.maxTaggedPostsConfidence()).isZero();
+    }
+
+    @Test
+    void deriveMaxTaggedIsNoneWhenNoBoundedRoundHoldsAMember() {
+        // Two adjacent markers (a closed period only) — bounded, but no member post to count ⇒ none.
+        List<GridRow> grid = List.of(new GridRow(0, "owner", true), new GridRow(1, "owner", true));
+
+        ScheduleDeriver.MaxTagged mt = ScheduleDeriver.deriveMaxTagged(grid);
+
+        assertThat(mt.value()).isNull();
+        assertThat(mt.confidence()).isZero();
+    }
+
+    @Test
+    void deriveWithGridSetsMaxTaggedOnTheSingleMarkerFacet() {
+        ClusterPosts cluster = new ClusterPosts(List.of(
+                post(0, "2026-01-05T09:00:00Z"), post(3, "2026-01-06T09:00:00Z"), post(6, "2026-01-07T09:00:00Z")));
+        List<GridRow> grid = List.of(
+                new GridRow(0, "owner", true),
+                new GridRow(1, "m1", false), new GridRow(2, "m1", false),
+                new GridRow(3, "owner", true),
+                new GridRow(4, "m1", false), new GridRow(5, "m1", false),
+                new GridRow(6, "owner", true));
+
+        ScheduleFacet s = ScheduleDeriver.derive(List.of(cluster), grid);
+
+        assertThat(s.groupType()).isEqualTo(MarkerGroupType.SINGLE_MARKER);
+        assertThat(s.maxTaggedPosts()).isEqualTo(2);
+        assertThat(s.maxTaggedPostsConfidence()).isGreaterThan(0.0);
+    }
 }
