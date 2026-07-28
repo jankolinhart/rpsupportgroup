@@ -84,7 +84,8 @@ class AiDiscoveryServiceTest {
                                 List.of(new VettingResponse.Reference("start", "Los geht's", 2),
                                         new VettingResponse.Reference("end", "Das war's", 1)),
                                 "09:00", "17:00", 0, 2, 0.9),
-                        new VettingResponse.DaySchedule("SAT", false, null, null, null, null, null, null, null, null)))));
+                        new VettingResponse.DaySchedule("SAT", false, null, null, null, null, null, null, null, null)),
+                null)));
         SupportGroupConfig config = mock(SupportGroupConfig.class);
         when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
 
@@ -189,7 +190,7 @@ class AiDiscoveryServiceTest {
         when(corpus.getRepresentative(SNAP, "sc2")).thenReturn(Optional.empty()); // skipped
         when(corpus.getRepresentative(SNAP, "sc3")).thenReturn(Optional.of(rep()));
         when(gateway.vet(any())).thenReturn(Optional.of(
-                new VettingResponse("FLAT_BANNER", "SINGLE_MARKER", "glow", null, null, 0.5, "flat", null)));
+                new VettingResponse("FLAT_BANNER", "SINGLE_MARKER", "glow", null, null, 0.5, "flat", null, null)));
         SupportGroupConfig config = mock(SupportGroupConfig.class);
         when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
 
@@ -212,7 +213,7 @@ class AiDiscoveryServiceTest {
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
         when(gateway.vet(any())).thenReturn(Optional.of(
                 new VettingResponse("WHAT", "CONTINUOUS", null,
-                        List.of(new VettingResponse.Reference("single", "x", null)), null, 0.1, "?", List.of())));
+                        List.of(new VettingResponse.Reference("single", "x", null)), null, 0.1, "?", List.of(), null)));
         SupportGroupConfig config = mock(SupportGroupConfig.class);
         when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
 
@@ -232,7 +233,7 @@ class AiDiscoveryServiceTest {
                 List.of(new AiMarkerSample(4, "glow", 4, 0.9, 0.8, 3.8, List.of("sc1"), List.of())), List.of()));
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
         when(gateway.vet(any())).thenReturn(Optional.of(
-                new VettingResponse("FLAT_BANNER", "SINGLE_MARKER", "glow", List.of(), null, 0.9, "ok", null)));
+                new VettingResponse("FLAT_BANNER", "SINGLE_MARKER", "glow", List.of(), null, 0.9, "ok", null, null)));
         when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service(12).runAiDiscovery(SNAP))
@@ -311,5 +312,102 @@ class AiDiscoveryServiceTest {
         // depth 0 sends one image of EACH cluster first (the size-8 marker, then the size-2 variant), then the third slot
         // deepens the first cluster — the size-2 variant is represented, not starved by the size-8 cluster's extra sample.
         assertThat(sent).extracting(VettingRequest.Cluster::size).containsExactly(8, 2, 8);
+    }
+
+    // ── Convergent refinement pass ──────────────────────────────────────────────────────────────────────────────────
+
+    private DetectedProfile storedWithAi(List<DetectedProfile.AiDiscovery.AiReference> refs) {
+        DetectedProfile b = base();
+        DetectedProfile.AiDiscovery ai = new DetectedProfile.AiDiscovery(MarkerStyle.TEXT_OVERLAY, "TWO_MARKER", "glow",
+                refs, "START|ENDE", 0.7, "metrics pass", 1L, null, null);
+        return new DetectedProfile(b.snapshotId(), b.igAccount(), b.itemCount(), b.generatedAtMs(), b.provenance(),
+                b.escalate(), b.imageStyle(), b.owner(), b.references(), b.candidates(), b.schedule(), ai);
+    }
+
+    private SnapshotAnalysis analysisWith(List<AiMarkerSample> samples) {
+        return new SnapshotAnalysis(
+                new DetectorProfileProposal(SNAP, "glow.grp", 966, DetectorProfileProposal.ProposedType.TEXT_OVERLAY,
+                        List.of("glow"), List.of(), 0.5, true, "TIER_0_DHASH"),
+                List.of(), List.of(), null, List.of(), samples, List.of());
+    }
+
+    @Test
+    void refineMergesGroundedNewMarkersDedupingAndReportsAddedCount() {
+        // Stored metrics-pass advisory: two markers already found. The refine reply carries one genuine new template
+        // (kept, grounded to image 1 → sc3) plus an already-found one, a null-text one, a blank one, and a within-pass
+        // duplicate — all dropped. So added = 1 and the new marker resolves to its cited cluster's shortcode.
+        DetectedProfile stored = storedWithAi(List.of(
+                new DetectedProfile.AiDiscovery.AiReference("start", "GB AGENCY START", "sc1"),
+                new DetectedProfile.AiDiscovery.AiReference("end", "ENDE", "sc2")));
+        when(proposals.analyze(SNAP)).thenReturn(
+                analysisWith(List.of(new AiMarkerSample(2, "glow", 2, 0.5, 0.5, 1.0, List.of("sc3"), List.of()))));
+        SupportGroupConfig config = mock(SupportGroupConfig.class);
+        when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
+        when(config.getDetectedProfile()).thenReturn(stored);
+        when(corpus.getRepresentative(SNAP, "sc3")).thenReturn(Optional.of(rep()));
+        when(gateway.refine(any())).thenReturn(Optional.of(new RpAiGatewayClient.RefineResponse(
+                List.of(new VettingResponse.Reference("end", "GB AGENCY ENDE Samstag", 1),
+                        new VettingResponse.Reference("start", "GB AGENCY START", 1),      // already found → dropped
+                        new VettingResponse.Reference("single", null, 1),                  // null text → dropped
+                        new VettingResponse.Reference("end", "   ", 1),                    // blank → dropped
+                        new VettingResponse.Reference("end", "gb agency  ende samstag", 1)), // within-pass dup → dropped
+                new RpAiGatewayClient.Usage("gpt-5", 100, 30, "0.0021", "USD"))));
+
+        AiRefineResult out = service(12).refineAiDiscovery(SNAP);
+
+        assertThat(out.added()).isEqualTo(1);
+        assertThat(out.profile().aiDiscovery().references())
+                .extracting(DetectedProfile.AiDiscovery.AiReference::ocrText)
+                .containsExactly("GB AGENCY START", "ENDE", "GB AGENCY ENDE Samstag");
+        assertThat(out.profile().aiDiscovery().references().get(2).shortcode()).isEqualTo("sc3"); // clusterIndex 1 → sc3
+        assertThat(out.profile().aiDiscovery().usage().model()).isEqualTo("gpt-5");
+        assertThat(out.profile().aiDiscovery().usage().costEstimate()).isEqualTo("0.0021");
+        verify(config).updateDetectedProfile(any());
+        verify(configs).save(config);
+    }
+
+    @Test
+    void refineIsANoOpWhenNoMetricsPassAdvisoryExists() {
+        DetectedProfile stored = base(); // aiDiscovery == null
+        when(proposals.analyze(SNAP)).thenReturn(analysisWith(List.of()));
+        SupportGroupConfig config = mock(SupportGroupConfig.class);
+        when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
+        when(config.getDetectedProfile()).thenReturn(stored);
+
+        AiRefineResult out = service(12).refineAiDiscovery(SNAP);
+
+        assertThat(out.added()).isZero();
+        assertThat(out.profile()).isSameAs(stored);
+        verify(gateway, never()).refine(any());
+        verify(config, never()).updateDetectedProfile(any());
+    }
+
+    @Test
+    void refineIsANoOpWhenTheGatewayIsOffOrFails() {
+        DetectedProfile stored = storedWithAi(List.of(
+                new DetectedProfile.AiDiscovery.AiReference("start", "GB AGENCY START", "sc1")));
+        when(proposals.analyze(SNAP)).thenReturn(
+                analysisWith(List.of(new AiMarkerSample(1, "glow", 1, 0.0, 0.0, 0.0, List.of("sc3"), List.of()))));
+        SupportGroupConfig config = mock(SupportGroupConfig.class);
+        when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
+        when(config.getDetectedProfile()).thenReturn(stored);
+        when(corpus.getRepresentative(SNAP, "sc3")).thenReturn(Optional.of(rep()));
+        when(gateway.refine(any())).thenReturn(Optional.empty()); // disabled / transport failure → converged
+
+        AiRefineResult out = service(12).refineAiDiscovery(SNAP);
+
+        assertThat(out.added()).isZero();
+        assertThat(out.profile()).isSameAs(stored);
+        verify(config, never()).updateDetectedProfile(any());
+    }
+
+    @Test
+    void refineThrows404WhenTheConfigIsMissing() {
+        when(proposals.analyze(SNAP)).thenReturn(analysisWith(List.of()));
+        when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service(12).refineAiDiscovery(SNAP))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("no config");
     }
 }

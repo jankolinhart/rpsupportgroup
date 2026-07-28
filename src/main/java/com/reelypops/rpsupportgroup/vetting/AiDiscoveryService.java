@@ -1,6 +1,8 @@
 package com.reelypops.rpsupportgroup.vetting;
 
 import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient;
+import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.RefineRequest;
+import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.RefineResponse;
 import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.VettingRequest;
 import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.VettingResponse;
 import com.reelypops.rpsupportgroup.corpus.CorpusRepresentative;
@@ -24,8 +26,10 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -55,8 +59,8 @@ public class AiDiscoveryService {
     public AiDiscoveryService(DetectedProfileService detected, VettingProposalService proposals,
                               MarkerCorpusService corpus, RpAiGatewayClient gateway,
                               SupportGroupConfigRepository configs,
-                              @Value("${rp.aigateway.max-images:24}") int maxImages,
-                              @Value("${rp.aigateway.samples-per-cluster:3}") int perClusterSamples) {
+                              @Value("${rp.aigateway.max-images:60}") int maxImages,
+                              @Value("${rp.aigateway.samples-per-cluster:8}") int perClusterSamples) {
         this.detected = detected;
         this.proposals = proposals;
         this.corpus = corpus;
@@ -85,6 +89,62 @@ public class AiDiscoveryService {
         config.updateDetectedProfile(enriched);
         configs.save(config);
         return enriched;
+    }
+
+    /**
+     * Convergent refinement (second..Nth pass): re-send the same candidate images + the marker texts already found and
+     * ask the AI tier for the DISTINCT templates still MISSING, then MERGE any new ones into the stored advisory. Loads
+     * the persisted advisory (it does NOT re-run Tier-0 {@code detect}, which would wipe it) and returns how many markers
+     * it added — {@code added == 0} means the set has converged. A no-op (added 0) when there is no metrics-pass advisory
+     * yet, or the gateway is disabled/unavailable. 404 if the snapshot or its config is unknown.
+     */
+    @Transactional
+    public AiRefineResult refineAiDiscovery(UUID snapshotId) {
+        String igAccount = proposals.analyze(snapshotId).proposal().igAccount();
+        SupportGroupConfig config = configs.findByIgAccount(igAccount)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "no config for " + igAccount));
+        DetectedProfile stored = config.getDetectedProfile();
+        AiDiscovery ai = stored == null ? null : stored.aiDiscovery();
+        if (ai == null) {
+            return new AiRefineResult(stored, 0); // nothing to refine — the metrics pass has not run
+        }
+        AiRequest aiRequest = buildRequest(snapshotId, stored);
+        List<String> alreadyFound = ai.references().stream()
+                .map(AiDiscovery.AiReference::ocrText).filter(t -> t != null && !t.isBlank()).toList();
+        Optional<RefineResponse> refined = gateway.refine(
+                new RefineRequest(igAccount, aiRequest.request().clusters(), alreadyFound));
+        if (refined.isEmpty()) {
+            return new AiRefineResult(stored, 0); // gateway off / failed → treated as converged (loop stops)
+        }
+        List<AiDiscovery.AiReference> merged = new ArrayList<>(ai.references());
+        Set<String> seen = new HashSet<>();
+        for (String t : alreadyFound) {
+            seen.add(normalise(t));
+        }
+        int added = 0;
+        List<VettingResponse.Reference> newMarkers = refined.get().newMarkers();
+        if (newMarkers != null) {
+            for (VettingResponse.Reference r : newMarkers) {
+                if (r.ocrText() == null || r.ocrText().isBlank() || !seen.add(normalise(r.ocrText()))) {
+                    continue; // blank or a text we already carry — never duplicate a variation
+                }
+                merged.add(new AiDiscovery.AiReference(r.markerType(), r.ocrText(),
+                        shortcodeFor(r.clusterIndex(), aiRequest.clusterShortcodes())));
+                added++;
+            }
+        }
+        AiDiscovery updated = new AiDiscovery(ai.style(), ai.markerType(), ai.owner(), merged, ai.ocrTargetText(),
+                ai.confidence(), ai.reasoning(), System.currentTimeMillis(), ai.weeklySchedule(),
+                toUsage(refined.get().usage()));
+        DetectedProfile result = withAi(stored, updated);
+        config.updateDetectedProfile(result);
+        configs.save(config);
+        return new AiRefineResult(result, added);
+    }
+
+    /** The dedup key for a marker text: lowercased, whitespace-stripped (matches the gateway's own dedup key). */
+    private static String normalise(String ocrText) {
+        return ocrText.toLowerCase().replaceAll("\\s+", "");
     }
 
     /** Reduce the broadened per-owner marker sample (+ representative images) to the gateway request; fall back to raw representatives. */
@@ -220,7 +280,13 @@ public class AiDiscoveryService {
         }
         return new AiDiscovery(toStyle(v.style()), v.markerType(), v.owner(), references,
                 v.ocrTargetText(), v.confidence(), v.reasoning(), System.currentTimeMillis(),
-                toWeeklySchedule(v.schedule(), clusterShortcodes));
+                toWeeklySchedule(v.schedule(), clusterShortcodes), toUsage(v.usage()));
+    }
+
+    /** Map the gateway's per-pass token usage onto the persisted {@link AiDiscovery.Usage}; null when the gateway sent none. */
+    private static AiDiscovery.Usage toUsage(RpAiGatewayClient.Usage u) {
+        return u == null ? null : new AiDiscovery.Usage(u.model(), u.promptTokens(), u.completionTokens(),
+                u.costEstimate(), u.currency());
     }
 
     /** Map the gateway's per-weekday verdict onto the persisted {@link WeeklySchedule}; null when the model returned none. */

@@ -22,6 +22,7 @@ public class RpAiGatewayClient {
 
     static final String API_KEY_HEADER = "X-Internal-Api-Key";
     static final String VETTING_PATH = "/aigateway/v1/internal/vetting";
+    static final String REFINE_PATH = "/aigateway/v1/internal/vetting/refine";
 
     private static final Logger log = LoggerFactory.getLogger(RpAiGatewayClient.class);
 
@@ -54,6 +55,49 @@ public class RpAiGatewayClient {
             log.warn("AI vetting call failed, falling back to Tier 0: {}", e.getMessage());
             return Optional.empty();
         }
+    }
+
+    /**
+     * The convergent refinement pass: ask the AI tier for the DISTINCT marker templates still missing from
+     * {@code alreadyFound}. Empty when disabled or on any failure (the caller reads that as convergence and stops).
+     */
+    public Optional<RefineResponse> refine(RefineRequest request) {
+        if (!enabled) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.ofNullable(restClient.post().uri(REFINE_PATH).body(request)
+                    .retrieve().body(RefineResponse.class));
+        } catch (RestClientException e) {
+            log.warn("AI refine call failed, treating as converged: {}", e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * The refinement request (mirrors the gateway's contract): the same numbered candidate {@link VettingRequest.Cluster
+     * clusters} (representative images) plus the marker texts already identified, so the AI returns only the DISTINCT
+     * templates still missing.
+     *
+     * @param igAccount    the support group's Instagram account
+     * @param clusters     the recurring-image clusters (representative images), same order as the metrics pass
+     * @param alreadyFound the marker overlay texts already identified (null/empty on the first refinement pass)
+     */
+    public record RefineRequest(String igAccount, List<VettingRequest.Cluster> clusters, List<String> alreadyFound) {
+    }
+
+    /**
+     * The refinement verdict (mirrors the gateway's contract): the newly-recognised distinct marker references (empty =
+     * converged) plus the pass's token {@link Usage usage}.
+     */
+    public record RefineResponse(List<VettingResponse.Reference> newMarkers, Usage usage) {
+    }
+
+    /**
+     * The provider token spend + ESTIMATED cost of one AI pass (mirrors the gateway's contract) — surfaced to the admin
+     * discovery progress UI. {@code costEstimate} is a configured-price estimate (a plain decimal string), not billed.
+     */
+    public record Usage(String model, long promptTokens, long completionTokens, String costEstimate, String currency) {
     }
 
     /**
@@ -106,7 +150,7 @@ public class RpAiGatewayClient {
      */
     public record VettingResponse(String style, String markerType, String owner, List<Reference> references,
                                   String ocrTargetText, double confidence, String reasoning,
-                                  List<DaySchedule> schedule) {
+                                  List<DaySchedule> schedule, Usage usage) {
 
         /** One AI-confirmed marker reference: its round slot, OCR text, and the 1-based cited cluster index (A2/B7b). */
         public record Reference(String markerType, String ocrText, Integer clusterIndex) {

@@ -63,6 +63,18 @@ public class InternalVettingController {
     }
 
     /**
+     * Run one convergent AI-discovery REFINEMENT pass (M4): re-ask the AI tier for the DISTINCT marker templates still
+     * MISSING from the metrics-pass advisory, merge any new ones in, and persist. Returns the updated advisory + how
+     * many markers this pass added ({@code added == 0} = converged, the caller stops the loop). Fail-open: a no-op
+     * (added 0) when there is no metrics-pass advisory yet or the gateway is off/unavailable. 404 if the snapshot or its
+     * config is unknown. Driven repeatedly (button-per-pass) by the admin discovery UI via the rpadminserver BFF.
+     */
+    @PostMapping("/snapshots/{snapshotId}/detect-ai/refine")
+    public AiRefineResult refineAi(@PathVariable UUID snapshotId) {
+        return aiDiscovery.refineAiDiscovery(snapshotId);
+    }
+
+    /**
      * Store a marker image an operator uploaded by hand in the Vetting Portal (M3 follow-up) when the auto-detected
      * corpus missed a marker. Returns the new id (for serving) and its best-effort perceptual dHash (for matching).
      * 400 when the body is empty or not a decodable image.
