@@ -75,13 +75,17 @@ public record DetectedProfile(
      * are that the discovered weekday set is correct = the fraction of those open days on which a marker was directly
      * observed (1.0 when every open day carries a boundary marker; lower when some open days are only inferred as
      * mid-round). Times are tz-agnostic time-of-day in <strong>UTC</strong> until the admin sets the group timezone in
-     * the Vetting Dashboard. Any facet may be empty/{@code UNKNOWN}/{@code null}/0 when the corpus does not support it.
+     * the Vetting Dashboard. {@code maxTaggedPosts} is the deterministically-counted per-member cap (the median of each
+     * round's max non-marker posts by any one member, directive P4) with {@code maxTaggedPostsConfidence} = how cleanly
+     * that cap holds across rounds; {@code null}/0 when no round could be bounded. Any facet may be
+     * empty/{@code UNKNOWN}/{@code null}/0 when the corpus does not support it.
      */
     public record ScheduleFacet(MarkerGroupType groupType, double groupTypeConfidence,
                                 RoundTime start, RoundTime end, RoundTime single,
                                 List<Integer> openWeekdays, double openingDaysConfidence,
                                 RoundState currentState, Integer endMarkerDayOffset, double endMarkerDayOffsetConfidence,
-                                double symmetry, double pairing, int roundCount) {
+                                double symmetry, double pairing, int roundCount,
+                                Integer maxTaggedPosts, double maxTaggedPostsConfidence) {
     }
 
     /** A derived round-boundary time-of-day ({@code HH:mm}, UTC) + how tight (confident) the observed times were. */
