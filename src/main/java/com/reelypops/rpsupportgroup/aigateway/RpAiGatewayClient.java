@@ -124,10 +124,13 @@ public class RpAiGatewayClient {
     }
 
     /**
-     * The isolated per-image OCR verdict (mirrors the gateway's contract): the DISTINCT markers read from the images,
-     * each grounded to the image number it was read from, plus the pass's token {@link Usage usage}.
+     * The isolated per-image OCR verdict (mirrors the gateway's contract): {@code markers} = the DISTINCT markers (one
+     * per text, grounded to the image it was read from); {@code markerReads} = EVERY marker-bearing image's read (NOT
+     * deduped) so a marker text can be tied to ALL its cluster images for per-weekday timing attribution; plus the
+     * pass's token {@link Usage usage}.
      */
-    public record ReadResponse(List<VettingResponse.Reference> markers, Usage usage) {
+    public record ReadResponse(List<VettingResponse.Reference> markers,
+                               List<VettingResponse.Reference> markerReads, Usage usage) {
     }
 
     /**

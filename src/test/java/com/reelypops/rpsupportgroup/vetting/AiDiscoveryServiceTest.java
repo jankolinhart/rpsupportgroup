@@ -331,10 +331,11 @@ class AiDiscoveryServiceTest {
                 "START|ENDE", 0.8, "compound", List.of(),
                 new RpAiGatewayClient.Usage("gpt-5", 200, 50, "0.0100", "USD"))));
         // read (per-image OCR) supplies the GROUNDED gallery: image 1 = plain START, image 2 = ENDE Sonntag.
+        // markerReads null here (defensive) — this test asserts the gallery (from markers); weekday grounding is tested below.
         when(gateway.read(any())).thenReturn(Optional.of(new RpAiGatewayClient.ReadResponse(
                 List.of(new VettingResponse.Reference("start", "GB AGENCY START", 1),
                         new VettingResponse.Reference("end", "GB AGENCY ENDE Sonntag", 2)),
-                new RpAiGatewayClient.Usage("gpt-5", 40, 10, "0.0025", "USD"))));
+                null, new RpAiGatewayClient.Usage("gpt-5", 40, 10, "0.0025", "USD"))));
         SupportGroupConfig config = mock(SupportGroupConfig.class);
         when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
 
@@ -389,6 +390,67 @@ class AiDiscoveryServiceTest {
         assertThat(ai.usage().costEstimate()).isEqualTo("0.0100");
     }
 
+    @Test
+    void groundsPerWeekdayMarkersFromReadOccurrencesWithRecurrenceConfidence() {
+        when(detected.detect(SNAP)).thenReturn(base());
+        // START posted on two Mondays (06:00, 06:05) + one Tuesday (07:00); ENDE one Monday evening (18:30). START has
+        // TWO captured images (sc1, sc1b), both read as START, so its occurrences are seen twice — the repeat is deduped.
+        Instant monA = Instant.parse("2026-01-05T06:00:00Z");
+        Instant monB = Instant.parse("2026-01-12T06:05:00Z");
+        Instant tueA = Instant.parse("2026-01-06T07:00:00Z");
+        Instant monEnd = Instant.parse("2026-01-05T18:30:00Z");
+        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(),
+                List.of(new AiMarkerSample(3, "glow", 3, 0.9, 0.9, 4.0, List.of("sc1", "sc1b"), List.of(monA, monB, tueA)),
+                        new AiMarkerSample(1, "glow", 1, 0.5, 0.5, 1.0, List.of("sc2"), List.of(monEnd))), List.of()));
+        when(corpus.getRepresentative(eq(SNAP), anyString())).thenReturn(Optional.of(rep()));
+        // Compound schedule reports MONDAY only (open); its per-day markers get REPLACED by the grounded ones.
+        when(gateway.vet(any())).thenReturn(Optional.of(new VettingResponse("TEXT_OVERLAY", "TWO_MARKER", "glow",
+                List.of(), "START|ENDE", 0.8, "x",
+                List.of(new VettingResponse.DaySchedule("MON", true, "TWO_MARKER", "TEXT_OVERLAY", List.of(),
+                        "06:00", "18:30", 0, 1, 0.9)),
+                null)));
+        // Build order: 1=START(sc1), 2=ENDE(sc2), 3=START(sc1b). markerReads also carries a null-text + an out-of-range
+        // entry (both skipped) and the 2nd START image (occurrences deduped).
+        when(gateway.read(any())).thenReturn(Optional.of(new RpAiGatewayClient.ReadResponse(
+                List.of(new VettingResponse.Reference("start", "GB AGENCY START", 1),
+                        new VettingResponse.Reference("end", "ENDE", 2)),
+                List.of(new VettingResponse.Reference("start", "GB AGENCY START", 1),
+                        new VettingResponse.Reference("end", "ENDE", 2),
+                        new VettingResponse.Reference("start", "GB AGENCY START", 3),  // 2nd START image → occurrences deduped
+                        new VettingResponse.Reference("single", null, 1),              // null text → skipped
+                        new VettingResponse.Reference("end", "X", 99)),               // clusterIndex out of range → skipped
+                new RpAiGatewayClient.Usage("gpt-5", 40, 10, "0.0025", "USD"))));
+        SupportGroupConfig config = mock(SupportGroupConfig.class);
+        when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
+
+        DetectedProfile.AiDiscovery.WeeklySchedule ws = service(12).runAiDiscovery(SNAP).aiDiscovery().weeklySchedule();
+
+        // MON kept from the compound schedule (markers REPLACED by grounded) + TUE added (a grounded weekday the compound
+        // pass didn't report), sorted MON→TUE.
+        assertThat(ws.days()).extracting(DetectedProfile.AiDiscovery.WeeklySchedule.DaySchedule::weekday)
+                .containsExactly("MON", "TUE");
+        DetectedProfile.AiDiscovery.WeeklySchedule.DaySchedule mon = ws.days().get(0);
+        assertThat(mon.open()).isTrue();
+        assertThat(mon.start()).isEqualTo("06:00");        // compound day fields preserved
+        assertThat(mon.maxTaggedPosts()).isEqualTo(1);
+        assertThat(mon.markers()).extracting(DetectedProfile.AiDiscovery.AiReference::ocrText)
+                .containsExactlyInAnyOrder("GB AGENCY START", "ENDE");
+        assertThat(mon.markers()).filteredOn(m -> "GB AGENCY START".equals(m.ocrText())).singleElement()
+                .satisfies(m -> {
+                    assertThat(m.markerType()).isEqualTo("start");
+                    assertThat(m.shortcode()).isEqualTo("sc1");    // first cited image of START
+                    assertThat(m.confidence()).isEqualTo(0.75);    // 2 distinct Monday sightings → 1 - 0.5^2 (dup image ignored)
+                });
+        assertThat(mon.markers()).filteredOn(m -> "ENDE".equals(m.ocrText())).singleElement()
+                .satisfies(m -> assertThat(m.confidence()).isEqualTo(0.5)); // 1 Monday sighting → 1 - 0.5^1
+        DetectedProfile.AiDiscovery.WeeklySchedule.DaySchedule tue = ws.days().get(1);
+        assertThat(tue.open()).isTrue();
+        assertThat(tue.start()).isNull();                  // added day carries only the grounded markers
+        assertThat(tue.markers()).extracting(DetectedProfile.AiDiscovery.AiReference::ocrText)
+                .containsExactly("GB AGENCY START");
+        assertThat(tue.markers()).singleElement().satisfies(m -> assertThat(m.confidence()).isEqualTo(0.5)); // 1 Tuesday
+    }
+
     // ── Convergent refinement pass ──────────────────────────────────────────────────────────────────────────────────
 
     private DetectedProfile storedWithAi(List<DetectedProfile.AiDiscovery.AiReference> refs) {
@@ -412,8 +474,8 @@ class AiDiscoveryServiceTest {
         // (kept, grounded to image 1 → sc3) plus an already-found one, a null-text one, a blank one, and a within-pass
         // duplicate — all dropped. So added = 1 and the new marker resolves to its cited cluster's shortcode.
         DetectedProfile stored = storedWithAi(List.of(
-                new DetectedProfile.AiDiscovery.AiReference("start", "GB AGENCY START", "sc1"),
-                new DetectedProfile.AiDiscovery.AiReference("end", "ENDE", "sc2")));
+                new DetectedProfile.AiDiscovery.AiReference("start", "GB AGENCY START", "sc1", null),
+                new DetectedProfile.AiDiscovery.AiReference("end", "ENDE", "sc2", null)));
         when(proposals.analyze(SNAP)).thenReturn(
                 analysisWith(List.of(new AiMarkerSample(2, "glow", 2, 0.5, 0.5, 1.0, List.of("sc3"), List.of()))));
         SupportGroupConfig config = mock(SupportGroupConfig.class);
@@ -426,7 +488,7 @@ class AiDiscoveryServiceTest {
                         new VettingResponse.Reference("single", null, 1),                  // null text → dropped
                         new VettingResponse.Reference("end", "   ", 1),                    // blank → dropped
                         new VettingResponse.Reference("end", "gb agency  ende samstag", 1)), // within-pass dup → dropped
-                new RpAiGatewayClient.Usage("gpt-5", 100, 30, "0.0021", "USD"))));
+                List.of(), new RpAiGatewayClient.Usage("gpt-5", 100, 30, "0.0021", "USD"))));
 
         AiRefineResult out = service(12).refineAiDiscovery(SNAP);
 
@@ -460,7 +522,7 @@ class AiDiscoveryServiceTest {
     @Test
     void refineIsANoOpWhenTheGatewayIsOffOrFails() {
         DetectedProfile stored = storedWithAi(List.of(
-                new DetectedProfile.AiDiscovery.AiReference("start", "GB AGENCY START", "sc1")));
+                new DetectedProfile.AiDiscovery.AiReference("start", "GB AGENCY START", "sc1", null)));
         when(proposals.analyze(SNAP)).thenReturn(
                 analysisWith(List.of(new AiMarkerSample(1, "glow", 1, 0.0, 0.0, 0.0, List.of("sc3"), List.of()))));
         SupportGroupConfig config = mock(SupportGroupConfig.class);
