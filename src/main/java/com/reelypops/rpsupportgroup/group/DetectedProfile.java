@@ -111,11 +111,12 @@ public record DetectedProfile(
         }
 
         /**
-         * One AI-confirmed marker reference: its round slot ({@code start}/{@code end}/{@code single}), OCR text, and
-         * the representative {@code shortcode} of the cluster the AI cited — the marker VARIATION's image the admin can
-         * see (A2/B7b); null when the AI cited no cluster or it had no captured representative.
+         * One AI-confirmed marker reference: its round slot ({@code start}/{@code end}/{@code single}), OCR text, the
+         * representative {@code shortcode} of the cited cluster (the marker VARIATION's image; null when none), and a
+         * per-marker {@code confidence} (0..1) — set for a GROUNDED per-weekday marker (recurrence consistency), null
+         * for the flat gallery references (which carry only the advisory's overall confidence).
          */
-        public record AiReference(String markerType, String ocrText, String shortcode) {
+        public record AiReference(String markerType, String ocrText, String shortcode, Double confidence) {
         }
 
         /**

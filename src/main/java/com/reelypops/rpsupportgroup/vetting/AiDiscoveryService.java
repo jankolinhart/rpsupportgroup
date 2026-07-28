@@ -27,8 +27,11 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -97,9 +100,13 @@ public class AiDiscoveryService {
         List<AiDiscovery.AiReference> references = read.isPresent()
                 ? toReferences(read.get().markers(), images.shortcodes())
                 : toReferences(verdict.get().references(), aiRequest.clusterShortcodes());
+        // Grounded per-weekday markers: bucket each read marker's cluster occurrences by weekday (null when read is down
+        // → the schedule keeps the compound per-day markers).
+        Map<String, List<AiDiscovery.AiReference>> weekdayMarkers =
+                read.map(r -> groundedWeekdayMarkers(r.markerReads(), images)).orElse(null);
         AiDiscovery.Usage usage = combineUsage(verdict.get().usage(), read.map(ReadResponse::usage).orElse(null));
         DetectedProfile enriched = withAi(base,
-                toDiscovery(verdict.get(), references, usage, aiRequest.clusterShortcodes()));
+                toDiscovery(verdict.get(), references, usage, aiRequest.clusterShortcodes(), weekdayMarkers));
         SupportGroupConfig config = configs.findByIgAccount(base.igAccount())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "no config for " + base.igAccount()));
@@ -146,7 +153,7 @@ public class AiDiscoveryService {
                     continue; // blank or a text we already carry — a re-read of the complete set adds nothing (converged)
                 }
                 merged.add(new AiDiscovery.AiReference(r.markerType(), r.ocrText(),
-                        shortcodeFor(r.clusterIndex(), images.shortcodes())));
+                        shortcodeFor(r.clusterIndex(), images.shortcodes()), null));
                 added++;
             }
         }
@@ -289,10 +296,11 @@ public class AiDiscoveryService {
 
     /** Map the gateway verdict + the grounded marker references onto the persisted {@link AiDiscovery} facet. */
     private static AiDiscovery toDiscovery(VettingResponse v, List<AiDiscovery.AiReference> references,
-                                           AiDiscovery.Usage usage, List<String> clusterShortcodes) {
+                                           AiDiscovery.Usage usage, List<String> clusterShortcodes,
+                                           Map<String, List<AiDiscovery.AiReference>> weekdayMarkers) {
         return new AiDiscovery(toStyle(v.style()), v.markerType(), v.owner(), references,
                 v.ocrTargetText(), v.confidence(), v.reasoning(), System.currentTimeMillis(),
-                toWeeklySchedule(v.schedule(), clusterShortcodes), usage);
+                toWeeklySchedule(v.schedule(), clusterShortcodes, weekdayMarkers), usage);
     }
 
     /** Resolve gateway references (compound OR per-image OCR) to persisted references, each cited image → its shortcode. */
@@ -346,28 +354,139 @@ public class AiDiscoveryService {
                 u.costEstimate(), u.currency());
     }
 
-    /** Map the gateway's per-weekday verdict onto the persisted {@link WeeklySchedule}; null when the model returned none. */
-    private static WeeklySchedule toWeeklySchedule(List<VettingResponse.DaySchedule> days, List<String> clusterShortcodes) {
-        if (days == null || days.isEmpty()) {
+    /**
+     * Map the gateway's per-weekday verdict onto the persisted {@link WeeklySchedule}, replacing each day's markers with
+     * the GROUNDED per-weekday markers when the read pass ran ({@code weekdayMarkers != null}) — else keeping the
+     * compound day markers. Adds a day for any grounded weekday the compound pass didn't report. Null when neither.
+     */
+    private static WeeklySchedule toWeeklySchedule(List<VettingResponse.DaySchedule> days, List<String> clusterShortcodes,
+                                                   Map<String, List<AiDiscovery.AiReference>> weekdayMarkers) {
+        boolean hasCompound = days != null && !days.isEmpty();
+        if (!hasCompound && (weekdayMarkers == null || weekdayMarkers.isEmpty())) {
             return null;
         }
         List<WeeklySchedule.DaySchedule> mapped = new ArrayList<>();
-        for (VettingResponse.DaySchedule d : days) {
-            List<AiDiscovery.AiReference> markers = new ArrayList<>();
-            if (d.markers() != null) {
-                for (VettingResponse.Reference m : d.markers()) {
-                    markers.add(toAiReference(m, clusterShortcodes));
+        Set<String> covered = new HashSet<>();
+        if (days != null) {
+            for (VettingResponse.DaySchedule d : days) {
+                covered.add(d.weekday());
+                List<AiDiscovery.AiReference> markers = weekdayMarkers != null
+                        ? new ArrayList<>(weekdayMarkers.getOrDefault(d.weekday(), List.of()))
+                        : compoundMarkers(d.markers(), clusterShortcodes);
+                mapped.add(new WeeklySchedule.DaySchedule(d.weekday(), d.open(), d.groupType(), d.style(), markers,
+                        d.start(), d.end(), d.endMarkerDayOffset(), d.maxTaggedPosts(), d.confidence()));
+            }
+        }
+        if (weekdayMarkers != null) {
+            for (Map.Entry<String, List<AiDiscovery.AiReference>> e : weekdayMarkers.entrySet()) {
+                if (!covered.contains(e.getKey())) {
+                    mapped.add(new WeeklySchedule.DaySchedule(e.getKey(), true, null, null,
+                            new ArrayList<>(e.getValue()), null, null, null, null, null));
                 }
             }
-            mapped.add(new WeeklySchedule.DaySchedule(d.weekday(), d.open(), d.groupType(), d.style(), markers,
-                    d.start(), d.end(), d.endMarkerDayOffset(), d.maxTaggedPosts(), d.confidence()));
         }
+        mapped.sort(Comparator.comparingInt(d -> weekdayOrder(d.weekday())));
         return new WeeklySchedule(TIMEZONE, mapped);
     }
 
-    /** One AI reference with the representative shortcode of its cited cluster resolved (A2/B7b). */
+    /** The compound verdict's per-day markers, mapped to references (used only when the grounded read pass is down). */
+    private static List<AiDiscovery.AiReference> compoundMarkers(List<VettingResponse.Reference> refs,
+                                                                 List<String> clusterShortcodes) {
+        List<AiDiscovery.AiReference> markers = new ArrayList<>();
+        if (refs != null) {
+            for (VettingResponse.Reference m : refs) {
+                markers.add(toAiReference(m, clusterShortcodes));
+            }
+        }
+        return markers;
+    }
+
+    /**
+     * GROUNDED per-weekday marker attribution (deterministic): group the per-image marker reads by text, union each
+     * marker's clusters' post {@code occurrences}, and bucket by weekday → the days each marker appears on, each with a
+     * count-based recurrence confidence and its role. Returns weekday ({@code MON}…{@code SUN}) → the markers seen.
+     */
+    private static Map<String, List<AiDiscovery.AiReference>> groundedWeekdayMarkers(
+            List<VettingResponse.Reference> markerReads, ImageSubset images) {
+        Map<String, MarkerWeekdays> byText = new LinkedHashMap<>();
+        if (markerReads != null) {
+            for (VettingResponse.Reference read : markerReads) {
+                Integer idx = read.clusterIndex();
+                if (read.ocrText() == null || read.ocrText().isBlank()
+                        || idx == null || idx < 1 || idx > images.clusters().size()) {
+                    continue;
+                }
+                MarkerWeekdays mw = byText.computeIfAbsent(normalise(read.ocrText()),
+                        k -> new MarkerWeekdays(read.markerType(), read.ocrText(), images.shortcodes().get(idx - 1)));
+                for (VettingRequest.Occurrence occ : images.clusters().get(idx - 1).occurrences()) {
+                    mw.add(occ.weekday(), occ.timeOfDayLocal());
+                }
+            }
+        }
+        Map<String, List<AiDiscovery.AiReference>> byWeekday = new LinkedHashMap<>();
+        for (MarkerWeekdays mw : byText.values()) {
+            for (Map.Entry<String, Integer> e : mw.weekdayCounts().entrySet()) {
+                byWeekday.computeIfAbsent(e.getKey(), k -> new ArrayList<>())
+                        .add(new AiDiscovery.AiReference(mw.markerType(), mw.ocrText(), mw.shortcode(),
+                                recurrenceConfidence(e.getValue())));
+            }
+        }
+        return byWeekday;
+    }
+
+    /** Count-based recurrence confidence: more distinct sightings on a weekday → higher, saturating (1→0.5, 2→0.75…). */
+    private static double recurrenceConfidence(int distinctSightings) {
+        return 1.0 - Math.pow(0.5, distinctSightings);
+    }
+
+    private static final List<String> WEEKDAY_ORDER = List.of("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN");
+
+    /** Sort key MON…SUN; -1 (sorts first) for an unexpected value — occurrences only ever emit MON…SUN. */
+    private static int weekdayOrder(String weekday) {
+        return WEEKDAY_ORDER.indexOf(weekday);
+    }
+
+    /** Accumulates one marker's DISTINCT (weekday, HH:mm) sightings across its clusters, for per-weekday counting. */
+    private static final class MarkerWeekdays {
+        private final String markerType;
+        private final String ocrText;
+        private final String shortcode;
+        private final Set<String> seen = new HashSet<>();
+        private final Map<String, Integer> weekdayCounts = new LinkedHashMap<>();
+
+        MarkerWeekdays(String markerType, String ocrText, String shortcode) {
+            this.markerType = markerType;
+            this.ocrText = ocrText;
+            this.shortcode = shortcode;
+        }
+
+        void add(String weekday, String time) {
+            if (seen.add(weekday + "|" + time)) { // drop repeats from multiple images of one cluster (same occurrences)
+                weekdayCounts.merge(weekday, 1, Integer::sum);
+            }
+        }
+
+        String markerType() {
+            return markerType;
+        }
+
+        String ocrText() {
+            return ocrText;
+        }
+
+        String shortcode() {
+            return shortcode;
+        }
+
+        Map<String, Integer> weekdayCounts() {
+            return weekdayCounts;
+        }
+    }
+
+    /** One AI reference with the representative shortcode of its cited cluster resolved (A2/B7b); no per-marker confidence. */
     private static AiDiscovery.AiReference toAiReference(VettingResponse.Reference r, List<String> clusterShortcodes) {
-        return new AiDiscovery.AiReference(r.markerType(), r.ocrText(), shortcodeFor(r.clusterIndex(), clusterShortcodes));
+        return new AiDiscovery.AiReference(r.markerType(), r.ocrText(),
+                shortcodeFor(r.clusterIndex(), clusterShortcodes), null);
     }
 
     /** Resolve the AI's 1-based clusterIndex to the cluster's representative shortcode; null when unset / out of range. */
