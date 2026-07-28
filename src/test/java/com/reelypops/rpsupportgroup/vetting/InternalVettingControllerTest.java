@@ -179,6 +179,32 @@ class InternalVettingControllerTest {
                 .andExpect(status().isNotFound());
     }
 
+    @Test
+    void refineAiIsANoOpWhenThereIsNoAiDiscoveryYet() throws Exception {
+        // The gateway is off in tests, so the metrics pass persists a Tier-0 advisory with NO AI verdict; a refine pass
+        // then finds nothing to refine and returns the advisory unchanged with added = 0 (converged).
+        String id = openSnapshot("vet-refine-ai");
+        append(id, "sc1", "owner.acct", MARKER, 0);
+        append(id, "sc2", "owner.acct", MARKER, 1);
+        append(id, "sc3", "owner.acct", MARKER, 2);
+        seal(id);
+        mockMvc.perform(post("/supportgroup/v1/internal/vetting/snapshots/{id}/detect-ai", id).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/supportgroup/v1/internal/vetting/snapshots/{id}/detect-ai/refine", id)
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.added").value(0))
+                .andExpect(jsonPath("$.profile.igAccount").value("vet-refine-ai"));
+    }
+
+    @Test
+    void refineAiUnknownSnapshotIs404() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/internal/vetting/snapshots/{id}/detect-ai/refine", UUID.randomUUID())
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+    }
+
     // --- operator-uploaded marker images (M3 follow-up) ---
 
     /** A tiny PNG whose brightness ramps left→right, so its dHash is a predictable all-ones string. */

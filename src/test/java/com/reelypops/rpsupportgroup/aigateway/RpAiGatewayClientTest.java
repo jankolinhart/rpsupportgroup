@@ -1,5 +1,7 @@
 package com.reelypops.rpsupportgroup.aigateway;
 
+import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.RefineRequest;
+import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.RefineResponse;
 import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.VettingRequest;
 import com.reelypops.rpsupportgroup.aigateway.RpAiGatewayClient.VettingResponse;
 import org.junit.jupiter.api.Test;
@@ -87,6 +89,64 @@ class RpAiGatewayClientTest {
         server.expect(requestTo(BASE + "/aigateway/v1/internal/vetting")).andRespond(withServerError());
 
         assertThat(client.vet(request())).isEmpty();
+        server.verify();
+    }
+
+    private static RefineRequest refineRequest() {
+        return new RefineRequest("glow.grp",
+                List.of(new VettingRequest.Cluster(1, List.of("glow"), 1, 0, 0, 0, "data:image/jpeg;base64,AQID", null)),
+                List.of("ENDE", "GB AGENCY START"));
+    }
+
+    @Test
+    void disabledWhenNoBaseUrl_refineIsNoOp() {
+        RpAiGatewayClient client = new RpAiGatewayClient(RestClient.builder(), "", "gw-key");
+
+        assertThat(client.refine(refineRequest())).isEmpty();
+    }
+
+    @Test
+    void refine_sendsKeyAndBody_parsesNewMarkersAndUsage() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        RpAiGatewayClient client = new RpAiGatewayClient(builder, BASE, "gw-key");
+        server.expect(requestTo(BASE + "/aigateway/v1/internal/vetting/refine"))
+                .andExpect(method(POST))
+                .andExpect(header("X-Internal-Api-Key", "gw-key"))
+                .andExpect(jsonPath("$.igAccount").value("glow.grp"))
+                .andExpect(jsonPath("$.alreadyFound[0]").value("ENDE"))
+                .andExpect(jsonPath("$.clusters[0].imageUrl").value("data:image/jpeg;base64,AQID"))
+                .andRespond(withSuccess("""
+                        {"newMarkers":[{"markerType":"end","ocrText":"GB AGENCY ENDE Samstag","clusterIndex":1}],
+                         "usage":{"model":"gpt-5","promptTokens":100,"completionTokens":30,"costEstimate":"0.0021",
+                                  "currency":"USD"}}""",
+                        MediaType.APPLICATION_JSON));
+
+        Optional<RefineResponse> refined = client.refine(refineRequest());
+
+        assertThat(refined).isPresent();
+        RefineResponse r = refined.get();
+        assertThat(r.newMarkers()).singleElement().satisfies(m -> {
+            assertThat(m.markerType()).isEqualTo("end");
+            assertThat(m.ocrText()).isEqualTo("GB AGENCY ENDE Samstag");
+            assertThat(m.clusterIndex()).isEqualTo(1);
+        });
+        assertThat(r.usage().model()).isEqualTo("gpt-5");
+        assertThat(r.usage().promptTokens()).isEqualTo(100);
+        assertThat(r.usage().completionTokens()).isEqualTo(30);
+        assertThat(r.usage().costEstimate()).isEqualTo("0.0021");
+        assertThat(r.usage().currency()).isEqualTo("USD");
+        server.verify();
+    }
+
+    @Test
+    void refine_providerFailure_fallsBackToEmpty() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        RpAiGatewayClient client = new RpAiGatewayClient(builder, BASE, "gw-key");
+        server.expect(requestTo(BASE + "/aigateway/v1/internal/vetting/refine")).andRespond(withServerError());
+
+        assertThat(client.refine(refineRequest())).isEmpty();
         server.verify();
     }
 }

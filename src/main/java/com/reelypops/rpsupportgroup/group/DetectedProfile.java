@@ -98,7 +98,17 @@ public record DetectedProfile(
      */
     public record AiDiscovery(MarkerStyle style, String markerType, String owner, List<AiReference> references,
                               String ocrTargetText, double confidence, String reasoning, long generatedAtMs,
-                              WeeklySchedule weeklySchedule) {
+                              WeeklySchedule weeklySchedule, Usage usage) {
+
+        /**
+         * The provider token spend + ESTIMATED cost of the MOST RECENT AI pass on this advisory (metrics pass, or the
+         * latest refinement pass) — surfaced so the admin discovery progress UI can show a per-pass and convergence
+         * cost. {@code costEstimate} is a configured-price estimate (a plain decimal string in {@code currency}), not a
+         * billed figure; {@code null} on advisories produced before cost surfacing.
+         */
+        public record Usage(String model, long promptTokens, long completionTokens, String costEstimate,
+                            String currency) {
+        }
 
         /**
          * One AI-confirmed marker reference: its round slot ({@code start}/{@code end}/{@code single}), OCR text, and
