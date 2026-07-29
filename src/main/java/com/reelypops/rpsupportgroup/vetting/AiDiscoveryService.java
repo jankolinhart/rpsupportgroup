@@ -30,6 +30,7 @@ import java.util.Base64;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -112,8 +113,8 @@ public class AiDiscoveryService {
         // Record the metrics pass in the run history (markersAdded = the whole gallery it produced; never "converged").
         AiDiscovery.AiPass metricsPass = pass(PASS_METRICS, usage, references.size(), false);
         DetectedProfile enriched = withAi(base,
-                toDiscovery(verdict.get(), references, usage, aiRequest.clusterShortcodes(), weekdayMarkers,
-                        List.of(metricsPass)));
+                toDiscovery(verdict.get(), base.owner().roster(), references, usage, aiRequest.clusterShortcodes(),
+                        weekdayMarkers, List.of(metricsPass)));
         SupportGroupConfig config = configs.findByIgAccount(base.igAccount())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "no config for " + base.igAccount()));
@@ -304,15 +305,24 @@ public class AiDiscoveryService {
         return occ;
     }
 
-    /** Map the gateway verdict + the grounded marker references onto the persisted {@link AiDiscovery} facet. */
-    private static AiDiscovery toDiscovery(VettingResponse v, List<AiDiscovery.AiReference> references,
+    /**
+     * Map the gateway verdict + the grounded marker references onto the persisted {@link AiDiscovery} facet. The owner
+     * facet is the UNION of the deterministic Tier-0 roster ({@code tier0Owners}, authoritative — it counts posts) and
+     * the AI's owners, Tier-0 first (share-ranked). Vision may ADD a handle it reads in text but never DROPS a
+     * Tier-0-confirmed co-owner — otherwise a shared-banner duty rota collapses to a single AI owner (M6, vision §5b).
+     */
+    private static AiDiscovery toDiscovery(VettingResponse v, List<String> tier0Owners,
+                                           List<AiDiscovery.AiReference> references,
                                            AiDiscovery.Usage usage, List<String> clusterShortcodes,
                                            Map<String, List<AiDiscovery.AiReference>> weekdayMarkers,
                                            List<AiDiscovery.AiPass> passes) {
-        List<String> owners = v.owners() != null && !v.owners().isEmpty()
+        List<String> aiOwners = v.owners() != null && !v.owners().isEmpty()
                 ? v.owners()
                 : (v.owner() != null ? List.of(v.owner()) : List.of());
-        return new AiDiscovery(toStyle(v.style()), v.markerType(), v.owner(), owners, references,
+        // Tier-0 GROUNDING (M6): keep every deterministically-counted owner, then append any AI-only handle.
+        LinkedHashSet<String> owners = new LinkedHashSet<>(tier0Owners == null ? List.of() : tier0Owners);
+        owners.addAll(aiOwners);
+        return new AiDiscovery(toStyle(v.style()), v.markerType(), v.owner(), List.copyOf(owners), references,
                 v.ocrTargetText(), v.confidence(), v.reasoning(), System.currentTimeMillis(),
                 toWeeklySchedule(v.schedule(), clusterShortcodes, weekdayMarkers), usage, passes);
     }

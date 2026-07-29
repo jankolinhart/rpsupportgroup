@@ -215,7 +215,10 @@ class AiDiscoveryServiceTest {
 
     @Test
     void mapsAnUnrecognisedStyleToUnknown() {
-        when(detected.detect(SNAP)).thenReturn(base());
+        // Tier-0 found no owner either, so with the AI also returning none the unioned owner set stays empty.
+        when(detected.detect(SNAP)).thenReturn(new DetectedProfile(SNAP, "glow.grp", 966, 1L, "TIER_0_DHASH", true,
+                new DetectedProfile.StyleFacet(MarkerStyle.TEXT_OVERLAY, 0.0),
+                new DetectedProfile.OwnerFacet(List.of(), 0.0), List.of(), List.of(), null, null));
         when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(),
                 List.of(new AiMarkerSample(4, "glow", 4, 0.9, 0.8, 3.8, List.of("sc1"), List.of())), List.of()));
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
@@ -229,10 +232,34 @@ class AiDiscoveryServiceTest {
 
         assertThat(result.aiDiscovery().style()).isEqualTo(MarkerStyle.UNKNOWN);
         assertThat(result.aiDiscovery().owner()).isNull();
-        assertThat(result.aiDiscovery().owners()).isEmpty(); // no owner + no owners → empty set
+        assertThat(result.aiDiscovery().owners()).isEmpty(); // no AI owner + empty Tier-0 roster → empty set
         // A reference the AI did not tie to a cluster (null clusterIndex) resolves to a null shortcode.
         assertThat(result.aiDiscovery().references()).singleElement()
                 .satisfies(r -> assertThat(r.shortcode()).isNull());
+    }
+
+    @Test
+    void unionsTheTier0OwnerRosterSoTheAiCannotDropACoOwner() {
+        // The dailyblogger case: Tier-0 deterministically found the co-owner SET {ras.circle, lespeches}, but the AI
+        // (vision) collapses the shared banner to a SINGLE owner. The owner facet must UNION the Tier-0 roster so no
+        // deterministically-counted co-owner is lost — Tier-0 first (share-ranked); the AI may only ADD a handle.
+        when(detected.detect(SNAP)).thenReturn(new DetectedProfile(SNAP, "glow.grp", 966, 1L, "TIER_0_DHASH", false,
+                new DetectedProfile.StyleFacet(MarkerStyle.FLAT_BANNER, 1.0),
+                new DetectedProfile.OwnerFacet(List.of("ras.circle", "lespeches"), 1.0), List.of(), List.of(), null, null));
+        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(),
+                List.of(new AiMarkerSample(4, "ras.circle", 4, 0.9, 0.8, 3.8, List.of("sc1"), List.of())), List.of()));
+        when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
+        when(gateway.vet(any())).thenReturn(Optional.of(
+                new VettingResponse("FLAT_BANNER", "TWO_MARKER", "ras.circle", List.of("ras.circle"),
+                        List.of(new VettingResponse.Reference("start", "x", 1)), null, 0.9, "one owner", List.of(), null)));
+        SupportGroupConfig config = mock(SupportGroupConfig.class);
+        when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
+
+        DetectedProfile result = service(12).runAiDiscovery(SNAP);
+
+        // AI returned only ras.circle; the union restores the Tier-0 co-owner lespeches (Tier-0 first, AI adds nothing new).
+        assertThat(result.aiDiscovery().owners()).containsExactly("ras.circle", "lespeches");
+        assertThat(result.aiDiscovery().owner()).isEqualTo("ras.circle"); // the singular primary is kept from the AI
     }
 
     @Test
