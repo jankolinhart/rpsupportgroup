@@ -1,5 +1,6 @@
 package com.reelypops.rpsupportgroup.group;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.util.List;
 import java.util.UUID;
 
@@ -27,6 +28,7 @@ import java.util.UUID;
  * @param schedule      the derived group type + round timing + opening days + current state (M3b); never {@code null}
  * @param aiDiscovery   the AI tier's verdict (M4), or {@code null} until an admin runs "Run AI discovery"
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record DetectedProfile(
         UUID snapshotId,
         String igAccount,
@@ -42,10 +44,12 @@ public record DetectedProfile(
         AiDiscovery aiDiscovery) {
 
     /** The inferred marker style + how confident vetting is in it. */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record StyleFacet(MarkerStyle value, double confidence) {
     }
 
     /** The candidate marker-owner roster + the owner-separation confidence. */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record OwnerFacet(List<String> roster, double confidence) {
     }
 
@@ -55,6 +59,7 @@ public record DetectedProfile(
      * banner's co-owners are in the {@link OwnerCandidate} breakdown, not here). {@code confidence} is how strongly this
      * cluster reads as a real marker (its normalised marker-signature strength, 0..1).
      */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record MarkerReference(String dHash, int distinctPosts, String dominantAuthor, List<String> sampleShortcodes,
                                   double confidence) {
     }
@@ -67,6 +72,7 @@ public record DetectedProfile(
      * owner's distinct marker posts across the accepted clusters, {@code markerClusters} how many distinct banners they
      * recur on, and {@code postShare} their fraction of the owner set's marker posts (the duty split, 0..1).
      */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record OwnerCandidate(String author, int markerPosts, int markerClusters, double postShare) {
     }
 
@@ -85,6 +91,7 @@ public record DetectedProfile(
      * that cap holds across rounds; {@code null}/0 when no round could be bounded. Any facet may be
      * empty/{@code UNKNOWN}/{@code null}/0 when the corpus does not support it.
      */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record ScheduleFacet(MarkerGroupType groupType, double groupTypeConfidence,
                                 RoundTime start, RoundTime end, RoundTime single,
                                 List<Integer> openWeekdays, double openingDaysConfidence,
@@ -94,6 +101,7 @@ public record DetectedProfile(
     }
 
     /** A derived round-boundary time-of-day ({@code HH:mm}, UTC) + how tight (confident) the observed times were. */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record RoundTime(String timeOfDayUtc, double confidence) {
     }
 
@@ -107,6 +115,7 @@ public record DetectedProfile(
      * Portal, never auto-vets. The {@link #passes} list is the run HISTORY (the metrics pass + any refinement passes,
      * each with its own timestamp + spend) so the discovery-progress UI survives a reload — not only the last {@link #usage}.
      */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record AiDiscovery(MarkerStyle style, String markerType, String owner, List<String> owners,
                               List<AiReference> references, String ocrTargetText, double confidence, String reasoning,
                               long generatedAtMs, WeeklySchedule weeklySchedule, Usage usage, List<AiPass> passes) {
@@ -117,6 +126,7 @@ public record DetectedProfile(
          * cost. {@code costEstimate} is a configured-price estimate (a plain decimal string in {@code currency}), not a
          * billed figure; {@code null} on advisories produced before cost surfacing.
          */
+        @JsonIgnoreProperties(ignoreUnknown = true)
         public record Usage(String model, long promptTokens, long completionTokens, String costEstimate,
                             String currency) {
         }
@@ -129,6 +139,7 @@ public record DetectedProfile(
          * this pass contributed (the metrics pass's whole gallery, or a refine pass's NEW templates); {@code converged} is
          * true when a refinement pass added none (a metrics pass is always {@code false}).
          */
+        @JsonIgnoreProperties(ignoreUnknown = true)
         public record AiPass(String kind, long ranAtMs, String model, long promptTokens, long completionTokens,
                              String costEstimate, String currency, int markersAdded, boolean converged) {
         }
@@ -139,6 +150,7 @@ public record DetectedProfile(
          * per-marker {@code confidence} (0..1) — set for a GROUNDED per-weekday marker (recurrence consistency), null
          * for the flat gallery references (which carry only the advisory's overall confidence).
          */
+        @JsonIgnoreProperties(ignoreUnknown = true)
         public record AiReference(String markerType, String ocrText, String shortcode, Double confidence) {
         }
 
@@ -151,6 +163,7 @@ public record DetectedProfile(
          * @param timezone the zone the day times are expressed in (UTC in v1)
          * @param days     one entry per weekday the model reported (MON…SUN)
          */
+        @JsonIgnoreProperties(ignoreUnknown = true)
         public record WeeklySchedule(String timezone, List<DaySchedule> days) {
 
             /**
@@ -169,6 +182,7 @@ public record DetectedProfile(
              * @param maxTaggedPosts     the per-member cap (max non-marker posts per round), or null
              * @param confidence         0..1 — the model's confidence in this day, or null
              */
+            @JsonIgnoreProperties(ignoreUnknown = true)
             public record DaySchedule(String weekday, boolean open, String groupType, String style,
                                       List<AiReference> markers, String start, String end,
                                       Integer endMarkerDayOffset, Integer maxTaggedPosts, Double confidence) {
