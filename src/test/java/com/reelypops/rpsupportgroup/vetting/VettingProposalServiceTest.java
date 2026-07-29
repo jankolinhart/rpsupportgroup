@@ -56,8 +56,9 @@ class VettingProposalServiceTest {
         items = mock(CorpusSnapshotItemRepository.class);
         representatives = mock(CorpusRepresentativeRepository.class);
         when(representatives.findShortcodesBySnapshotId(any())).thenReturn(List.of());
-        // threshold 2, min-cluster 2, max-clusters 5, max-samples 5, min-coverage 0.75, repeat-contributor-min 2, min-score 2.0
-        service = new VettingProposalService(snapshots, items, representatives, new NoOpAiVettingEnricher(), 2, 2, 5, 5, 0.75, 2, 2.0);
+        // threshold 2, min-cluster 2, max-clusters 5, max-samples 5, min-coverage 0.75, repeat-contributor-min 2,
+        // min-score 2.0, timing-merge tolerance 45min, min-concentration 0.85
+        service = new VettingProposalService(snapshots, items, representatives, new NoOpAiVettingEnricher(), 2, 2, 5, 5, 0.75, 2, 2.0, 45, 0.85);
     }
 
     private MarkerCorpusSnapshot stubSnapshot(List<CorpusSnapshotItem> gridItems) {
@@ -333,6 +334,58 @@ class VettingProposalServiceTest {
         assertThat(a.proposal().ownerRoster()).containsExactlyInAnyOrder("owner.a", "owner.b");
         assertThat(a.schedule().groupType()).isEqualTo(MarkerGroupType.SINGLE_MARKER);
         assertThat(a.schedule().maxTaggedPosts()).isEqualTo(1);              // one member post per round
+    }
+
+    @Test
+    void reScreenshotVariantsAreTimingMergedIntoOneMarker() {
+        // P1.5: a manager re-screenshots the owner's banner — visually identical, but the reframe drifts the dHash past
+        // the clustering threshold, SPLITTING one marker into two clusters (owner.a -> H0, owner.b -> H_FAR). Both are
+        // posted at the SAME round-cadence time-of-day (~09:00), so the TIMING MERGE reunites them into ONE marker: the
+        // owner SET recovers both, and the group reads SINGLE_MARKER (not a phantom two-marker from the split).
+        MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
+        UUID id = snap.getId();
+        List<CorpusSnapshotItem> grid = List.of(
+                dated(id, "owner.a", H0, 0, "2026-01-04T09:00:00Z"),
+                dated(id, "owner.b", H_FAR, 1, "2026-01-05T09:04:00Z"),
+                dated(id, "owner.a", H0, 2, "2026-01-06T09:01:00Z"),
+                dated(id, "owner.b", H_FAR, 3, "2026-01-07T08:59:00Z"),
+                dated(id, "owner.a", H0, 4, "2026-01-08T09:02:00Z"),
+                dated(id, "owner.b", H_FAR, 5, "2026-01-09T09:00:00Z"));
+        when(snapshots.findById(id)).thenReturn(Optional.of(snap));
+        when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
+
+        SnapshotAnalysis a = service.analyze(id);
+
+        assertThat(a.proposal().escalate()).isFalse();
+        assertThat(a.proposal().ownerRoster()).containsExactlyInAnyOrder("owner.a", "owner.b");
+        assertThat(a.proposal().markerClusters()).hasSize(1);               // the two variants merged into ONE marker
+        assertThat(a.schedule().groupType()).isEqualTo(MarkerGroupType.SINGLE_MARKER);
+    }
+
+    @Test
+    void timingMergeDisabledByNonPositiveToleranceLeavesVariantsSplit() {
+        // With the timing merge OFF (tolerance 0), the two re-screenshot variants stay separate clusters. P1's owner SET
+        // still unions them (across the two strong clusters), but the group now over-reads as TWO_MARKER — the very
+        // over-count the merge exists to prevent. Guards the kill switch + shows the merge changes the outcome.
+        VettingProposalService noMerge = new VettingProposalService(snapshots, items, representatives,
+                new NoOpAiVettingEnricher(), 2, 2, 5, 5, 0.75, 2, 2.0, 0, 0.85);
+        MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
+        UUID id = snap.getId();
+        List<CorpusSnapshotItem> grid = List.of(
+                dated(id, "owner.a", H0, 0, "2026-01-04T09:00:00Z"),
+                dated(id, "owner.b", H_FAR, 1, "2026-01-05T09:04:00Z"),
+                dated(id, "owner.a", H0, 2, "2026-01-06T09:01:00Z"),
+                dated(id, "owner.b", H_FAR, 3, "2026-01-07T08:59:00Z"),
+                dated(id, "owner.a", H0, 4, "2026-01-08T09:02:00Z"),
+                dated(id, "owner.b", H_FAR, 5, "2026-01-09T09:00:00Z"));
+        when(snapshots.findById(id)).thenReturn(Optional.of(snap));
+        when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
+
+        SnapshotAnalysis a = noMerge.analyze(id);
+
+        assertThat(a.proposal().ownerRoster()).containsExactlyInAnyOrder("owner.a", "owner.b");
+        assertThat(a.proposal().markerClusters()).hasSize(2);               // split — not merged
+        assertThat(a.schedule().groupType()).isEqualTo(MarkerGroupType.TWO_MARKER);
     }
 
     /** Grid item WITH a posted-at instant — for the M3b schedule derivation (times / weekdays / current state). */
