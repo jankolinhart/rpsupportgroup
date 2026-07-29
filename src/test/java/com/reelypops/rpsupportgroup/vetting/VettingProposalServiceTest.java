@@ -29,12 +29,13 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * Unit test for the Tier-0 (dHash-cluster) proposal engine and its M2 slam-dunk gate: a single owner that recurs on a
- * regular cadence spanning the grid, clearly ahead of the field, is ACCEPTED as FLAT_BANNER (no AI); a weak/ambiguous
- * grid keeps the ranked roster but ESCALATES (confidence = how far the top candidate separates from the second);
- * multi-author lookalike clusters and collab fan-out are rejected (impure / not distinct); a grid where nothing recurs
- * escalates as TEXT_OVERLAY; empty is UNKNOWN; the length guard keeps differently-sized hashes apart; an unknown
- * snapshot is a 404.
+ * Unit test for the Tier-0 (dHash-cluster) proposal engine and its M6 owner-SET gate: an owner (or a co-owner SET on a
+ * duty rota) that recurs on a regular cadence spanning the grid is ACCEPTED as FLAT_BANNER (no AI); a weak grid keeps
+ * the repeat contributors as a roster but ESCALATES (confidence = the top cluster's repeat-contributor coverage x its
+ * marker strength);
+ * multi-author lookalike clusters and collab fan-out are rejected (no repeat contributors / not distinct); a grid where
+ * nothing recurs escalates as TEXT_OVERLAY; empty is UNKNOWN; the length guard keeps differently-sized hashes apart; an
+ * unknown snapshot is a 404.
  */
 class VettingProposalServiceTest {
 
@@ -55,8 +56,8 @@ class VettingProposalServiceTest {
         items = mock(CorpusSnapshotItemRepository.class);
         representatives = mock(CorpusRepresentativeRepository.class);
         when(representatives.findShortcodesBySnapshotId(any())).thenReturn(List.of());
-        // threshold 2, min-cluster 2, max-clusters 5, max-samples 5, min-purity 0.75, min-score 2.0, min-separation 0.5
-        service = new VettingProposalService(snapshots, items, representatives, new NoOpAiVettingEnricher(), 2, 2, 5, 5, 0.75, 2.0, 0.5);
+        // threshold 2, min-cluster 2, max-clusters 5, max-samples 5, min-coverage 0.75, repeat-contributor-min 2, min-score 2.0
+        service = new VettingProposalService(snapshots, items, representatives, new NoOpAiVettingEnricher(), 2, 2, 5, 5, 0.75, 2, 2.0);
     }
 
     private MarkerCorpusSnapshot stubSnapshot(List<CorpusSnapshotItem> gridItems) {
@@ -106,8 +107,8 @@ class VettingProposalServiceTest {
     @Test
     void slamDunkSingleOwnerIsAcceptedWithoutAi() {
         // One owner re-posts the SAME banner 5x at a regular cadence spanning the grid; a reposter's different image
-        // appears twice, bunched at the end. The owner's score towers over the reposter's, so the gate ACCEPTS one
-        // owner (no AI) and names it alone.
+        // appears twice, bunched at the end. The owner's cluster reads as a strong marker (score >= minScore) with full
+        // repeat-contributor coverage, so the gate ACCEPTS the owner SET; the reposter's weak signal stays out of it.
         MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
         UUID id = snap.getId();
         List<CorpusSnapshotItem> grid = List.of(
@@ -122,7 +123,7 @@ class VettingProposalServiceTest {
         assertThat(p.proposedType()).isEqualTo(ProposedType.FLAT_BANNER);
         assertThat(p.escalate()).isFalse();                          // slam dunk — accepted, no AI
         assertThat(p.ownerRoster()).containsExactly("owner.acct");   // names the ONE owner
-        assertThat(p.confidence()).isGreaterThan(0.9);               // ~0.95 separation from the reposter
+        assertThat(p.confidence()).isGreaterThan(0.9);               // coverage 1.0 x full strength
         assertThat(p.itemCount()).isEqualTo(7);
         assertThat(p.markerClusters()).hasSize(2);                   // owner + reposter (context)
         DetectorProfileProposal.MarkerCluster top = p.markerClusters().get(0);
@@ -135,8 +136,8 @@ class VettingProposalServiceTest {
     @Test
     void twoMarkerOwnerIsAcceptedDespiteTwoTopClusters() {
         // A 2-marker owner posts a START banner AND an END banner each round, so it produces the top TWO clusters (both
-        // owner.acct). Separation must be measured OWNER-to-owner (M2.1): the owner's END banner is not its rival, so it
-        // does not tie with itself — it clears the gate over the next DIFFERENT author (a weak reposter).
+        // owner.acct). Both clusters read as strong markers, so their repeat contributors UNION to a single-member owner
+        // SET {owner.acct}; the weak reposter never clears minScore, so it is not added.
         MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
         UUID id = snap.getId();
         List<CorpusSnapshotItem> grid = List.of(
@@ -153,7 +154,7 @@ class VettingProposalServiceTest {
         assertThat(p.proposedType()).isEqualTo(ProposedType.FLAT_BANNER);
         assertThat(p.escalate()).isFalse();                          // owner does not tie with itself
         assertThat(p.ownerRoster()).containsExactly("owner.acct");   // ONE owner, despite two marker clusters
-        assertThat(p.confidence()).isGreaterThan(0.9);               // ~0.96 lead over the reposter
+        assertThat(p.confidence()).isGreaterThan(0.9);               // coverage 1.0 x full strength
         assertThat(p.markerClusters()).hasSize(3);                   // START + END + reposter (context)
         assertThat(p.markerClusters().get(0).authorUsernames()).containsExactly("owner.acct");
     }
@@ -261,10 +262,10 @@ class VettingProposalServiceTest {
     }
 
     @Test
-    void ambiguousEqualOwnersEscalateWithRankedRoster() {
-        // Two equally-strong cadenced owners (interleaved every other post): both recur 3x, regular, same coverage, so
-        // neither separates. separation = 0 -> confidence 0 -> ESCALATE, keeping BOTH on the roster (P4: co-owners) in a
-        // deterministic (score, then author) order for the AI/human to adjudicate.
+    void concurrentCoOwnersWithDifferentBannersAcceptedAsSet() {
+        // A duty rota where the two owners post their OWN banner (owner.a -> H0, owner.b -> H_FAR), alternating each
+        // round: two strong single-owner clusters. There is no owner to "separate" from — they are CO-OWNERS, not
+        // rivals — so M6 ACCEPTS the owner SET (both) instead of escalating on the tie (vision [DECIDED 5.8]).
         MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
         UUID id = snap.getId();
         List<CorpusSnapshotItem> grid = List.of(
@@ -277,10 +278,61 @@ class VettingProposalServiceTest {
         DetectorProfileProposal p = service.propose(id);
 
         assertThat(p.proposedType()).isEqualTo(ProposedType.FLAT_BANNER);
-        assertThat(p.escalate()).isTrue();
-        assertThat(p.ownerRoster()).containsExactly("owner.a", "owner.b");
-        assertThat(p.confidence()).isEqualTo(0.0);   // no separation — a tie
+        assertThat(p.escalate()).isFalse();                                  // co-owners are a SET, not a tie to escalate
+        assertThat(p.ownerRoster()).containsExactlyInAnyOrder("owner.a", "owner.b");
+        assertThat(p.confidence()).isGreaterThan(0.9);                       // strong markers, full coverage
         assertThat(p.markerClusters()).hasSize(2);
+    }
+
+    @Test
+    void sharedBannerCoOwnersAcceptedAsSet() {
+        // The MOTIVATING case (dailyblogger___): two owners on a duty rota SHARE ONE banner (both post H0), alternating
+        // each round. Perceptual clustering merges them into a SINGLE cluster whose single-author purity is ~0.5 — which
+        // ESCALATED under the old purity gate. M6's repeat-contributor coverage sees BOTH as repeat contributors (each
+        // >= 2 posts) covering the whole cluster, so it ACCEPTS the owner SET = both (vision [DECIDED 5.8]).
+        MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
+        UUID id = snap.getId();
+        List<CorpusSnapshotItem> grid = List.of(
+                at(id, "owner.a", H0, 0), at(id, "owner.b", H0, 1),
+                at(id, "owner.a", H0, 2), at(id, "owner.b", H0, 3),
+                at(id, "owner.a", H0, 4), at(id, "owner.b", H0, 5));
+        when(snapshots.findById(id)).thenReturn(Optional.of(snap));
+        when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
+
+        DetectorProfileProposal p = service.propose(id);
+
+        assertThat(p.proposedType()).isEqualTo(ProposedType.FLAT_BANNER);
+        assertThat(p.escalate()).isFalse();                                  // coverage sees both owners → accept
+        assertThat(p.ownerRoster()).containsExactlyInAnyOrder("owner.a", "owner.b");
+        assertThat(p.confidence()).isGreaterThan(0.9);
+        assertThat(p.markerClusters()).hasSize(1);                           // ONE shared banner cluster
+    }
+
+    @Test
+    void singleMarkerMultiOwnerDerivesOwnerSetAndMaxTagged() {
+        // A SINGLE-marker duty rota: two co-owners share ONE marker banner (H0), taking turns each round, with members
+        // posting between markers. The owner SET is both; because there is ONE marker cluster the group type is
+        // SINGLE_MARKER (owner-set is DECOUPLED from group type); and maxTaggedPosts is counted across rounds bounded by
+        // ANY owner's markers (M6 union, directive P4).
+        MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
+        UUID id = snap.getId();
+        List<CorpusSnapshotItem> grid = List.of(
+                at(id, "owner.a", H0, 0),                                     // marker (round boundary)
+                at(id, "member.x", "00110011", 1),                           // member post in round
+                at(id, "owner.b", H0, 2),                                     // marker (other co-owner)
+                at(id, "member.y", "01010101", 3),
+                at(id, "owner.a", H0, 4),                                     // marker
+                at(id, "member.z", "00111100", 5),
+                at(id, "owner.b", H0, 6));                                    // marker
+        when(snapshots.findById(id)).thenReturn(Optional.of(snap));
+        when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
+
+        SnapshotAnalysis a = service.analyze(id);
+
+        assertThat(a.proposal().escalate()).isFalse();
+        assertThat(a.proposal().ownerRoster()).containsExactlyInAnyOrder("owner.a", "owner.b");
+        assertThat(a.schedule().groupType()).isEqualTo(MarkerGroupType.SINGLE_MARKER);
+        assertThat(a.schedule().maxTaggedPosts()).isEqualTo(1);              // one member post per round
     }
 
     /** Grid item WITH a posted-at instant — for the M3b schedule derivation (times / weekdays / current state). */

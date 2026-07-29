@@ -61,9 +61,9 @@ public class VettingProposalService {
     private final int minClusterSize;
     private final int maxClusters;
     private final int maxSamples;
-    private final double minPurity;
+    private final double minCoverage;
+    private final int repeatContributorMin;
     private final double minScore;
-    private final double minSeparation;
 
     public VettingProposalService(MarkerCorpusSnapshotRepository snapshots, CorpusSnapshotItemRepository items,
                                   CorpusRepresentativeRepository representatives,
@@ -72,9 +72,9 @@ public class VettingProposalService {
                                   @Value("${rp.vetting.min-cluster-size:2}") int minClusterSize,
                                   @Value("${rp.vetting.max-clusters:5}") int maxClusters,
                                   @Value("${rp.vetting.max-samples:5}") int maxSamples,
-                                  @Value("${rp.vetting.min-purity:0.75}") double minPurity,
-                                  @Value("${rp.vetting.min-score:2.0}") double minScore,
-                                  @Value("${rp.vetting.min-separation:0.5}") double minSeparation) {
+                                  @Value("${rp.vetting.min-coverage:0.75}") double minCoverage,
+                                  @Value("${rp.vetting.repeat-contributor-min:2}") int repeatContributorMin,
+                                  @Value("${rp.vetting.min-score:2.0}") double minScore) {
         this.snapshots = snapshots;
         this.items = items;
         this.representatives = representatives;
@@ -83,9 +83,9 @@ public class VettingProposalService {
         this.minClusterSize = minClusterSize;
         this.maxClusters = maxClusters;
         this.maxSamples = maxSamples;
-        this.minPurity = minPurity;
+        this.minCoverage = minCoverage;
+        this.repeatContributorMin = repeatContributorMin;
         this.minScore = minScore;
-        this.minSeparation = minSeparation;
     }
 
     /** Build the advisory vetting proposal for a snapshot (404 if unknown), then run it through the enricher seam. */
@@ -127,58 +127,63 @@ public class VettingProposalService {
             return emptyAnalysis(new DetectorProfileProposal(id, ig, itemCount, ProposedType.TEXT_OVERLAY, List.of(),
                     List.of(), 0.0, true, PROVENANCE_TIER0));
         }
-        // A genuine flat-banner marker is the SAME image re-posted across DISTINCT posts by a SINGLE owner (directive
-        // P5: a post appears in the grid only once, so an image recurs only because the owner re-posts a fresh banner
-        // each round). Keep only clusters that (a) recur across >= minClusterSize DISTINCT posts and (b) are dominated
-        // by one author (purity >= minPurity). This rejects multi-author lookalike clusters (different members posting
-        // visually-similar photos) and single collab posts fanned into per-author rows — the two things that flooded
-        // the roster with non-owners on large grids.
+        // A genuine flat-banner marker is the SAME image re-posted across DISTINCT posts by its OWNER(s) (directive P5:
+        // a post appears in the grid only once, so an image recurs only because an owner re-posts a fresh banner each
+        // round). The owner may be a SET — a duty rota shares the posting — so keep clusters that (a) recur across
+        // >= minClusterSize DISTINCT posts and (b) are dominated by REPEAT CONTRIBUTORS (repeatCoverage >= minCoverage:
+        // the share of the cluster's posts by authors with >= repeatContributorMin posts). This admits shared-banner
+        // co-owners (each recurs, so single-author purity ~0.5 but coverage is high) while still rejecting multi-author
+        // lookalike floods (a long tail of one-offs => low coverage) and collab fan-out (one distinct post) — the two
+        // things that flooded the roster with non-owners on large grids (M6, [DECIDED 5.8]).
         // Each surviving cluster is scored on its marker SIGNATURE (M2, "Fast M2"): recurrence x cadence-regularity x
-        // coverage. A real marker recurs at a REGULAR cadence spanning the window; a serial re-poster does not.
+        // coverage, measured on the REPEAT-CONTRIBUTOR (marker) posts — so a shared banner scores on the FULL round
+        // cadence (every co-owner's post), not one owner's half. A real marker recurs at a REGULAR cadence spanning the
+        // window; a serial re-poster does not.
         List<MarkerCandidate> candidates = strong.stream()
-                .map(c -> MarkerCandidate.from(c.representative(), c.members(), maxSamples, itemCount, withImages))
-                .filter(c -> c.distinctPosts() >= minClusterSize && c.purity() >= minPurity)
+                .map(c -> MarkerCandidate.from(c.representative(), c.members(), maxSamples, itemCount, withImages,
+                        repeatContributorMin))
+                .filter(c -> c.distinctPosts() >= minClusterSize && c.repeatCoverage() >= minCoverage)
                 .sorted(Comparator.comparingDouble(MarkerCandidate::score).reversed()
                         .thenComparing(MarkerCandidate::dominantAuthor))
                 .toList();
         if (candidates.isEmpty()) {
-            // Images recur, but none is a clean single-owner banner (multi-author lookalikes / collab fan-out) — punt
-            // to vision rather than proposing a wrong owner.
+            // Images recur, but none is dominated by repeat contributors (multi-author lookalike flood / collab
+            // fan-out) — punt to vision rather than proposing a wrong owner.
             return emptyAnalysis(new DetectorProfileProposal(id, ig, itemCount, ProposedType.TEXT_OVERLAY, List.of(),
                     List.of(), 0.0, true, PROVENANCE_TIER0));
         }
-        // The gate. confidence = how strongly the top OWNER stands out from the next DIFFERENT owner:
-        // min(separation, absolute-strength). Accept ONE owner only on a SLAM DUNK — a strong score AND a clear lead —
-        // else ESCALATE (bias to escalate; the AI is effectively free). A slam-dunk names the owner alone; an ambiguous
-        // grid keeps the ranked roster as context but flags escalate (which of these is the owner? Tier 0 won't guess).
-        // Separation is measured OWNER-to-owner, not cluster-to-cluster (M2.1): a 2-marker owner legitimately produces
-        // TWO clusters (START + END), so its own second banner must NOT count as a rival — else the owner ties with
-        // itself and a clean single owner escalates for no reason. We compare the top cluster against the best cluster
-        // of the next DIFFERENT author (0 when the owner has the field to itself).
+        // The marker-owner SET gate (M6, [DECIDED 5.8]). A cluster reads as a real marker when its signature clears
+        // minScore; the owner SET is the UNION of the repeat contributors across those strong clusters — so co-owners
+        // on a duty rota (whether they SHARE one banner or post their OWN) are ALL admitted, never escalated between
+        // (the old owner-to-owner separation is gone: two genuine co-owners are a SET, not rivals). Accept on a SLAM
+        // DUNK — at least one cluster reads as a marker — else keep the repeat contributors as context but ESCALATE
+        // (bias to escalate; the AI is effectively free). confidence = the top cluster's repeat-contributor coverage x
+        // its normalised marker strength.
         MarkerCandidate top = candidates.get(0);
-        double secondScore = candidates.stream()
-                .filter(c -> !c.dominantAuthor().equals(top.dominantAuthor()))
-                .mapToDouble(MarkerCandidate::score)
-                .max()
-                .orElse(0.0);
-        double separation = (top.score() - secondScore) / top.score();
+        List<MarkerCandidate> markerClusters = candidates.stream().filter(c -> c.score() >= minScore).toList();
+        LinkedHashSet<String> ownerSet = new LinkedHashSet<>();
+        markerClusters.forEach(c -> ownerSet.addAll(c.repeatContributors()));
         double strength = Math.min(1.0, top.score() / minScore);
-        double confidence = Math.min(separation, strength);
-        boolean slamDunk = strength >= 1.0 && separation >= minSeparation;
-        logDiagnostics(id, itemCount, candidates, slamDunk, confidence);
+        double confidence = top.repeatCoverage() * strength;
+        boolean slamDunk = !ownerSet.isEmpty();
+        logDiagnostics(id, itemCount, candidates, ownerSet, slamDunk, confidence);
 
         List<MarkerCluster> clusters = candidates.stream().limit(maxClusters).map(this::toMarkerCluster).toList();
         DetectorProfileProposal proposal;
         if (slamDunk) {
             proposal = new DetectorProfileProposal(id, ig, itemCount, ProposedType.FLAT_BANNER,
-                    List.of(top.dominantAuthor()), clusters, confidence, false, PROVENANCE_TIER0);
+                    List.copyOf(ownerSet), clusters, confidence, false, PROVENANCE_TIER0);
         } else {
-            List<String> roster = candidates.stream().map(MarkerCandidate::dominantAuthor).distinct().toList();
+            // No cluster reads strongly enough as a marker — surface the repeat contributors (ranked) as context.
+            List<String> roster = candidates.stream().flatMap(c -> c.repeatContributors().stream()).distinct().toList();
             proposal = new DetectorProfileProposal(id, ig, itemCount, ProposedType.FLAT_BANNER, roster, clusters,
                     confidence, true, PROVENANCE_TIER0);
         }
-        // M3b: surface the ranked candidate metrics + per-reference confidence, and derive the schedule from the TOP
-        // owner's clusters (its START/END banners) — advisory, whether we accepted or escalated.
+        // The effective owner set for the schedule + marker derivation: the accepted SET, or (on escalate) the best
+        // candidate's repeat contributors so an advisory schedule is still derived from the strongest signal.
+        Set<String> effectiveOwners = ownerSet.isEmpty() ? new LinkedHashSet<>(top.repeatContributors()) : ownerSet;
+        // M3b: surface the ranked candidate metrics + per-reference confidence, and derive the schedule from the owner
+        // SET's clusters (its START/END banners) — advisory, whether we accepted or escalated.
         List<OwnerCandidate> ownerCandidates = candidates.stream().map(MarkerCandidate::toOwnerCandidate).toList();
         // Only surface candidates that actually read as markers (score >= the strength threshold) as references, so a
         // coincidental lookalike cluster (a couple of near-dup member photos) is not shown as a "marker" with no image.
@@ -192,39 +197,42 @@ public class VettingProposalService {
         }
         List<MarkerReference> references = referenceCandidates.stream().map(c -> c.toReference(minScore)).toList();
         // M4.5: parallel to references, the sorted marker-post timestamps of each reference cluster — the AI's
-        // per-weekday occurrence source (bucketed by weekday + time in AiDiscoveryService).
+        // per-weekday occurrence source (bucketed by weekday + time in AiDiscoveryService). Includes EVERY co-owner's
+        // marker posts (markerPosts), not just the dominant author's.
         List<List<Instant>> referencePostedAt = referenceCandidates.stream()
-                .map(c -> c.ownerPosts().stream()
+                .map(c -> c.markerPosts().stream()
                         .map(ScheduleDeriver.Post::postedAt)
                         .filter(t -> t != null)
                         .sorted()
                         .toList())
                 .toList();
         List<ScheduleDeriver.ClusterPosts> ownerClusters = candidates.stream()
-                .filter(c -> c.dominantAuthor().equals(top.dominantAuthor()))
-                .map(c -> new ScheduleDeriver.ClusterPosts(c.ownerPosts()))
+                .filter(c -> effectiveOwners.contains(c.dominantAuthor()))
+                .map(c -> new ScheduleDeriver.ClusterPosts(c.markerPosts()))
                 .toList();
         // The FULL ordered grid (one row per post × author, directive P4) — not the capped AI window — so the
-        // deterministic maxTaggedPosts count spans every round the corpus captured (vision §5.6).
+        // deterministic maxTaggedPosts count spans every round the corpus captured (vision §5.6). A row is a marker when
+        // ANY member of the owner SET posted it (M6 union), so rounds bracket on any owner's markers.
         List<GridRow> allRows = gridItems.stream()
                 .map(it -> new GridRow(it.getOrdinal(), it.getAuthorUsername(),
-                        top.dominantAuthor().equals(it.getAuthorUsername())))
+                        effectiveOwners.contains(it.getAuthorUsername())))
                 .toList();
         ScheduleFacet schedule = ScheduleDeriver.derive(ownerClusters, allRows);
-        logScheduleDiagnostics(id, top.dominantAuthor(), ownerClusters, schedule);
-        // M4.6/M4.10: the broadened marker sample for the AI — EVERY captured cluster of the proposed owner, not only the
-        // score>=minScore references and not only the size>=minClusterSize candidates. A high-variation banner shatters two
-        // ways: into sub-SCORE fragments (M4.6) AND into sub-SIZE dHash SINGLETONS — a weekend-only "START Sonntag" posted
+        logScheduleDiagnostics(id, effectiveOwners, ownerClusters, schedule);
+        // M4.6/M4.10: the broadened marker sample for the AI — EVERY captured cluster of the proposed owner SET, not only
+        // the score>=minScore references and not only the size>=minClusterSize candidates. A high-variation banner shatters
+        // two ways: into sub-SCORE fragments (M4.6) AND into sub-SIZE dHash SINGLETONS — a weekend-only "START Sonntag" posted
         // once or twice over changing backgrounds never clusters, so the `strong` gate drops it and it never reaches the
         // model even though it is a preselected marker candidate the admin SEES in the corpus grid. Rebuild from ALL
-        // clusters and keep every owner-dominant one that is EITHER a scored candidate (size>=minClusterSize, single-owner,
+        // clusters and keep every owner-set one that is EITHER a scored candidate (size>=minClusterSize, coverage>=minCoverage,
         // as before) OR carries a captured representative image (the dropped singleton variants); an image-less owner
         // singleton stays out (pure noise). AiDiscoveryService round-robins one image per cluster first, so the extra
         // low-score singletons here are not starved by the maxImages cap.
         List<AiMarkerSample> aiSamples = allClusters.stream()
-                .map(c -> MarkerCandidate.from(c.representative(), c.members(), maxSamples, itemCount, withImages))
-                .filter(c -> c.dominantAuthor().equals(top.dominantAuthor()))
-                .filter(c -> (c.distinctPosts() >= minClusterSize && c.purity() >= minPurity)
+                .map(c -> MarkerCandidate.from(c.representative(), c.members(), maxSamples, itemCount, withImages,
+                        repeatContributorMin))
+                .filter(c -> effectiveOwners.contains(c.dominantAuthor()))
+                .filter(c -> (c.distinctPosts() >= minClusterSize && c.repeatCoverage() >= minCoverage)
                         || c.sampleShortcodes().stream().anyMatch(withImages::contains))
                 .sorted(Comparator.comparingDouble(MarkerCandidate::score).reversed()
                         .thenComparing(MarkerCandidate::dominantAuthor))
@@ -232,7 +240,7 @@ public class VettingProposalService {
                 .toList();
         // M4.7: the recent tagged-grid window in true order — the owner's markers interleaved with member posts — so the
         // AI can reconstruct rounds from the sequence (START→ENDE pairs) and count per-round members (maxTaggedPosts).
-        List<GridRow> gridWindow = buildGridWindow(gridItems, top.dominantAuthor());
+        List<GridRow> gridWindow = buildGridWindow(gridItems, effectiveOwners);
         return new SnapshotAnalysis(proposal, ownerCandidates, references, schedule, referencePostedAt, aiSamples,
                 gridWindow);
     }
@@ -245,19 +253,19 @@ public class VettingProposalService {
 
     /**
      * The most recent slice of the grid (newest tag first, directive P5) as an ordered {@link GridRow} window: each
-     * (post × author) row is flagged {@code marker} when its author is the proposed owner. The window is ROUND-COMPLETE
-     * — it only ends on a marker (a round boundary), never mid-round, so the oldest round's START is never truncated
-     * below the edge (which would leave that round with an END but no START — the missing-Sunday-START symptom). It
-     * spans up to {@link #GRID_WINDOW_MARKERS} owner markers; a pathologically member-heavy grid trips
+     * (post × author) row is flagged {@code marker} when its author is in the proposed owner SET (M6). The window is
+     * ROUND-COMPLETE — it only ends on a marker (a round boundary), never mid-round, so the oldest round's START is never
+     * truncated below the edge (which would leave that round with an END but no START — the missing-Sunday-START symptom).
+     * It spans up to {@link #GRID_WINDOW_MARKERS} owner markers; a pathologically member-heavy grid trips
      * {@link #GRID_WINDOW_MAX_ROWS} but still extends to the next marker to close the current round.
      */
-    private static List<GridRow> buildGridWindow(List<CorpusSnapshotItem> gridItems, String owner) {
+    private static List<GridRow> buildGridWindow(List<CorpusSnapshotItem> gridItems, Set<String> owners) {
         List<GridRow> rows = new ArrayList<>();
         int markers = 0;
         boolean complete = false;
         for (int i = 0; i < gridItems.size() && !complete; i++) {
             CorpusSnapshotItem item = gridItems.get(i);
-            boolean marker = owner.equals(item.getAuthorUsername());
+            boolean marker = owners.contains(item.getAuthorUsername());
             rows.add(new GridRow(item.getOrdinal(), item.getAuthorUsername(), marker));
             if (marker) {
                 markers++;
@@ -270,13 +278,14 @@ public class VettingProposalService {
     }
 
     /** Calibration diagnostic (M2): per-candidate marker-signature metrics + the accept/escalate decision (cloud log). */
-    private void logDiagnostics(UUID id, int itemCount, List<MarkerCandidate> candidates, boolean slamDunk,
-                                double confidence) {
+    private void logDiagnostics(UUID id, int itemCount, List<MarkerCandidate> candidates, Set<String> ownerSet,
+                                boolean slamDunk, double confidence) {
         log.info("VETTING_DIAG snapshot={} items={} decision={} confidence={} candidates=[{}]",
-                id, itemCount, slamDunk ? "ACCEPT:" + candidates.get(0).dominantAuthor() : "ESCALATE",
+                id, itemCount, slamDunk ? "ACCEPT:" + ownerSet : "ESCALATE",
                 String.format("%.2f", confidence),
-                candidates.stream().map(c -> String.format("%s{rec=%d,cadence=%.2f,coverage=%.2f,score=%.2f}",
-                        c.dominantAuthor(), c.recurrence(), c.cadenceRegularity(), c.coverage(), c.score()))
+                candidates.stream().map(c -> String.format("%s{rec=%d,rptCov=%.2f,cadence=%.2f,coverage=%.2f,score=%.2f}",
+                        c.dominantAuthor(), c.recurrence(), c.repeatCoverage(), c.cadenceRegularity(), c.coverage(),
+                        c.score()))
                         .collect(Collectors.joining(", ")));
     }
 
@@ -285,7 +294,7 @@ public class VettingProposalService {
      * schedule, so we can verify the labelling + open-span (e.g. whether a given weekday is a START, an END, or
      * didn't cluster) against the real corpus without DB access.
      */
-    private void logScheduleDiagnostics(UUID id, String owner, List<ScheduleDeriver.ClusterPosts> clusters,
+    private void logScheduleDiagnostics(UUID id, Set<String> owners, List<ScheduleDeriver.ClusterPosts> clusters,
                                         ScheduleFacet s) {
         StringBuilder cl = new StringBuilder();
         for (int i = 0; i < clusters.size(); i++) {
@@ -298,9 +307,9 @@ public class VettingProposalService {
                     i, clusters.get(i).posts().size(), weekdays,
                     times.isEmpty() ? "-" : times.get(0), times.isEmpty() ? "-" : times.get(times.size() - 1)));
         }
-        log.info("SCHEDULE_DIAG snapshot={} owner={} {} type={} start={} end={} offset={} openDays={} openConf={} "
+        log.info("SCHEDULE_DIAG snapshot={} owners={} {} type={} start={} end={} offset={} openDays={} openConf={} "
                         + "rounds={} state={}",
-                id, owner, cl.toString().trim(), s.groupType(), s.start(), s.end(), s.endMarkerDayOffset(),
+                id, owners, cl.toString().trim(), s.groupType(), s.start(), s.end(), s.endMarkerDayOffset(),
                 s.openWeekdays(), String.format("%.2f", s.openingDaysConfidence()), s.roundCount(), s.currentState());
     }
 
@@ -371,17 +380,20 @@ public class VettingProposalService {
     }
 
     /**
-     * A single-owner recurring-image cluster reduced to what marker-owner detection needs: the author who dominates it,
-     * how many DISTINCT posts (shortcodes) recur, and how pure that ownership is. Counting DISTINCT posts (not raw rows)
-     * means a collab post fanned into per-author rows counts once, and per-post co-authors don't inflate recurrence.
+     * A recurring-image cluster reduced to what marker-owner-SET detection needs (M6): the author who dominates it, its
+     * REPEAT CONTRIBUTORS (the owner set — authors who recur >= repeatContributorMin times) and their coverage of the
+     * cluster, how many DISTINCT posts (shortcodes) recur, and how pure the top author's ownership is. Counting DISTINCT
+     * posts (not raw rows) means a collab post fanned into per-author rows counts once, and per-post co-authors don't
+     * inflate recurrence.
      */
     private record MarkerCandidate(String dHash, int distinctPosts, String dominantAuthor, int recurrence,
                                    double purity, double cadenceRegularity, double coverage, double score,
+                                   List<String> repeatContributors, double repeatCoverage,
                                    List<String> authors, List<String> sampleShortcodes,
-                                   List<ScheduleDeriver.Post> ownerPosts) {
+                                   List<ScheduleDeriver.Post> markerPosts) {
 
         static MarkerCandidate from(String dHash, List<CorpusSnapshotItem> members, int maxSamples, int itemCount,
-                                    Set<String> withImages) {
+                                    Set<String> withImages, int repeatContributorMin) {
             Map<String, Set<String>> shortcodesByAuthor = new LinkedHashMap<>();
             Map<String, Integer> ordinalByShortcode = new LinkedHashMap<>();
             Map<String, Instant> postedAtByShortcode = new LinkedHashMap<>();
@@ -401,11 +413,28 @@ public class VettingProposalService {
             int distinctPosts = distinct.size();
             int recurrence = top.getValue().size();
             double purity = (double) recurrence / distinctPosts;
-            // Cadence + coverage are measured on the DOMINANT author's post positions (the marker recurrences).
-            List<Integer> ordinals = top.getValue().stream().map(ordinalByShortcode::get).sorted().toList();
+            // The marker-owner SET (M6, [DECIDED 5.8]): the REPEAT CONTRIBUTORS — authors who re-posted this banner across
+            // >= repeatContributorMin DISTINCT posts, ranked by post count (ties by name). A genuine banner recurs because
+            // its owner(s) re-post a fresh copy each round; co-owners on a duty rota BOTH recur, so BOTH are owners. A
+            // lookalike flood is many members with ONE post each — no repeat contributors.
+            List<String> repeatContributors = shortcodesByAuthor.entrySet().stream()
+                    .filter(e -> e.getValue().size() >= repeatContributorMin)
+                    .sorted(Comparator.<Map.Entry<String, Set<String>>>comparingInt(e -> e.getValue().size()).reversed()
+                            .thenComparing(Map.Entry::getKey))
+                    .map(Map.Entry::getKey)
+                    .toList();
+            // The MARKER posts are the distinct posts by any repeat contributor (the round-boundary banners). The marker
+            // SIGNATURE (recurrence x cadence x coverage) + repeatCoverage are measured on THESE, so a shared-banner
+            // co-owned marker scores on the FULL cadence (both owners' posts), not one owner's half.
+            LinkedHashSet<String> markerShortcodes = new LinkedHashSet<>();
+            for (String author : repeatContributors) {
+                markerShortcodes.addAll(shortcodesByAuthor.get(author));
+            }
+            double repeatCoverage = (double) markerShortcodes.size() / distinctPosts;
+            List<Integer> ordinals = markerShortcodes.stream().map(ordinalByShortcode::get).sorted().toList();
             double cadenceRegularity = cadenceRegularity(ordinals);
             double coverage = coverage(ordinals, itemCount);
-            double score = recurrence * cadenceRegularity * coverage;
+            double score = markerShortcodes.size() * cadenceRegularity * coverage;
             List<String> authors = shortcodesByAuthor.keySet().stream().sorted().toList();
             // Prefer a shortcode whose representative image was actually captured, so the admin sees a thumbnail (not a
             // 404) — the captured representative of a cluster is often not its first post by grid order.
@@ -413,13 +442,14 @@ public class VettingProposalService {
                     .sorted(Comparator.comparingInt((String sc) -> withImages.contains(sc) ? 0 : 1))
                     .limit(maxSamples)
                     .toList();
-            // The dominant author's posts (ordinal + postedAt) feed the M3b schedule derivation.
-            List<ScheduleDeriver.Post> ownerPosts = top.getValue().stream()
+            // The marker posts (ordinal + postedAt) feed the M3b schedule derivation — the round boundaries the owner SET
+            // posted (both co-owners for a shared banner).
+            List<ScheduleDeriver.Post> markerPosts = markerShortcodes.stream()
                     .map(sc -> new ScheduleDeriver.Post(ordinalByShortcode.get(sc), postedAtByShortcode.get(sc)))
                     .sorted(Comparator.comparingInt(ScheduleDeriver.Post::ordinal))
                     .toList();
             return new MarkerCandidate(dHash, distinctPosts, top.getKey(), recurrence, purity, cadenceRegularity,
-                    coverage, score, authors, samples, ownerPosts);
+                    coverage, score, repeatContributors, repeatCoverage, authors, samples, markerPosts);
         }
 
         /** The marker-signature metrics behind the gate, surfaced for the admin (Advisory Store, M3b). */
@@ -435,7 +465,7 @@ public class VettingProposalService {
 
         /** This cluster as a broadened {@link AiMarkerSample} for the AI request — image + sorted post timestamps (M4.6). */
         AiMarkerSample toAiSample() {
-            List<Instant> postedAt = ownerPosts.stream()
+            List<Instant> postedAt = markerPosts.stream()
                     .map(ScheduleDeriver.Post::postedAt)
                     .filter(t -> t != null)
                     .sorted()
