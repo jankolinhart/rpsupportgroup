@@ -57,8 +57,8 @@ class VettingProposalServiceTest {
         representatives = mock(CorpusRepresentativeRepository.class);
         when(representatives.findShortcodesBySnapshotId(any())).thenReturn(List.of());
         // threshold 2, min-cluster 2, max-clusters 5, max-samples 5, min-coverage 0.75, repeat-contributor-min 2,
-        // min-score 2.0, timing-merge tolerance 45min, min-concentration 0.85
-        service = new VettingProposalService(snapshots, items, representatives, new NoOpAiVettingEnricher(), 2, 2, 5, 5, 0.75, 2, 2.0, 45, 0.85);
+        // min-score 2.0, timing-merge tolerance 45min, min-concentration 0.85, max-hamming 5 (only near-identical banners merge)
+        service = new VettingProposalService(snapshots, items, representatives, new NoOpAiVettingEnricher(), 2, 2, 5, 5, 0.75, 2, 2.0, 45, 0.85, 5);
     }
 
     private MarkerCorpusSnapshot stubSnapshot(List<CorpusSnapshotItem> gridItems) {
@@ -338,19 +338,19 @@ class VettingProposalServiceTest {
 
     @Test
     void reScreenshotVariantsAreTimingMergedIntoOneMarker() {
-        // P1.5: a manager re-screenshots the owner's banner — visually identical, but the reframe drifts the dHash past
-        // the clustering threshold, SPLITTING one marker into two clusters (owner.a -> H0, owner.b -> H_FAR). Both are
-        // posted at the SAME round-cadence time-of-day (~09:00), so the TIMING MERGE reunites them into ONE marker: the
-        // owner SET recovers both, and the group reads SINGLE_MARKER (not a phantom two-marker from the split).
+        // P1.5: a manager re-screenshots the owner's banner — visually SIMILAR (the dHash drifts only a few bits, within
+        // the timing-merge ceiling) but past the clustering threshold, SPLITTING one marker into two clusters (owner.a ->
+        // H0, owner.b -> H_FAR2, 4 bits apart). Both are posted at the SAME time-of-day (~09:00), so the TIMING MERGE
+        // reunites them into ONE marker: the owner SET recovers both, and the group reads SINGLE_MARKER (not a phantom two).
         MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
         UUID id = snap.getId();
         List<CorpusSnapshotItem> grid = List.of(
                 dated(id, "owner.a", H0, 0, "2026-01-04T09:00:00Z"),
-                dated(id, "owner.b", H_FAR, 1, "2026-01-05T09:04:00Z"),
+                dated(id, "owner.b", H_FAR2, 1, "2026-01-05T09:04:00Z"),
                 dated(id, "owner.a", H0, 2, "2026-01-06T09:01:00Z"),
-                dated(id, "owner.b", H_FAR, 3, "2026-01-07T08:59:00Z"),
+                dated(id, "owner.b", H_FAR2, 3, "2026-01-07T08:59:00Z"),
                 dated(id, "owner.a", H0, 4, "2026-01-08T09:02:00Z"),
-                dated(id, "owner.b", H_FAR, 5, "2026-01-09T09:00:00Z"));
+                dated(id, "owner.b", H_FAR2, 5, "2026-01-09T09:00:00Z"));
         when(snapshots.findById(id)).thenReturn(Optional.of(snap));
         when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
 
@@ -368,16 +368,16 @@ class VettingProposalServiceTest {
         // still unions them (across the two strong clusters), but the group now over-reads as TWO_MARKER — the very
         // over-count the merge exists to prevent. Guards the kill switch + shows the merge changes the outcome.
         VettingProposalService noMerge = new VettingProposalService(snapshots, items, representatives,
-                new NoOpAiVettingEnricher(), 2, 2, 5, 5, 0.75, 2, 2.0, 0, 0.85);
+                new NoOpAiVettingEnricher(), 2, 2, 5, 5, 0.75, 2, 2.0, 0, 0.85, 5);
         MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
         UUID id = snap.getId();
         List<CorpusSnapshotItem> grid = List.of(
                 dated(id, "owner.a", H0, 0, "2026-01-04T09:00:00Z"),
-                dated(id, "owner.b", H_FAR, 1, "2026-01-05T09:04:00Z"),
+                dated(id, "owner.b", H_FAR2, 1, "2026-01-05T09:04:00Z"),
                 dated(id, "owner.a", H0, 2, "2026-01-06T09:01:00Z"),
-                dated(id, "owner.b", H_FAR, 3, "2026-01-07T08:59:00Z"),
+                dated(id, "owner.b", H_FAR2, 3, "2026-01-07T08:59:00Z"),
                 dated(id, "owner.a", H0, 4, "2026-01-08T09:02:00Z"),
-                dated(id, "owner.b", H_FAR, 5, "2026-01-09T09:00:00Z"));
+                dated(id, "owner.b", H_FAR2, 5, "2026-01-09T09:00:00Z"));
         when(snapshots.findById(id)).thenReturn(Optional.of(snap));
         when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
 
@@ -385,6 +385,32 @@ class VettingProposalServiceTest {
 
         assertThat(a.proposal().ownerRoster()).containsExactlyInAnyOrder("owner.a", "owner.b");
         assertThat(a.proposal().markerClusters()).hasSize(2);               // split — not merged
+        assertThat(a.schedule().groupType()).isEqualTo(MarkerGroupType.TWO_MARKER);
+    }
+
+    @Test
+    void differentBannersPostedAtTheSameTimeAreNotTimingMerged() {
+        // The dailyblogger___ case: the START and END banners are DIFFERENT images (owner.a -> H0, owner.b -> H_FAR, 8
+        // bits apart — well beyond a re-screenshot drift) but the group posts them TOGETHER at the same time (~18:35).
+        // The timing merge must NOT fuse them on time alone (that would collapse TWO_MARKER to SINGLE_MARKER); the visual
+        // guard keeps the two distinct banners apart, so the group reads TWO_MARKER with both markers + both owners.
+        MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
+        UUID id = snap.getId();
+        List<CorpusSnapshotItem> grid = List.of(
+                dated(id, "owner.a", H0, 0, "2026-01-04T18:35:00Z"),
+                dated(id, "owner.b", H_FAR, 1, "2026-01-04T18:36:00Z"),
+                dated(id, "owner.a", H0, 2, "2026-01-05T18:35:00Z"),
+                dated(id, "owner.b", H_FAR, 3, "2026-01-05T18:36:00Z"),
+                dated(id, "owner.a", H0, 4, "2026-01-06T18:35:00Z"),
+                dated(id, "owner.b", H_FAR, 5, "2026-01-06T18:36:00Z"));
+        when(snapshots.findById(id)).thenReturn(Optional.of(snap));
+        when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
+
+        SnapshotAnalysis a = service.analyze(id);
+
+        assertThat(a.proposal().escalate()).isFalse();
+        assertThat(a.proposal().ownerRoster()).containsExactlyInAnyOrder("owner.a", "owner.b");
+        assertThat(a.proposal().markerClusters()).hasSize(2);              // START + END stay distinct
         assertThat(a.schedule().groupType()).isEqualTo(MarkerGroupType.TWO_MARKER);
     }
 
