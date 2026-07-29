@@ -1,5 +1,6 @@
 package com.reelypops.rpsupportgroup.group;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 
@@ -25,6 +26,7 @@ import java.util.List;
  * @param weeklySchedule the admin-confirmed <strong>per-weekday</strong> program (M4.5, vision §5c) — the authoritative
  *                       weekly truth M5 consumes; {@code null} for a legacy flat-only profile
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record VettedProfile(
         @NotNull @Valid GroupDefinition definition,
         DetectorArtifacts detector,
@@ -53,6 +55,7 @@ public record VettedProfile(
      * @param style      the marker style (flat-banner vs text-overlay)
      * @param references the per-marker-type reference images the runtime matches against
      */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record DetectorArtifacts(MarkerStyle style, List<TypedMarkerReference> references) {
     }
 
@@ -64,6 +67,7 @@ public record VettedProfile(
      * @param dHashes        the reference perceptual hash(es) — canonical + per-weekday variants
      * @param matchThreshold the per-group Hamming match threshold for this reference
      */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record TypedMarkerReference(String markerType, List<String> dHashes, int matchThreshold) {
     }
 }

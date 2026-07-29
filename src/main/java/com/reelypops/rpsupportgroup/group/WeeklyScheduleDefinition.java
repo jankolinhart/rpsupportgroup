@@ -1,5 +1,7 @@
 package com.reelypops.rpsupportgroup.group;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 import java.util.List;
 import java.util.Optional;
 
@@ -13,6 +15,7 @@ import java.util.Optional;
  *
  * @param days the configured weekday slices (need not be all 7 — an unlisted weekday is treated as closed)
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record WeeklyScheduleDefinition(List<DayDefinition> days) {
 
     /** The representative day for the flat projection: the first OPEN day (M4.5-e), or empty when every day is closed. */
