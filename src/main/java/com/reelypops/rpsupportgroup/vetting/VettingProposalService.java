@@ -66,6 +66,7 @@ public class VettingProposalService {
     private final double minScore;
     private final int timingMergeToleranceMinutes;
     private final double timingMergeMinConcentration;
+    private final int timingMergeMaxHamming;
 
     public VettingProposalService(MarkerCorpusSnapshotRepository snapshots, CorpusSnapshotItemRepository items,
                                   CorpusRepresentativeRepository representatives,
@@ -78,7 +79,8 @@ public class VettingProposalService {
                                   @Value("${rp.vetting.repeat-contributor-min:2}") int repeatContributorMin,
                                   @Value("${rp.vetting.min-score:2.0}") double minScore,
                                   @Value("${rp.vetting.timing-merge-tolerance-minutes:45}") int timingMergeToleranceMinutes,
-                                  @Value("${rp.vetting.timing-merge-min-concentration:0.85}") double timingMergeMinConcentration) {
+                                  @Value("${rp.vetting.timing-merge-min-concentration:0.85}") double timingMergeMinConcentration,
+                                  @Value("${rp.vetting.timing-merge-max-hamming:10}") int timingMergeMaxHamming) {
         this.snapshots = snapshots;
         this.items = items;
         this.representatives = representatives;
@@ -92,6 +94,7 @@ public class VettingProposalService {
         this.minScore = minScore;
         this.timingMergeToleranceMinutes = timingMergeToleranceMinutes;
         this.timingMergeMinConcentration = timingMergeMinConcentration;
+        this.timingMergeMaxHamming = timingMergeMaxHamming;
     }
 
     /** Build the advisory vetting proposal for a snapshot (404 if unknown), then run it through the enricher seam. */
@@ -347,10 +350,12 @@ public class VettingProposalService {
      * by their matching <strong>round-cadence time-of-day</strong> signature. A cluster participates only when it has a
      * tight, well-dated timing signature ({@link MarkerTiming#signature} over &ge; {@code minClusterSize} dated posts);
      * it then merges into the first earlier participant within {@code timingMergeToleranceMinutes} of it (largest-first,
-     * so variants fold into the dominant banner). This recovers the FULL owner set + round cadence from the reunited
-     * cluster and keeps the group-type cluster count honest (two split halves of one marker no longer read as two
-     * markers). A non-positive tolerance disables it; a scattered or sparsely-dated cluster never merges. Undated grids
-     * (no {@code postedAt}) are unaffected.
+     * so variants fold into the dominant banner) <strong>and only when their representative images are actually similar</strong>
+     * (dHash distance &le; {@code timingMergeMaxHamming}). That visual gate is essential: a group that posts its START and
+     * END banners TOGETHER (e.g. {@code dailyblogger___} at ~18:35) would otherwise have two DIFFERENT markers fused by
+     * time alone, collapsing a TWO_MARKER group to SINGLE_MARKER. This recovers the FULL owner set + round cadence from a
+     * genuinely-reunited cluster while keeping the group-type cluster count honest. A non-positive tolerance disables it;
+     * a scattered or sparsely-dated cluster never merges. Undated grids (no {@code postedAt}) are unaffected.
      */
     private List<Cluster> mergeByTiming(List<Cluster> clusters) {
         if (timingMergeToleranceMinutes <= 0) {
@@ -368,7 +373,8 @@ public class VettingProposalService {
             Cluster anchor = null;
             for (int i = 0; i < anchors.size(); i++) {
                 if (MarkerTiming.circularDistanceMinutes(sig.meanMinutes(), anchorMeans.get(i))
-                        <= timingMergeToleranceMinutes) {
+                        <= timingMergeToleranceMinutes
+                        && sameBanner(anchors.get(i).representative(), c.representative())) {
                     anchor = anchors.get(i);
                     break;
                 }
@@ -392,6 +398,16 @@ public class VettingProposalService {
                 .filter(t -> t != null)
                 .toList();
         return MarkerTiming.signature(times, minClusterSize, timingMergeMinConcentration);
+    }
+
+    /**
+     * True when two cluster representatives are close enough to be the SAME banner reframed (a re-screenshot variant),
+     * not two DIFFERENT markers. This is the visual guard on the timing merge: it stops a group that posts its START and
+     * END banners at the same time from having those distinct banners fused by time alone. Distances above the pixel
+     * threshold but within {@code timingMergeMaxHamming} are a drifted variant; a clearly-different banner is further.
+     */
+    private boolean sameBanner(String a, String b) {
+        return a.length() == b.length() && hamming(a, b) <= timingMergeMaxHamming;
     }
 
     private MarkerCluster toMarkerCluster(MarkerCandidate c) {
