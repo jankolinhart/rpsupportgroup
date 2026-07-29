@@ -181,15 +181,16 @@ public class RpAiGatewayClient {
      *
      * @param style         FLAT_BANNER / TEXT_OVERLAY
      * @param markerType    SINGLE_MARKER / TWO_MARKER / CONTINUOUS / UNKNOWN
-     * @param owner         the marker-owner account, or null
+     * @param owner         the PRIMARY marker-owner account (first of {@code owners}), or null
+     * @param owners        the marker-owner SET (a duty rota has several); may be null/empty from an older gateway
      * @param references    the confirmed marker references
      * @param ocrTargetText the stable overlay text for a text-overlay group, else null
      * @param confidence    0..1
      * @param reasoning     a short justification
      * @param schedule      the per-weekday schedule verdict (M4.5) — one entry per weekday the model reported
      */
-    public record VettingResponse(String style, String markerType, String owner, List<Reference> references,
-                                  String ocrTargetText, double confidence, String reasoning,
+    public record VettingResponse(String style, String markerType, String owner, List<String> owners,
+                                  List<Reference> references, String ocrTargetText, double confidence, String reasoning,
                                   List<DaySchedule> schedule, Usage usage) {
 
         /** One AI-confirmed marker reference: its round slot, OCR text, and the 1-based cited cluster index (A2/B7b). */

@@ -94,16 +94,17 @@ public record DetectedProfile(
 
     /**
      * The AI tier's advisory verdict (M4, {@code marker-auto-discovery.md} §5) — the judgment Tier&nbsp;0 cannot make
-     * for a text-overlay group: the marker {@link #style}, the round {@link #markerType}, the {@link #owner}, the typed
+     * for a text-overlay group: the marker {@link #style}, the round {@link #markerType}, the {@link #owner} (primary) +
+     * the {@link #owners} SET, the typed
      * {@link #references} (with OCR target text for text-overlay), an overall {@link #ocrTargetText}, a
      * {@link #confidence}, a short {@link #reasoning}, and the per-weekday {@link WeeklySchedule} (M4.5). Produced only
      * on the explicit admin "Run AI discovery" action; {@code null} until then. Advisory only — it pre-fills the Vetting
      * Portal, never auto-vets. The {@link #passes} list is the run HISTORY (the metrics pass + any refinement passes,
      * each with its own timestamp + spend) so the discovery-progress UI survives a reload — not only the last {@link #usage}.
      */
-    public record AiDiscovery(MarkerStyle style, String markerType, String owner, List<AiReference> references,
-                              String ocrTargetText, double confidence, String reasoning, long generatedAtMs,
-                              WeeklySchedule weeklySchedule, Usage usage, List<AiPass> passes) {
+    public record AiDiscovery(MarkerStyle style, String markerType, String owner, List<String> owners,
+                              List<AiReference> references, String ocrTargetText, double confidence, String reasoning,
+                              long generatedAtMs, WeeklySchedule weeklySchedule, Usage usage, List<AiPass> passes) {
 
         /**
          * The provider token spend + ESTIMATED cost of the MOST RECENT AI pass on this advisory (metrics pass, or the

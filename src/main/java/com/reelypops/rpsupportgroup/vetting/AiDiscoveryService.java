@@ -167,7 +167,7 @@ public class AiDiscoveryService {
         AiDiscovery.Usage refineUsage = toUsage(read.get().usage());
         List<AiDiscovery.AiPass> passes = new ArrayList<>(ai.passes() == null ? List.of() : ai.passes());
         passes.add(pass(PASS_REFINE, refineUsage, added, added == 0));
-        AiDiscovery updated = new AiDiscovery(ai.style(), ai.markerType(), ai.owner(), merged, ai.ocrTargetText(),
+        AiDiscovery updated = new AiDiscovery(ai.style(), ai.markerType(), ai.owner(), ai.owners(), merged, ai.ocrTargetText(),
                 ai.confidence(), ai.reasoning(), System.currentTimeMillis(), ai.weeklySchedule(),
                 refineUsage, passes);
         DetectedProfile result = withAi(stored, updated);
@@ -309,7 +309,10 @@ public class AiDiscoveryService {
                                            AiDiscovery.Usage usage, List<String> clusterShortcodes,
                                            Map<String, List<AiDiscovery.AiReference>> weekdayMarkers,
                                            List<AiDiscovery.AiPass> passes) {
-        return new AiDiscovery(toStyle(v.style()), v.markerType(), v.owner(), references,
+        List<String> owners = v.owners() != null && !v.owners().isEmpty()
+                ? v.owners()
+                : (v.owner() != null ? List.of(v.owner()) : List.of());
+        return new AiDiscovery(toStyle(v.style()), v.markerType(), v.owner(), owners, references,
                 v.ocrTargetText(), v.confidence(), v.reasoning(), System.currentTimeMillis(),
                 toWeeklySchedule(v.schedule(), clusterShortcodes, weekdayMarkers), usage, passes);
     }
