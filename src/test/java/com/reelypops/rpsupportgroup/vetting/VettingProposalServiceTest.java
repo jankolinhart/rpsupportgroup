@@ -310,6 +310,54 @@ class VettingProposalServiceTest {
     }
 
     @Test
+    void sharedBannerCoOwnersBreakDownPerOwnerInCandidates() {
+        // The advisory OWNER CANDIDATES table is a per-OWNER breakdown (M6): the shared-banner rota surfaces BOTH
+        // co-owners (each a repeat contributor of the one banner) with their duty split — NOT a single per-cluster row
+        // that hides the co-owner inside the dominant author. owner.a posts the shared banner 3× and owner.b 3× → 50/50.
+        MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
+        UUID id = snap.getId();
+        List<CorpusSnapshotItem> grid = List.of(
+                at(id, "owner.a", H0, 0), at(id, "owner.b", H0, 1),
+                at(id, "owner.a", H0, 2), at(id, "owner.b", H0, 3),
+                at(id, "owner.a", H0, 4), at(id, "owner.b", H0, 5));
+        when(snapshots.findById(id)).thenReturn(Optional.of(snap));
+        when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
+
+        SnapshotAnalysis a = service.analyze(id);
+
+        assertThat(a.candidates()).hasSize(2);
+        assertThat(a.candidates()).anySatisfy(c -> assertThat(c.author()).isEqualTo("owner.a"));
+        assertThat(a.candidates()).anySatisfy(c -> assertThat(c.author()).isEqualTo("owner.b"));
+        assertThat(a.candidates()).allSatisfy(c -> {
+            assertThat(c.markerClusters()).isEqualTo(1);   // the ONE shared banner
+            assertThat(c.markerPosts()).isEqualTo(3);      // each posted it three times
+            assertThat(c.postShare()).isEqualTo(0.5);      // a clean 50/50 duty split
+        });
+    }
+
+    @Test
+    void subStrengthNonOwnerClustersAreExcludedFromOwnerBreakdown() {
+        // The dailyblogger___ noise case: the real owner posts a STRONG banner (H0 ×3, spanning → score >= minScore),
+        // while a non-owner coincidentally repeats a look-alike photo just twice (H_FAR ×2, bunched → a candidate, but
+        // score < minScore). The per-owner breakdown aggregates over the ACCEPTED (strong) clusters only, so the
+        // sub-strength non-owner never pollutes the OWNER CANDIDATES table (softly/ambra in the real run).
+        MarkerCorpusSnapshot snap = MarkerCorpusSnapshot.open("glow.grp", CorpusSource.REQUEST, "cap.acct");
+        UUID id = snap.getId();
+        List<CorpusSnapshotItem> grid = List.of(
+                at(id, "owner.acct", H0, 0), at(id, "owner.acct", H0, 2), at(id, "owner.acct", H0, 4), // strong owner
+                at(id, "noise.acct", H_FAR, 1), at(id, "noise.acct", H_FAR, 3));                        // bunched non-owner
+        when(snapshots.findById(id)).thenReturn(Optional.of(snap));
+        when(items.findBySnapshotIdOrderByOrdinalAsc(id)).thenReturn(grid);
+
+        SnapshotAnalysis a = service.analyze(id);
+
+        assertThat(a.candidates()).singleElement().satisfies(c -> {
+            assertThat(c.author()).isEqualTo("owner.acct");  // only the real owner — noise.acct excluded
+            assertThat(c.postShare()).isEqualTo(1.0);
+        });
+    }
+
+    @Test
     void singleMarkerMultiOwnerDerivesOwnerSetAndMaxTagged() {
         // A SINGLE-marker duty rota: two co-owners share ONE marker banner (H0), taking turns each round, with members
         // posting between markers. The owner SET is both; because there is ONE marker cluster the group type is
@@ -461,11 +509,19 @@ class VettingProposalServiceTest {
         assertThat(a.proposal().proposedType()).isEqualTo(ProposedType.FLAT_BANNER);
         assertThat(a.proposal().escalate()).isFalse();
         assertThat(a.proposal().ownerRoster()).containsExactly("owner.acct");
-        // Two owner clusters (START + END): each a candidate with metrics, each a reference with marker confidence.
-        assertThat(a.candidates()).hasSize(2);
-        assertThat(a.candidates()).allSatisfy(c -> assertThat(c.author()).isEqualTo("owner.acct"));
+        // ONE owner (single-owner group) as a per-OWNER breakdown, aggregated across BOTH banners (START + END); each
+        // banner is a reference labelled with its dominant author.
+        assertThat(a.candidates()).singleElement().satisfies(c -> {
+            assertThat(c.author()).isEqualTo("owner.acct");
+            assertThat(c.markerClusters()).isEqualTo(2);   // posts BOTH the START and END banners
+            assertThat(c.markerPosts()).isEqualTo(8);      // all eight boundary posts
+            assertThat(c.postShare()).isEqualTo(1.0);      // sole owner
+        });
         assertThat(a.references()).hasSize(2);
-        assertThat(a.references()).allSatisfy(r -> assertThat(r.confidence()).isEqualTo(1.0));
+        assertThat(a.references()).allSatisfy(r -> {
+            assertThat(r.confidence()).isEqualTo(1.0);
+            assertThat(r.dominantAuthor()).isEqualTo("owner.acct");
+        });
         ScheduleFacet s = a.schedule();
         assertThat(s.groupType()).isEqualTo(MarkerGroupType.TWO_MARKER);
         assertThat(s.groupTypeConfidence()).isGreaterThan(0.9);

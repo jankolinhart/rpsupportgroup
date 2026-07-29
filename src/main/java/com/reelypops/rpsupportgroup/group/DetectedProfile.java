@@ -10,9 +10,9 @@ import java.util.UUID;
  * jsonb on {@link SupportGroupConfig#getDetectedProfile()} so it evolves without a migration.
  *
  * <p>M3a fills the two facets Tier&nbsp;0 can measure for a flat-banner group — {@link #imageStyle} and {@link #owner} —
- * plus the untyped {@link #references}. M3b adds the ranked Tier-0 {@link #candidates} (the marker-signature metrics
- * behind the decision) and the derived {@link #schedule} (group type, round timing, opening days, current state) — all
- * additive on the jsonb column. See {@code marker-auto-discovery.md} §3.5 / §4.1 / §6.
+ * plus the untyped {@link #references}. M3b adds the Tier-0 owner {@link #candidates} (the per-owner contribution
+ * breakdown of the discovered owner set) and the derived {@link #schedule} (group type, round timing, opening days,
+ * current state) — all additive on the jsonb column. See {@code marker-auto-discovery.md} §3.5 / §4.1 / §6.
  *
  * @param snapshotId    the sealed snapshot this advisory was derived from
  * @param igAccount     the support group's Instagram account
@@ -23,7 +23,7 @@ import java.util.UUID;
  * @param imageStyle    the inferred marker style + its confidence
  * @param owner         the candidate marker-owner roster + its confidence
  * @param references    the recurring-image clusters (untyped — the admin assigns start/end/single at vet time, D1c)
- * @param candidates    the ranked Tier-0 marker-owner candidates + their signature metrics (why each did/didn't win)
+ * @param candidates    the discovered owner set as a per-owner contribution breakdown (who owns markers + their duty share)
  * @param schedule      the derived group type + round timing + opening days + current state (M3b); never {@code null}
  * @param aiDiscovery   the AI tier's verdict (M4), or {@code null} until an admin runs "Run AI discovery"
  */
@@ -50,19 +50,24 @@ public record DetectedProfile(
     }
 
     /**
-     * One recurring-image cluster, untyped until the admin assigns its marker type (start/end/single). {@code confidence}
-     * is how strongly this cluster reads as a real marker (its normalised marker-signature strength, 0..1).
+     * One recurring-image cluster, untyped until the admin assigns its marker type (start/end/single).
+     * {@code dominantAuthor} is the account that posts this banner the most — its label in the advisory (a shared
+     * banner's co-owners are in the {@link OwnerCandidate} breakdown, not here). {@code confidence} is how strongly this
+     * cluster reads as a real marker (its normalised marker-signature strength, 0..1).
      */
-    public record MarkerReference(String dHash, int distinctPosts, List<String> sampleShortcodes, double confidence) {
+    public record MarkerReference(String dHash, int distinctPosts, String dominantAuthor, List<String> sampleShortcodes,
+                                  double confidence) {
     }
 
     /**
-     * One ranked Tier-0 marker-owner candidate with the marker-signature metrics behind the gate (the numbers the
-     * VETTING_DIAG log carried, now surfaced for the admin): how many distinct posts recur, how pure the ownership is,
-     * how regular the cadence, how much of the grid it spans, and the resulting score.
+     * One marker-owner candidate in the discovered owner SET (M6, [DECIDED 5.8]) — a per-OWNER contribution breakdown,
+     * NOT a per-cluster row. A shared-banner duty rota surfaces EVERY co-owner here (each a repeat contributor of the
+     * accepted marker clusters), ranked by how many marker posts they carry — so co-owners are no longer hidden inside
+     * another author's cluster and coincidental sub-strength lookalike clusters never appear. {@code markerPosts} is the
+     * owner's distinct marker posts across the accepted clusters, {@code markerClusters} how many distinct banners they
+     * recur on, and {@code postShare} their fraction of the owner set's marker posts (the duty split, 0..1).
      */
-    public record OwnerCandidate(String author, int distinctPosts, int recurrence, double purity,
-                                 double cadenceRegularity, double coverage, double score) {
+    public record OwnerCandidate(String author, int markerPosts, int markerClusters, double postShare) {
     }
 
     /**

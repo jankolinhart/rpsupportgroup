@@ -191,9 +191,12 @@ public class VettingProposalService {
         // The effective owner set for the schedule + marker derivation: the accepted SET, or (on escalate) the best
         // candidate's repeat contributors so an advisory schedule is still derived from the strongest signal.
         Set<String> effectiveOwners = ownerSet.isEmpty() ? new LinkedHashSet<>(top.repeatContributors()) : ownerSet;
-        // M3b: surface the ranked candidate metrics + per-reference confidence, and derive the schedule from the owner
-        // SET's clusters (its START/END banners) — advisory, whether we accepted or escalated.
-        List<OwnerCandidate> ownerCandidates = candidates.stream().map(MarkerCandidate::toOwnerCandidate).toList();
+        // M3b + M6: surface the discovered owner SET as a per-OWNER contribution breakdown (who owns markers + their
+        // duty share), NOT a per-cluster row — so a shared-banner rota shows EVERY co-owner (each a repeat contributor of
+        // the accepted clusters) and a coincidental sub-strength lookalike cluster (whose dominant is not a real owner)
+        // never appears. Aggregate over the accepted marker clusters when we owned the group, else every candidate
+        // cluster when we escalated (context for the reviewer). Per-reference confidence is surfaced on the references.
+        List<OwnerCandidate> ownerCandidates = ownerBreakdown(slamDunk ? markerClusters : candidates);
         // Only surface candidates that actually read as markers (score >= the strength threshold) as references, so a
         // coincidental lookalike cluster (a couple of near-dup member photos) is not shown as a "marker" with no image.
         // Fall back to the top clusters when nothing clears the bar (an escalated group still needs candidates to review).
@@ -458,6 +461,33 @@ public class VettingProposalService {
     }
 
     /**
+     * The per-owner contribution breakdown for the advisory OWNER CANDIDATES table (M6): one row per owner (a repeat
+     * contributor of the given marker clusters), carrying their distinct marker-post count, how many of those banners
+     * they recur on, and their share of the owner set's marker posts (the duty split, 0..1). Because a post has exactly
+     * one author, summing each owner's distinct marker posts equals the total, so the shares are a clean partition.
+     * Ranked by post count, ties by name. Empty when no cluster is given.
+     */
+    private static List<OwnerCandidate> ownerBreakdown(List<MarkerCandidate> clusters) {
+        Map<String, Integer> postsByOwner = new LinkedHashMap<>();
+        Map<String, Integer> clustersByOwner = new LinkedHashMap<>();
+        for (MarkerCandidate c : clusters) {
+            c.markerPostsByAuthor().forEach((author, posts) -> {
+                postsByOwner.merge(author, posts, Integer::sum);
+                clustersByOwner.merge(author, 1, Integer::sum);
+            });
+        }
+        int totalPosts = postsByOwner.values().stream().mapToInt(Integer::intValue).sum();
+        // Every candidate cluster cleared repeatCoverage >= minCoverage (> 0), so a non-empty breakdown always has
+        // totalPosts > 0; when there are no owners the stream is empty and no division runs.
+        return postsByOwner.entrySet().stream()
+                .sorted(Comparator.<Map.Entry<String, Integer>>comparingInt(Map.Entry::getValue).reversed()
+                        .thenComparing(Map.Entry::getKey))
+                .map(e -> new OwnerCandidate(e.getKey(), e.getValue(), clustersByOwner.get(e.getKey()),
+                        (double) e.getValue() / totalPosts))
+                .toList();
+    }
+
+    /**
      * A recurring-image cluster reduced to what marker-owner-SET detection needs (M6): the author who dominates it, its
      * REPEAT CONTRIBUTORS (the owner set — authors who recur >= repeatContributorMin times) and their coverage of the
      * cluster, how many DISTINCT posts (shortcodes) recur, and how pure the top author's ownership is. Counting DISTINCT
@@ -468,7 +498,7 @@ public class VettingProposalService {
                                    double purity, double cadenceRegularity, double coverage, double score,
                                    List<String> repeatContributors, double repeatCoverage,
                                    List<String> authors, List<String> sampleShortcodes,
-                                   List<ScheduleDeriver.Post> markerPosts) {
+                                   List<ScheduleDeriver.Post> markerPosts, Map<String, Integer> markerPostsByAuthor) {
 
         static MarkerCandidate from(String dHash, List<CorpusSnapshotItem> members, int maxSamples, int itemCount,
                                     Set<String> withImages, int repeatContributorMin) {
@@ -503,10 +533,14 @@ public class VettingProposalService {
                     .toList();
             // The MARKER posts are the distinct posts by any repeat contributor (the round-boundary banners). The marker
             // SIGNATURE (recurrence x cadence x coverage) + repeatCoverage are measured on THESE, so a shared-banner
-            // co-owned marker scores on the FULL cadence (both owners' posts), not one owner's half.
+            // co-owned marker scores on the FULL cadence (both owners' posts), not one owner's half. markerPostsByAuthor
+            // keeps each co-owner's distinct marker-post count so the advisory can break the cluster down per owner (M6).
             LinkedHashSet<String> markerShortcodes = new LinkedHashSet<>();
+            Map<String, Integer> markerPostsByAuthor = new LinkedHashMap<>();
             for (String author : repeatContributors) {
-                markerShortcodes.addAll(shortcodesByAuthor.get(author));
+                Set<String> owned = shortcodesByAuthor.get(author);
+                markerShortcodes.addAll(owned);
+                markerPostsByAuthor.put(author, owned.size());
             }
             double repeatCoverage = (double) markerShortcodes.size() / distinctPosts;
             List<Integer> ordinals = markerShortcodes.stream().map(ordinalByShortcode::get).sorted().toList();
@@ -527,18 +561,14 @@ public class VettingProposalService {
                     .sorted(Comparator.comparingInt(ScheduleDeriver.Post::ordinal))
                     .toList();
             return new MarkerCandidate(dHash, distinctPosts, top.getKey(), recurrence, purity, cadenceRegularity,
-                    coverage, score, repeatContributors, repeatCoverage, authors, samples, markerPosts);
-        }
-
-        /** The marker-signature metrics behind the gate, surfaced for the admin (Advisory Store, M3b). */
-        OwnerCandidate toOwnerCandidate() {
-            return new OwnerCandidate(dominantAuthor, distinctPosts, recurrence, purity, cadenceRegularity,
-                    coverage, score);
+                    coverage, score, repeatContributors, repeatCoverage, authors, samples, markerPosts,
+                    markerPostsByAuthor);
         }
 
         /** One recurring-image cluster as an untyped reference; confidence = normalised marker-signature strength. */
         MarkerReference toReference(double minScore) {
-            return new MarkerReference(dHash, distinctPosts, sampleShortcodes, Math.min(1.0, score / minScore));
+            return new MarkerReference(dHash, distinctPosts, dominantAuthor, sampleShortcodes,
+                    Math.min(1.0, score / minScore));
         }
 
         /** This cluster as a broadened {@link AiMarkerSample} for the AI request — image + sorted post timestamps (M4.6). */

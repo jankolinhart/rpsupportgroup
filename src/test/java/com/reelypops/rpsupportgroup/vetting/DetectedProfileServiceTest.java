@@ -50,8 +50,8 @@ class DetectedProfileServiceTest {
                 List.of("owner.acct"),
                 List.of(new MarkerCluster("0000", 6, List.of("owner.acct"), List.of("sc-1", "sc-2"))),
                 0.94, escalate, "TIER_0_DHASH");
-        List<OwnerCandidate> candidates = List.of(new OwnerCandidate("owner.acct", 6, 6, 1.0, 0.9, 0.8, 3.8));
-        List<MarkerReference> references = List.of(new MarkerReference("0000", 6, List.of("sc-1", "sc-2"), 0.95));
+        List<OwnerCandidate> candidates = List.of(new OwnerCandidate("owner.acct", 6, 1, 1.0));
+        List<MarkerReference> references = List.of(new MarkerReference("0000", 6, "owner.acct", List.of("sc-1", "sc-2"), 0.95));
         ScheduleFacet schedule = new ScheduleFacet(MarkerGroupType.TWO_MARKER, 0.88,
                 new RoundTime("09:00", 0.8), new RoundTime("17:00", 0.7), null,
                 List.of(1, 2), 0.6, RoundState.OPEN, 1, 1.0, 0.9, 1.0, 4, 2, 0.75);
@@ -80,13 +80,15 @@ class DetectedProfileServiceTest {
         assertThat(p.references()).singleElement().satisfies(r -> {
             assertThat(r.dHash()).isEqualTo("0000");
             assertThat(r.distinctPosts()).isEqualTo(6);
+            assertThat(r.dominantAuthor()).isEqualTo("owner.acct");
             assertThat(r.sampleShortcodes()).containsExactly("sc-1", "sc-2");
             assertThat(r.confidence()).isEqualTo(0.95);
         });
         assertThat(p.candidates()).singleElement().satisfies(c -> {
             assertThat(c.author()).isEqualTo("owner.acct");
-            assertThat(c.recurrence()).isEqualTo(6);
-            assertThat(c.score()).isEqualTo(3.8);
+            assertThat(c.markerPosts()).isEqualTo(6);
+            assertThat(c.markerClusters()).isEqualTo(1);
+            assertThat(c.postShare()).isEqualTo(1.0);
         });
         assertThat(p.schedule().groupType()).isEqualTo(MarkerGroupType.TWO_MARKER);
         assertThat(p.schedule().start().timeOfDayUtc()).isEqualTo("09:00");
