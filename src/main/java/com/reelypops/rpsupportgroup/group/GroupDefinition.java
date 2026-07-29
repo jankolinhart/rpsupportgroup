@@ -1,5 +1,6 @@
 package com.reelypops.rpsupportgroup.group;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 
@@ -32,6 +33,7 @@ import java.util.List;
  *                                   round-reset day set, so {@link #canonicalized()} keeps {@code continuousDays} in
  *                                   sync with it.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record GroupDefinition(
         @NotNull SgType type,
         @NotBlank String timezone,

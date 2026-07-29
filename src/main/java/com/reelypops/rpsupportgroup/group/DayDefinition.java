@@ -1,5 +1,7 @@
 package com.reelypops.rpsupportgroup.group;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 import java.util.List;
 
 /**
@@ -23,6 +25,7 @@ import java.util.List;
  * @param style                      this day's marker style (flat-banner vs text-overlay)
  * @param references                 this day's typed marker references (start/end/single) — per-day per §5a
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record DayDefinition(
         int weekday,
         boolean open,
