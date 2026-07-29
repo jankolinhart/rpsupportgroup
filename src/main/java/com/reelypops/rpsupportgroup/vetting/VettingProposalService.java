@@ -64,6 +64,8 @@ public class VettingProposalService {
     private final double minCoverage;
     private final int repeatContributorMin;
     private final double minScore;
+    private final int timingMergeToleranceMinutes;
+    private final double timingMergeMinConcentration;
 
     public VettingProposalService(MarkerCorpusSnapshotRepository snapshots, CorpusSnapshotItemRepository items,
                                   CorpusRepresentativeRepository representatives,
@@ -74,7 +76,9 @@ public class VettingProposalService {
                                   @Value("${rp.vetting.max-samples:5}") int maxSamples,
                                   @Value("${rp.vetting.min-coverage:0.75}") double minCoverage,
                                   @Value("${rp.vetting.repeat-contributor-min:2}") int repeatContributorMin,
-                                  @Value("${rp.vetting.min-score:2.0}") double minScore) {
+                                  @Value("${rp.vetting.min-score:2.0}") double minScore,
+                                  @Value("${rp.vetting.timing-merge-tolerance-minutes:45}") int timingMergeToleranceMinutes,
+                                  @Value("${rp.vetting.timing-merge-min-concentration:0.85}") double timingMergeMinConcentration) {
         this.snapshots = snapshots;
         this.items = items;
         this.representatives = representatives;
@@ -86,6 +90,8 @@ public class VettingProposalService {
         this.minCoverage = minCoverage;
         this.repeatContributorMin = repeatContributorMin;
         this.minScore = minScore;
+        this.timingMergeToleranceMinutes = timingMergeToleranceMinutes;
+        this.timingMergeMinConcentration = timingMergeMinConcentration;
     }
 
     /** Build the advisory vetting proposal for a snapshot (404 if unknown), then run it through the enricher seam. */
@@ -120,7 +126,7 @@ public class VettingProposalService {
             return emptyAnalysis(new DetectorProfileProposal(id, ig, 0, ProposedType.UNKNOWN, List.of(), List.of(),
                     0.0, false, PROVENANCE_TIER0));
         }
-        List<Cluster> allClusters = cluster(gridItems);
+        List<Cluster> allClusters = mergeByTiming(cluster(gridItems));
         List<Cluster> strong = allClusters.stream().filter(c -> c.size() >= minClusterSize).toList();
         if (strong.isEmpty()) {
             // No image recurs across the grid: a text-overlay style — Tier 0 cannot judge it, so escalate to vision.
@@ -336,6 +342,58 @@ public class VettingProposalService {
         return clusters;
     }
 
+    /**
+     * P1.5 TIMING MERGE (vision §5.8): unify pixel clusters that a re-screenshot SPLIT — same marker, drifted dHash —
+     * by their matching <strong>round-cadence time-of-day</strong> signature. A cluster participates only when it has a
+     * tight, well-dated timing signature ({@link MarkerTiming#signature} over &ge; {@code minClusterSize} dated posts);
+     * it then merges into the first earlier participant within {@code timingMergeToleranceMinutes} of it (largest-first,
+     * so variants fold into the dominant banner). This recovers the FULL owner set + round cadence from the reunited
+     * cluster and keeps the group-type cluster count honest (two split halves of one marker no longer read as two
+     * markers). A non-positive tolerance disables it; a scattered or sparsely-dated cluster never merges. Undated grids
+     * (no {@code postedAt}) are unaffected.
+     */
+    private List<Cluster> mergeByTiming(List<Cluster> clusters) {
+        if (timingMergeToleranceMinutes <= 0) {
+            return clusters;
+        }
+        List<Cluster> result = new ArrayList<>();
+        List<Cluster> anchors = new ArrayList<>();
+        List<Double> anchorMeans = new ArrayList<>();
+        for (Cluster c : clusters) {
+            MarkerTiming.TimeSignature sig = signatureOf(c);
+            if (sig == null) {
+                result.add(c);
+                continue;
+            }
+            Cluster anchor = null;
+            for (int i = 0; i < anchors.size(); i++) {
+                if (MarkerTiming.circularDistanceMinutes(sig.meanMinutes(), anchorMeans.get(i))
+                        <= timingMergeToleranceMinutes) {
+                    anchor = anchors.get(i);
+                    break;
+                }
+            }
+            if (anchor == null) {
+                result.add(c);
+                anchors.add(c);
+                anchorMeans.add(sig.meanMinutes());
+            } else {
+                anchor.addAll(c.members());
+            }
+        }
+        result.sort(Comparator.comparingInt(Cluster::size).reversed());
+        return result;
+    }
+
+    /** The cluster's round-cadence time-of-day signature from its dated posts, or {@code null} when it can't time-merge. */
+    private MarkerTiming.TimeSignature signatureOf(Cluster c) {
+        List<Instant> times = c.members().stream()
+                .map(CorpusSnapshotItem::getPostedAt)
+                .filter(t -> t != null)
+                .toList();
+        return MarkerTiming.signature(times, minClusterSize, timingMergeMinConcentration);
+    }
+
     private MarkerCluster toMarkerCluster(MarkerCandidate c) {
         return new MarkerCluster(c.dHash(), c.distinctPosts(), c.authors(), c.sampleShortcodes());
     }
@@ -364,6 +422,10 @@ public class VettingProposalService {
 
         private void add(CorpusSnapshotItem item) {
             members.add(item);
+        }
+
+        private void addAll(List<CorpusSnapshotItem> more) {
+            members.addAll(more);
         }
 
         private int size() {
