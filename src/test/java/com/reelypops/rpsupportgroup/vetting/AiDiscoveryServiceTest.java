@@ -75,7 +75,7 @@ class AiDiscoveryServiceTest {
                 new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(), samples, gridWindow));
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
         when(corpus.getRepresentative(SNAP, "sc2")).thenReturn(Optional.empty()); // uncaptured ⇒ null image
-        when(gateway.vet(any())).thenReturn(Optional.of(new VettingResponse("TEXT_OVERLAY", "TWO_MARKER", "glow",
+        when(gateway.vet(any())).thenReturn(Optional.of(new VettingResponse("TEXT_OVERLAY", "TWO_MARKER", "glow", List.of("glow", "co.owner"),
                 List.of(new VettingResponse.Reference("start", "Los geht's", 2),
                         new VettingResponse.Reference("end", "Das war's", 1)),
                 "Glow", 0.82, "two banners",
@@ -130,6 +130,7 @@ class AiDiscoveryServiceTest {
         assertThat(ai.style()).isEqualTo(MarkerStyle.TEXT_OVERLAY);
         assertThat(ai.markerType()).isEqualTo("TWO_MARKER");
         assertThat(ai.owner()).isEqualTo("glow");
+        assertThat(ai.owners()).containsExactly("glow", "co.owner");
         assertThat(ai.ocrTargetText()).isEqualTo("Glow");
         assertThat(ai.confidence()).isEqualTo(0.82);
         assertThat(ai.references()).extracting(DetectedProfile.AiDiscovery.AiReference::markerType)
@@ -196,7 +197,7 @@ class AiDiscoveryServiceTest {
         when(corpus.getRepresentative(SNAP, "sc2")).thenReturn(Optional.empty()); // skipped
         when(corpus.getRepresentative(SNAP, "sc3")).thenReturn(Optional.of(rep()));
         when(gateway.vet(any())).thenReturn(Optional.of(
-                new VettingResponse("FLAT_BANNER", "SINGLE_MARKER", "glow", null, null, 0.5, "flat", null, null)));
+                new VettingResponse("FLAT_BANNER", "SINGLE_MARKER", "glow", null, null, null, 0.5, "flat", null, null)));
         SupportGroupConfig config = mock(SupportGroupConfig.class);
         when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
 
@@ -209,6 +210,7 @@ class AiDiscoveryServiceTest {
         assertThat(result.aiDiscovery().style()).isEqualTo(MarkerStyle.FLAT_BANNER);
         assertThat(result.aiDiscovery().references()).isEmpty(); // null references map to an empty list
         assertThat(result.aiDiscovery().weeklySchedule()).isNull(); // null schedule maps to a null WeeklySchedule
+        assertThat(result.aiDiscovery().owners()).containsExactly("glow"); // owners absent (older gateway) → fall back to [owner]
     }
 
     @Test
@@ -218,7 +220,7 @@ class AiDiscoveryServiceTest {
                 List.of(new AiMarkerSample(4, "glow", 4, 0.9, 0.8, 3.8, List.of("sc1"), List.of())), List.of()));
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
         when(gateway.vet(any())).thenReturn(Optional.of(
-                new VettingResponse("WHAT", "CONTINUOUS", null,
+                new VettingResponse("WHAT", "CONTINUOUS", null, null,
                         List.of(new VettingResponse.Reference("single", "x", null)), null, 0.1, "?", List.of(), null)));
         SupportGroupConfig config = mock(SupportGroupConfig.class);
         when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
@@ -227,6 +229,7 @@ class AiDiscoveryServiceTest {
 
         assertThat(result.aiDiscovery().style()).isEqualTo(MarkerStyle.UNKNOWN);
         assertThat(result.aiDiscovery().owner()).isNull();
+        assertThat(result.aiDiscovery().owners()).isEmpty(); // no owner + no owners → empty set
         // A reference the AI did not tie to a cluster (null clusterIndex) resolves to a null shortcode.
         assertThat(result.aiDiscovery().references()).singleElement()
                 .satisfies(r -> assertThat(r.shortcode()).isNull());
@@ -239,7 +242,7 @@ class AiDiscoveryServiceTest {
                 List.of(new AiMarkerSample(4, "glow", 4, 0.9, 0.8, 3.8, List.of("sc1"), List.of())), List.of()));
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
         when(gateway.vet(any())).thenReturn(Optional.of(
-                new VettingResponse("FLAT_BANNER", "SINGLE_MARKER", "glow", List.of(), null, 0.9, "ok", null, null)));
+                new VettingResponse("FLAT_BANNER", "SINGLE_MARKER", "glow", List.of("glow"), List.of(), null, 0.9, "ok", null, null)));
         when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service(12).runAiDiscovery(SNAP))
@@ -332,7 +335,7 @@ class AiDiscoveryServiceTest {
         when(corpus.getRepresentative(SNAP, "sc2")).thenReturn(Optional.empty()); // image-less → skipped from the read
         when(corpus.getRepresentative(SNAP, "sc3")).thenReturn(Optional.of(rep()));
         // vet (compound) supplies style / type / owner / schedule + usage; its OWN reference is the mis-grounded bug we drop.
-        when(gateway.vet(any())).thenReturn(Optional.of(new VettingResponse("TEXT_OVERLAY", "TWO_MARKER", "glow",
+        when(gateway.vet(any())).thenReturn(Optional.of(new VettingResponse("TEXT_OVERLAY", "TWO_MARKER", "glow", List.of("glow"),
                 List.of(new VettingResponse.Reference("start", "GB AGENCY START Sonntag", 1)),
                 "START|ENDE", 0.8, "compound", List.of(),
                 new RpAiGatewayClient.Usage("gpt-5", 200, 50, "0.0100", "USD"))));
@@ -387,7 +390,7 @@ class AiDiscoveryServiceTest {
         when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(),
                 List.of(new AiMarkerSample(8, "glow", 8, 0.7, 0.8, 4.0, List.of("sc1"), List.of())), List.of()));
         when(corpus.getRepresentative(SNAP, "sc1")).thenReturn(Optional.of(rep()));
-        when(gateway.vet(any())).thenReturn(Optional.of(new VettingResponse("TEXT_OVERLAY", "TWO_MARKER", "glow",
+        when(gateway.vet(any())).thenReturn(Optional.of(new VettingResponse("TEXT_OVERLAY", "TWO_MARKER", "glow", List.of("glow"),
                 List.of(new VettingResponse.Reference("start", "GB AGENCY START", 1)), "START|ENDE", 0.8, "compound",
                 List.of(), new RpAiGatewayClient.Usage("gpt-5", 200, 50, "0.0100", "USD"))));
         when(gateway.read(any())).thenReturn(Optional.empty()); // read pass down → keep the compound gallery + vet usage
@@ -419,7 +422,7 @@ class AiDiscoveryServiceTest {
                         new AiMarkerSample(1, "glow", 1, 0.5, 0.5, 1.0, List.of("sc2"), List.of(monEnd))), List.of()));
         when(corpus.getRepresentative(eq(SNAP), anyString())).thenReturn(Optional.of(rep()));
         // Compound schedule reports MONDAY only (open); its per-day markers get REPLACED by the grounded ones.
-        when(gateway.vet(any())).thenReturn(Optional.of(new VettingResponse("TEXT_OVERLAY", "TWO_MARKER", "glow",
+        when(gateway.vet(any())).thenReturn(Optional.of(new VettingResponse("TEXT_OVERLAY", "TWO_MARKER", "glow", List.of("glow"),
                 List.of(), "START|ENDE", 0.8, "x",
                 List.of(new VettingResponse.DaySchedule("MON", true, "TWO_MARKER", "TEXT_OVERLAY", List.of(),
                         "06:00", "18:30", 0, 1, 0.9)),
@@ -473,7 +476,7 @@ class AiDiscoveryServiceTest {
         DetectedProfile.AiDiscovery.AiPass metrics = new DetectedProfile.AiDiscovery.AiPass(
                 "METRICS", 1L, "gpt-5", 100, 50, "0.0100", "USD", refs.size(), false);
         DetectedProfile.AiDiscovery ai = new DetectedProfile.AiDiscovery(MarkerStyle.TEXT_OVERLAY, "TWO_MARKER", "glow",
-                refs, "START|ENDE", 0.7, "metrics pass", 1L, null, null, List.of(metrics));
+                List.of("glow", "co.owner"), refs, "START|ENDE", 0.7, "metrics pass", 1L, null, null, List.of(metrics));
         return new DetectedProfile(b.snapshotId(), b.igAccount(), b.itemCount(), b.generatedAtMs(), b.provenance(),
                 b.escalate(), b.imageStyle(), b.owner(), b.references(), b.candidates(), b.schedule(), ai);
     }
@@ -516,6 +519,7 @@ class AiDiscoveryServiceTest {
         assertThat(out.profile().aiDiscovery().references().get(2).shortcode()).isEqualTo("sc3"); // clusterIndex 1 → sc3
         assertThat(out.profile().aiDiscovery().usage().model()).isEqualTo("gpt-5");
         assertThat(out.profile().aiDiscovery().usage().costEstimate()).isEqualTo("0.0021");
+        assertThat(out.profile().aiDiscovery().owners()).containsExactly("glow", "co.owner"); // owner SET preserved across refine
         // Run history: the stored metrics pass + an appended REFINE pass (markersAdded = 1, not converged).
         assertThat(out.profile().aiDiscovery().passes()).hasSize(2);
         assertThat(out.profile().aiDiscovery().passes().get(0).kind()).isEqualTo("METRICS");

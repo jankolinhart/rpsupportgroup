@@ -102,7 +102,7 @@ class DetectedProfileServiceTest {
     /** A prior stored advisory carrying an explicit AI verdict (+ a one-pass run history) for {@code snapshotId}. */
     private DetectedProfile priorProfileWithAi(UUID snapshotId) {
         DetectedProfile.AiDiscovery ai = new DetectedProfile.AiDiscovery(MarkerStyle.TEXT_OVERLAY, "TWO_MARKER", "glow",
-                List.of(), "START|ENDE", 0.8, "prior run", 5L, null, null,
+                List.of("glow"), List.of(), "START|ENDE", 0.8, "prior run", 5L, null, null,
                 List.of(new DetectedProfile.AiDiscovery.AiPass("METRICS", 5L, "gpt-5", 100, 50, "0.0100", "USD", 3, false)));
         ScheduleFacet sched = new ScheduleFacet(MarkerGroupType.TWO_MARKER, 0.8, null, null, null,
                 List.of(), 0.0, RoundState.UNKNOWN, null, 0.0, 0.0, 0.0, 0, null, 0.0);
