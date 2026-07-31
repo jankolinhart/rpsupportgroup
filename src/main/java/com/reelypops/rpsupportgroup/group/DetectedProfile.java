@@ -1,6 +1,7 @@
 package com.reelypops.rpsupportgroup.group;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
 import java.util.UUID;
 
@@ -98,6 +99,12 @@ public record DetectedProfile(
                                 RoundState currentState, Integer endMarkerDayOffset, double endMarkerDayOffsetConfidence,
                                 double symmetry, double pairing, int roundCount,
                                 Integer maxTaggedPosts, double maxTaggedPostsConfidence) {
+
+        /** The derived round CLASS (M5 A3): CROSS_DAY when a TWO_MARKER round's end lands a day+ later; null off TWO_MARKER. */
+        @JsonProperty("roundClass")
+        public RoundClass roundClass() {
+            return RoundClass.of(groupType == MarkerGroupType.TWO_MARKER, endMarkerDayOffset);
+        }
     }
 
     /** A derived round-boundary time-of-day ({@code HH:mm}, UTC) + how tight (confident) the observed times were. */
@@ -186,6 +193,12 @@ public record DetectedProfile(
             public record DaySchedule(String weekday, boolean open, String groupType, String style,
                                       List<AiReference> markers, String start, String end,
                                       Integer endMarkerDayOffset, Integer maxTaggedPosts, Double confidence) {
+
+                /** The derived round CLASS (M5 A3) for this open TWO_MARKER weekday; null when CLOSED or not TWO_MARKER. */
+                @JsonProperty("roundClass")
+                public RoundClass roundClass() {
+                    return open ? RoundClass.of("TWO_MARKER".equals(groupType), endMarkerDayOffset) : null;
+                }
             }
         }
     }
