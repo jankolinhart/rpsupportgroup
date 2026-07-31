@@ -1,6 +1,7 @@
 package com.reelypops.rpsupportgroup.group;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.List;
 
@@ -41,6 +42,12 @@ public record DayDefinition(
         Integer maxTaggedPosts,
         MarkerStyle style,
         List<VettedProfile.TypedMarkerReference> references) {
+
+    /** The derived round CLASS (M5 A3): CROSS_DAY when this open TWO_MARKER day's end lands a day+ later; null when CLOSED or not TWO_MARKER. */
+    @JsonProperty("roundClass")
+    public RoundClass roundClass() {
+        return open ? RoundClass.of(type == SgType.TWO_MARKER, endMarkerDayOffset) : null;
+    }
 
     /**
      * This day's schedule flattened onto the group-global {@code base} (type / timezone / marker owners / continuous
