@@ -668,5 +668,33 @@ class InternalGroupControllerTest {
                 .andExpect(status().isNotFound());
     }
 
+    // --- M5 B1 prerequisite: the client-facing GroupResponse ships the per-weekday schedule (plan P5) ---
+
+    @Test
+    void getConfigExposesPerWeekdayScheduleFromTheVettedProfile() throws Exception {
+        createConfig("m5-weekly");
+        // Save a vetted profile carrying a per-weekday schedule — a Monday CROSS_DAY round (end marker a day later).
+        String body = "{\"definition\":{\"type\":\"TWO_MARKER\",\"timezone\":\"Europe/Berlin\",\"markerOwners\":[\"ras.circle\"],"
+                + "\"startMarkerTime\":\"20:00\",\"endMarkerTime\":\"02:00\",\"endMarkerDayOffset\":1,\"openWeekdays\":[1]},"
+                + "\"detector\":{\"style\":\"FLAT_BANNER\",\"references\":[{\"markerType\":\"start\",\"dHashes\":[\"0000\"],\"matchThreshold\":4}]},"
+                + "\"description\":\"Nightly group.\","
+                + "\"weeklySchedule\":{\"days\":[{\"weekday\":1,\"open\":true,\"type\":\"TWO_MARKER\","
+                + "\"startMarkerTime\":\"20:00\",\"endMarkerTime\":\"02:00\",\"endMarkerDayOffset\":1,\"style\":\"FLAT_BANNER\","
+                + "\"references\":[{\"markerType\":\"start\",\"dHashes\":[\"0000\"],\"ocrText\":\"START\",\"matchThreshold\":4}]}]}}";
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/vetted-profile", "m5-weekly")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "m5-weekly").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.weeklySchedule.days[0].weekday").value(1))
+                .andExpect(jsonPath("$.weeklySchedule.days[0].open").value(true))
+                .andExpect(jsonPath("$.weeklySchedule.days[0].type").value("TWO_MARKER"))
+                .andExpect(jsonPath("$.weeklySchedule.days[0].endMarkerDayOffset").value(1))
+                .andExpect(jsonPath("$.weeklySchedule.days[0].roundClass").value("CROSS_DAY")) // A3-derived, now shipped
+                .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].markerType").value("start"))
+                .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].ocrText").value("START"));
+    }
+
     private static final String KEY_HEADER = "X-Internal-Api-Key";
 }
