@@ -23,9 +23,11 @@ import java.util.UUID;
 public class SupportGroupConfigService {
 
     private final SupportGroupConfigRepository configs;
+    private final VettedProfileVersionRepository versions;
 
-    public SupportGroupConfigService(SupportGroupConfigRepository configs) {
+    public SupportGroupConfigService(SupportGroupConfigRepository configs, VettedProfileVersionRepository versions) {
         this.configs = configs;
+        this.versions = versions;
     }
 
     /**
@@ -151,7 +153,7 @@ public class SupportGroupConfigService {
     @Transactional
     public SupportGroupConfig saveVettedProfile(String igAccount, VettedProfile profile) {
         SupportGroupConfig c = require(igAccount);
-        c.saveVettedProfile(profile);
+        applyVettedProfile(c, profile);
         return configs.save(c);
     }
 
@@ -162,11 +164,67 @@ public class SupportGroupConfigService {
     @Transactional
     public SupportGroupConfig vetVettedProfile(String igAccount, VettedProfile profile) {
         SupportGroupConfig c = require(igAccount);
-        c.saveVettedProfile(profile);
+        applyVettedProfile(c, profile);
         if (c.getVettingState() == VettingState.BLOCKED) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, igAccount + " is blocked and cannot be vetted");
         }
         c.vet();
+        return configs.save(c);
+    }
+
+    /**
+     * Apply a Vetting-Portal save (M5 A2): append an immutable {@link VettedProfileVersion} history snapshot (carrying
+     * the structured field-level change-note vs the prior active snapshot) and repoint the config's active snapshot. The
+     * history append + the config write commit together in the caller's transaction.
+     */
+    private void applyVettedProfile(SupportGroupConfig c, VettedProfile profile) {
+        long next = nextSnapshotVersion(c.getId());
+        VettedProfile before = c.getVettedProfile();
+        VettedProfile applied = c.saveVettedProfile(profile, next);
+        // First snapshot has no prior version to diff → empty change-note (first-ready is announced via SG_VETTED, not
+        // a CONFIG_CHANGED diff; vision §5.16). Every later save carries the structured field-level diff vs the prior
+        // active snapshot, which the client renders into an i18n announcement (#5.3).
+        List<VettedProfileVersion.ChangeNoteEntry> changeNote =
+                before == null ? List.of() : VettedProfileDiff.diff(before, applied);
+        versions.save(VettedProfileVersion.snapshot(c.getId(), next, applied, changeNote));
+    }
+
+    private long nextSnapshotVersion(UUID configId) {
+        return versions.findByConfigIdOrderBySnapshotVersionDesc(configId).stream()
+                .findFirst().map(v -> v.getSnapshotVersion() + 1).orElse(1L);
+    }
+
+    /** The config's active-snapshot pointer + its append-only history, newest first (M5 A2 admin history view). */
+    @Transactional(readOnly = true)
+    public GroupVersions listVersions(String igAccount) {
+        SupportGroupConfig c = require(igAccount);
+        return new GroupVersions(c.getActiveSnapshotVersion(),
+                versions.findByConfigIdOrderBySnapshotVersionDesc(c.getId()));
+    }
+
+    /** A config's active-snapshot pointer + its full vetted-profile history (M5 A2). */
+    public record GroupVersions(Long activeSnapshotVersion, List<VettedProfileVersion> versions) {
+    }
+
+    /**
+     * Roll back / activate a prior version (M5 A2 kill switch): repoint the active snapshot to {@code snapshotVersion}
+     * (restoring its profile + projection + bumping the ETag). 404 if that snapshot does not exist for the config.
+     */
+    @Transactional
+    public SupportGroupConfig rollbackTo(String igAccount, long snapshotVersion) {
+        SupportGroupConfig c = require(igAccount);
+        VettedProfileVersion v = versions.findByConfigIdAndSnapshotVersion(c.getId(), snapshotVersion)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "no snapshot " + snapshotVersion + " for " + igAccount));
+        c.rollbackTo(snapshotVersion, v.getVettedProfile());
+        return configs.save(c);
+    }
+
+    /** Flip the operational mode (M5 A2 kill switch): liking / scrape-only / paused. */
+    @Transactional
+    public SupportGroupConfig setMode(String igAccount, SgConfigMode mode) {
+        SupportGroupConfig c = require(igAccount);
+        c.setMode(mode);
         return configs.save(c);
     }
 

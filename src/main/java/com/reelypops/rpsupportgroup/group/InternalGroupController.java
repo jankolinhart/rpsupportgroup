@@ -166,4 +166,22 @@ public class InternalGroupController {
                 .map(a -> ResponseEntity.ok().contentType(MediaType.parseMediaType(a.getContentType())).body(a.getImage()))
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }
+
+    /** Admin: the config's append-only vetted-profile version history, newest first (M5 A2). */
+    @GetMapping("/{igAccount}/vetted-profile/versions")
+    public GroupVersionsResponse versions(@PathVariable String igAccount) {
+        return GroupVersionsResponse.of(service.listVersions(igAccount));
+    }
+
+    /** Admin roll back / activate a prior version (M5 A2 kill switch): repoint the active snapshot. 404 if it does not exist. */
+    @PostMapping("/{igAccount}/vetted-profile/rollback/{snapshotVersion}")
+    public GroupResponse rollback(@PathVariable String igAccount, @PathVariable long snapshotVersion) {
+        return GroupResponse.of(service.rollbackTo(igAccount, snapshotVersion));
+    }
+
+    /** Admin flip the operational mode (M5 A2 kill switch): liking / scrape-only / paused. */
+    @PutMapping("/{igAccount}/mode/{mode}")
+    public GroupResponse setMode(@PathVariable String igAccount, @PathVariable SgConfigMode mode) {
+        return GroupResponse.of(service.setMode(igAccount, mode));
+    }
 }

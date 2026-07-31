@@ -121,6 +121,18 @@ public class SupportGroupConfig {
     @Column(name = "version", nullable = false)
     private long version;
 
+    /**
+     * The active snapshot POINTER (M5 A2): the {@code snapshot_version} of the {@link VettedProfileVersion} currently
+     * shipped. Null until the first vetted profile is saved; a rollback repoints it to a prior snapshot.
+     */
+    @Column(name = "active_snapshot_version")
+    private Long activeSnapshotVersion;
+
+    /** The operational {@link SgConfigMode} (M5 A2 kill-switch): liking / scrape-only / paused. Adopted via the {@code version} poll. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "mode", nullable = false)
+    private SgConfigMode mode = SgConfigMode.LIKING;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -238,15 +250,45 @@ public class SupportGroupConfig {
     /**
      * Save/refresh the single authoritative confirmed profile (M3a, the Vetting Portal "Save"). Projects its round-truth
      * one-way onto the legacy {@code definition} + {@code description} (so today's client/scanner keep working until M5);
-     * because the projection is derived it cannot diverge. Bumps the client-facing {@code version} (the projected
-     * definition changed).
+     * because the projection is derived it cannot diverge. Repoints the active snapshot to {@code snapshotVersion} (the
+     * caller appends the matching {@link VettedProfileVersion} history row) and bumps the client-facing {@code version}.
+     *
+     * @return the derived profile actually stored (the one that ships) — the caller snapshots + diffs against it
      */
-    public void saveVettedProfile(VettedProfile profile) {
+    public VettedProfile saveVettedProfile(VettedProfile profile, long snapshotVersion) {
         VettedProfile p = profile.withDerivedDefinition();
         this.vettedProfile = p;
         this.definition = p.definition().canonicalized();
         this.description = p.description();
+        this.activeSnapshotVersion = snapshotVersion;
         this.version++;
+        return p;
+    }
+
+    /**
+     * Roll back (M5 A2 kill switch): reactivate a prior {@link VettedProfileVersion}'s {@code profile} by repointing the
+     * active snapshot — restores its round-truth projection and bumps the client-facing {@code version} so polling
+     * clients re-fetch. Append-only history is untouched (no new snapshot).
+     */
+    public void rollbackTo(long snapshotVersion, VettedProfile profile) {
+        this.vettedProfile = profile;
+        this.definition = profile.definition().canonicalized();
+        this.description = profile.description();
+        this.activeSnapshotVersion = snapshotVersion;
+        this.version++;
+    }
+
+    /**
+     * Flip the operational {@link SgConfigMode} (M5 A2 kill switch). Idempotent — returns {@code false} and changes
+     * nothing when already in {@code mode}; else sets it and bumps the {@code version} so clients adopt it.
+     */
+    public boolean setMode(SgConfigMode mode) {
+        if (this.mode == mode) {
+            return false;
+        }
+        this.mode = mode;
+        this.version++;
+        return true;
     }
 
     /**

@@ -23,6 +23,8 @@ public record GroupResponse(
         GroupDefinition definition,
         String description,
         long version,
+        SgConfigMode mode,
+        Long activeSnapshotVersion,
         Instant createdAt,
         Instant updatedAt,
         List<String> categories) {
@@ -31,7 +33,7 @@ public record GroupResponse(
         return new GroupResponse(c.getId(), c.getIgAccount(), c.getStatus(), c.getOwnerId(),
                 c.isAdminAttributed(), c.isVetted(), c.getVettingState(), c.getRejectReason(), c.getCooldownUntil(),
                 c.getRejectedAt(), c.getDefinition(), c.getDescription(), c.getVersion(),
-                c.getCreatedAt(), c.getUpdatedAt(),
+                c.getMode(), c.getActiveSnapshotVersion(), c.getCreatedAt(), c.getUpdatedAt(),
                 c.getCategories().stream().map(SgCategory::getSlug).sorted().toList());
     }
 }
