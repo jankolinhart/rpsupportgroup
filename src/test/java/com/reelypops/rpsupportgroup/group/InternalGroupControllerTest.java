@@ -526,5 +526,147 @@ class InternalGroupControllerTest {
                 .andExpect(jsonPath("$.detected").doesNotExist());
     }
 
+    // --- M5 A2: versioned vetted profile (append-only history) + rollback / mode kill switches ---
+
+    /** A second, DIFFERENT vetted profile so the SAVE produces a non-empty change-note vs the prior active snapshot. */
+    private static final String VETTED_BODY_V2 =
+            "{\"definition\":{\"type\":\"TWO_MARKER\",\"timezone\":\"Europe/Berlin\",\"markerOwners\":[\"ras.circle\"],"
+                    + "\"startMarkerTime\":\"09:00\",\"endMarkerTime\":\"20:00\",\"openWeekdays\":[1,2,3,4,5]},"
+                    + "\"detector\":{\"style\":\"FLAT_BANNER\",\"references\":[{\"markerType\":\"start\","
+                    + "\"dHashes\":[\"0000\"],\"matchThreshold\":6}]},\"description\":\"Updated blogger group.\"}";
+
+    @Test
+    void firstSaveOpensVersionOneWithEmptyChangeNote() throws Exception {
+        createConfig("a2-v1");
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/vetted-profile", "a2-v1")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON).content(VETTED_BODY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.activeSnapshotVersion").value(1))
+                .andExpect(jsonPath("$.mode").value("LIKING"));           // default mode surfaced on the config
+
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/vetted-profile/versions", "a2-v1")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.activeSnapshotVersion").value(1))
+                .andExpect(jsonPath("$.versions.length()").value(1))
+                .andExpect(jsonPath("$.versions[0].snapshotVersion").value(1))
+                .andExpect(jsonPath("$.versions[0].active").value(true))
+                .andExpect(jsonPath("$.versions[0].changeNote.length()").value(0));   // first snapshot: nothing to diff
+    }
+
+    @Test
+    void secondSaveAppendsVersionTwoWithFieldLevelChangeNote() throws Exception {
+        createConfig("a2-v2");
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/vetted-profile", "a2-v2")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON).content(VETTED_BODY))
+                .andExpect(status().isOk());
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/vetted-profile", "a2-v2")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON).content(VETTED_BODY_V2))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.activeSnapshotVersion").value(2));
+
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/vetted-profile/versions", "a2-v2")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.activeSnapshotVersion").value(2))
+                .andExpect(jsonPath("$.versions.length()").value(2))
+                .andExpect(jsonPath("$.versions[0].snapshotVersion").value(2))       // newest first
+                .andExpect(jsonPath("$.versions[0].active").value(true))
+                .andExpect(jsonPath("$.versions[1].snapshotVersion").value(1))
+                .andExpect(jsonPath("$.versions[1].active").value(false))
+                .andExpect(jsonPath("$.versions[0].changeNote.length()").value(Matchers.greaterThanOrEqualTo(1)))
+                // structured {field, from, to}: the description changed old → new
+                .andExpect(jsonPath("$.versions[0].changeNote[?(@.field=='description')].to")
+                        .value(Matchers.hasItem("Updated blogger group.")));
+    }
+
+    @Test
+    void rollbackReactivatesPriorSnapshotWithoutAppendingHistory() throws Exception {
+        createConfig("a2-rb");
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/vetted-profile", "a2-rb")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON).content(VETTED_BODY))
+                .andExpect(status().isOk());                                          // v1: "Dailyblogger group."
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/vetted-profile", "a2-rb")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON).content(VETTED_BODY_V2))
+                .andExpect(status().isOk());                                          // v2 active: "Updated blogger group."
+
+        // Kill switch: roll back to v1 → repoints the active snapshot, restores its projection, bumps the ETag, no new row.
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vetted-profile/rollback/{v}", "a2-rb", 1)
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.activeSnapshotVersion").value(1))
+                .andExpect(jsonPath("$.description").value("Dailyblogger group."));   // v1 projection restored
+
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/vetted-profile/versions", "a2-rb")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.activeSnapshotVersion").value(1))
+                .andExpect(jsonPath("$.versions.length()").value(2))                  // history untouched
+                .andExpect(jsonPath("$.versions[?(@.snapshotVersion==1)].active").value(Matchers.hasItem(true)))
+                .andExpect(jsonPath("$.versions[?(@.snapshotVersion==2)].active").value(Matchers.hasItem(false)));
+    }
+
+    @Test
+    void rollbackToUnknownSnapshotIsNotFound() throws Exception {
+        createConfig("a2-rb404");
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/vetted-profile", "a2-rb404")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON).content(VETTED_BODY))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vetted-profile/rollback/{v}", "a2-rb404", 99)
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void rollbackUnknownConfigIsNotFound() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vetted-profile/rollback/{v}", "a2-none-rb", 1)
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void versionsUnknownConfigIsNotFound() throws Exception {
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/vetted-profile/versions", "a2-none-v")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void setModeFlipsAndIsIdempotent() throws Exception {
+        createConfig("a2-mode");                                                      // version 1, LIKING
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "a2-mode").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mode").value("LIKING"))
+                .andExpect(jsonPath("$.version").value(1));
+
+        // Flip to PAUSED → mode changes + version bumps so clients adopt it.
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/mode/{mode}", "a2-mode", "PAUSED")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mode").value("PAUSED"))
+                .andExpect(jsonPath("$.version").value(2));
+
+        // Flip to PAUSED AGAIN → idempotent: mode stays, version does NOT bump.
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/mode/{mode}", "a2-mode", "PAUSED")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mode").value("PAUSED"))
+                .andExpect(jsonPath("$.version").value(2));                           // unchanged (setMode returned false)
+
+        // A different mode bumps again.
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/mode/{mode}", "a2-mode", "SCRAPE_ONLY")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mode").value("SCRAPE_ONLY"))
+                .andExpect(jsonPath("$.version").value(3));
+    }
+
+    @Test
+    void setModeUnknownConfigIsNotFound() throws Exception {
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/mode/{mode}", "a2-mode-none", "PAUSED")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+    }
+
     private static final String KEY_HEADER = "X-Internal-Api-Key";
 }
