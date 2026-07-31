@@ -21,7 +21,7 @@ class VettedProfileTest {
     private static DayDefinition day(int weekday, boolean open, String start, String end, Integer maxTagged) {
         return new DayDefinition(weekday, open, SgType.TWO_MARKER, start, end, 0, null,
                 "18:00", 0, "18:05", 0, maxTagged, MarkerStyle.TEXT_OVERLAY,
-                List.of(new VettedProfile.TypedMarkerReference("start", List.of("hash"), 4)));
+                List.of(new VettedProfile.TypedMarkerReference("start", List.of("hash"), "GB AGENCY START", 4)));
     }
 
     @Test
@@ -47,7 +47,10 @@ class VettedProfileTest {
         // The detector is the representative day's; the per-day truth is preserved.
         assertThat(out.detector().style()).isEqualTo(MarkerStyle.TEXT_OVERLAY);
         assertThat(out.detector().references()).singleElement()
-                .satisfies(r -> assertThat(r.markerType()).isEqualTo("start"));
+                .satisfies(r -> {
+                    assertThat(r.markerType()).isEqualTo("start");
+                    assertThat(r.ocrText()).isEqualTo("GB AGENCY START");
+                });
         assertThat(out.weeklySchedule()).isSameAs(ws);
     }
 
