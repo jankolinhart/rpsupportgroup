@@ -64,10 +64,15 @@ public record VettedProfile(
      * belongs to (D1c).
      *
      * @param markerType     the assigned slot ({@code start} / {@code end} / {@code single})
-     * @param dHashes        the reference perceptual hash(es) — canonical + per-weekday variants
+     * @param dHashes        the reference perceptual hash(es) — canonical + per-weekday variants. For a
+     *                       {@code TEXT_OVERLAY} style these are <em>crop</em> dHashes (the overlay region only); for a
+     *                       {@code FLAT_BANNER} style the whole-image hashes (the style lives on {@link DetectorArtifacts})
+     * @param ocrText        the confirmed OCR target text for this marker, or {@code null} — the primary signal for the
+     *                       client's TEXT_OVERLAY two-pass verify (agenda&nbsp;#3), carried from AI discovery through the
+     *                       Vetting Portal. Additive + nullable (jsonb-safe): legacy rows deserialize with {@code null}
      * @param matchThreshold the per-group Hamming match threshold for this reference
      */
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record TypedMarkerReference(String markerType, List<String> dHashes, int matchThreshold) {
+    public record TypedMarkerReference(String markerType, List<String> dHashes, String ocrText, int matchThreshold) {
     }
 }
