@@ -478,6 +478,34 @@ class InternalGroupControllerTest {
     }
 
     @Test
+    void getCarriesTheActiveSnapshotsChangeNote() throws Exception {
+        createConfig("m3a-cn");
+        // First snapshot (nothing to diff against → empty change-note).
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/vetted-profile", "m3a-cn")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON).content(VETTED_BODY))
+                .andExpect(status().isOk());
+        // Second snapshot changes only the description → the now-active snapshot's change-note is that diff (M5.3b).
+        String updated = VETTED_BODY.replace("Dailyblogger group.", "Updated blurb.");
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/vetted-profile", "m3a-cn")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON).content(updated))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "m3a-cn").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.changeNote[0].field").value("description"))
+                .andExpect(jsonPath("$.changeNote[0].from").value("Dailyblogger group."))
+                .andExpect(jsonPath("$.changeNote[0].to").value("Updated blurb."));
+    }
+
+    @Test
+    void getReturnsAnEmptyChangeNoteWhenThereIsNoActiveSnapshot() throws Exception {
+        createConfig("m3a-cn-none"); // no vetted profile yet → no active snapshot
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "m3a-cn-none").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.changeNote").isEmpty());
+    }
+
+    @Test
     void vetVettedProfileOnBlockedConfigIsConflict() throws Exception {
         createConfig("m3a-blocked");
         mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/block", "m3a-blocked").header(KEY_HEADER, KEY))

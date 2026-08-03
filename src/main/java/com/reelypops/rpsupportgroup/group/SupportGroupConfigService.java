@@ -57,6 +57,22 @@ public class SupportGroupConfigService {
         return require(igAccount);
     }
 
+    /**
+     * The structured field-level change-note (M5.3b {@code CONFIG_CHANGED}) of the config's currently-active vetted
+     * snapshot — what changed vs the prior active snapshot when it was vetted. Empty when there is no active snapshot
+     * or it is the first (a first-ready config is announced as {@code SG_VETTED}, not a diff; vision §5.16).
+     */
+    @Transactional(readOnly = true)
+    public List<VettedProfileVersion.ChangeNoteEntry> activeChangeNote(SupportGroupConfig c) {
+        Long active = c.getActiveSnapshotVersion();
+        if (active == null) {
+            return List.of();
+        }
+        return versions.findByConfigIdAndSnapshotVersion(c.getId(), active)
+                .map(VettedProfileVersion::getChangeNote)
+                .orElseGet(List::of);
+    }
+
     @Transactional(readOnly = true)
     public List<SupportGroupConfig> list() {
         return configs.findAllByOrderByCreatedAtDesc();

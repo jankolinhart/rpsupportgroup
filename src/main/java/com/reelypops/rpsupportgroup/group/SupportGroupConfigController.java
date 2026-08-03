@@ -55,7 +55,8 @@ public class SupportGroupConfigController {
 
     @GetMapping("/{igAccount}")
     public GroupResponse get(@PathVariable String igAccount) {
-        return GroupResponse.of(service.get(igAccount));
+        SupportGroupConfig c = service.get(igAccount);
+        return GroupResponse.of(c, service.activeChangeNote(c));
     }
 
     /** A subscribed SG owner (ROLE_SG_ADMIN, gated in SecurityConfig) claims an unclaimed config (§6). */
