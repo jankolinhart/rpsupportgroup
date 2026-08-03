@@ -889,5 +889,45 @@ class InternalGroupControllerTest {
                 .andExpect(jsonPath("$[?(@.igAccount=='drift-list')].needsRevet").value(Matchers.hasItem(true)));
     }
 
+    @Test
+    void acknowledgeClearsNeedsRevetWithoutRevettingOrBumpingTheEtag() throws Exception {
+        createConfig("drift-ack");                                                    // version 1, not vetted
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-ack").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"MARKER_DISAGREE\",\"reporterDeviceId\":\"dev-1\",\"agreePass\":5,\"disagreePass\":2}"))
+                .andExpect(status().isAccepted());
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-ack").header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.needsRevet").value(true))
+                .andExpect(jsonPath("$.version").value(1))
+                .andExpect(jsonPath("$.vetted").value(false));
+
+        // Acknowledge: clears the flag WITHOUT vetting or bumping the ETag.
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift/acknowledge", "drift-ack").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.needsRevet").value(false))
+                .andExpect(jsonPath("$.revetReason").doesNotExist())
+                .andExpect(jsonPath("$.version").value(1))                            // no ETag bump — config not re-shipped
+                .andExpect(jsonPath("$.vetted").value(false));                        // and NOT vetted
+
+        // The cleared state persists…
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-ack").header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.needsRevet").value(false))
+                .andExpect(jsonPath("$.version").value(1));
+
+        // …but a fresh drift re-raises it.
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-ack").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"MARKER_DISAGREE\",\"reporterDeviceId\":\"dev-1\",\"agreePass\":4,\"disagreePass\":4}"))
+                .andExpect(status().isAccepted());
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-ack").header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.needsRevet").value(true));
+    }
+
+    @Test
+    void acknowledgeForAnUnknownConfigIsNotFound() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift/acknowledge", "drift-ack-none").header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+    }
+
     private static final String KEY_HEADER = "X-Internal-Api-Key";
 }

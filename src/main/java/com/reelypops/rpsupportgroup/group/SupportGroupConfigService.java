@@ -326,6 +326,19 @@ public class SupportGroupConfigService {
         return driftObservations.save(obs);
     }
 
+    /**
+     * M5 re-vet consumer admin "acknowledge" (the "I reviewed, it's fine" path for a NON-severe drift): resolve the
+     * config's open marker-disagree observations WITHOUT a re-vet, clearing the derived needs-re-vet flag. No config
+     * mutation + no ETag bump (the config is not re-shipped to clients) — a fresh drift re-raises the flag. Idempotent:
+     * a config with no open observations is a no-op. Returns the (unchanged) config.
+     */
+    @Transactional
+    public SupportGroupConfig acknowledgeRevet(String igAccount) {
+        SupportGroupConfig c = require(igAccount);
+        resolveMarkerDisagreeObservations(c.getId());
+        return c;
+    }
+
     /** Resolve a config's open marker-disagree observations (a re-vet clears the derived "needs re-vet" flag). */
     private void resolveMarkerDisagreeObservations(UUID configId) {
         List<DriftObservation> open = driftObservations

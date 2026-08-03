@@ -246,4 +246,35 @@ class SupportGroupConfigServiceTest {
                 .hasMessageContaining("no config for missing");
         verify(driftObservations, never()).save(any());
     }
+
+    // --- M5 re-vet consumer: acknowledge (clear-without-re-vet) ---
+
+    @Test
+    void acknowledgeRevetResolvesTheConfigsOpenMarkerDisagreeObservations() {
+        UUID configId = UUID.randomUUID();
+        SupportGroupConfig c = mock(SupportGroupConfig.class);
+        when(c.getId()).thenReturn(configId);
+        when(configs.findByIgAccount("ig")).thenReturn(Optional.of(c));
+        DriftObservation open = DriftObservation.first(configId, DriftKind.MARKER_DISAGREE, "dev-a", null, null,
+                5, 2, 1, Instant.parse("2026-01-01T00:00:00Z"));
+        when(driftObservations.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(
+                configId, DriftKind.MARKER_DISAGREE)).thenReturn(List.of(open));
+
+        SupportGroupConfig result = service.acknowledgeRevet("ig");
+
+        assertThat(result).isSameAs(c);                                // the config is returned unchanged
+        assertThat(open.isResolved()).isTrue();                        // its open observation was resolved
+        verify(driftObservations).saveAll(List.of(open));
+        verify(configs, never()).save(any());                          // no config mutation / no ETag bump
+    }
+
+    @Test
+    void acknowledgeRevetForAnUnknownConfigIsNotFound() {
+        when(configs.findByIgAccount("missing")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.acknowledgeRevet("missing"))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("no config for missing");
+        verify(driftObservations, never()).saveAll(any());
+    }
 }

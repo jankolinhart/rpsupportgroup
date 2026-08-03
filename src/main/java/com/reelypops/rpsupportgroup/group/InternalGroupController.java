@@ -208,6 +208,18 @@ public class InternalGroupController {
                 req.nominatedOwnerHandle(), req.agreePass(), req.disagreePass(), req.persistenceCount());
     }
 
+    /**
+     * M5 re-vet consumer admin "acknowledge" (I reviewed, it's fine — a non-severe drift): resolve the config's open
+     * marker-disagree observations WITHOUT a re-vet, clearing the derived needs-re-vet flag. No config mutation / no
+     * ETag bump; a fresh drift re-raises it. Returns the config (now {@code needsRevet=false}).
+     */
+    @PostMapping("/{igAccount}/drift/acknowledge")
+    public GroupResponse acknowledgeRevet(@PathVariable String igAccount) {
+        SupportGroupConfig c = service.acknowledgeRevet(igAccount);
+        SupportGroupConfigService.RevetStatus s = service.revetStatus(c);
+        return GroupResponse.of(c, service.activeChangeNote(c), s.needsRevet(), s.reason());
+    }
+
     /** Admin: a config's open new-owner nominations (M5 review-candidate surface), newest-seen first. */
     @GetMapping("/{igAccount}/nominations")
     public List<DriftObservationResponse> nominations(@PathVariable String igAccount) {
