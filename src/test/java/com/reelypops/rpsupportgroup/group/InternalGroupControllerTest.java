@@ -724,5 +724,170 @@ class InternalGroupControllerTest {
                 .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].ocrText").value("START"));
     }
 
+    // --- M5 re-vet consumer: drift ingest → derived needs-re-vet + nominations ---
+
+    @Test
+    void driftRaisesNeedsRevetAndAggregatesTheReason() throws Exception {
+        createConfig("drift-md");
+        String user = UUID.randomUUID().toString();
+
+        // First reporter observes a marker-disagree drift.
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-md").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"MARKER_DISAGREE\",\"reporterDeviceId\":\"dev-1\",\"reporterUserId\":\"" + user
+                                + "\",\"agreePass\":5,\"disagreePass\":2,\"persistenceCount\":4}"))
+                .andExpect(status().isAccepted());
+
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-md").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.needsRevet").value(true))
+                .andExpect(jsonPath("$.revetReason.distinctReporters").value(1))
+                .andExpect(jsonPath("$.revetReason.totalOccurrences").value(1))
+                .andExpect(jsonPath("$.revetReason.latestAgreePass").value(5))
+                .andExpect(jsonPath("$.revetReason.latestDisagreePass").value(2))
+                .andExpect(jsonPath("$.revetReason.maxPersistenceCount").value(4))
+                .andExpect(jsonPath("$.revetReason.firstSeenAt").exists())
+                .andExpect(jsonPath("$.revetReason.lastSeenAt").exists());
+
+        // Same reporter reports again → occurrence bumps, reporter count stays 1.
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-md").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"MARKER_DISAGREE\",\"reporterDeviceId\":\"dev-1\",\"agreePass\":6,"
+                                + "\"disagreePass\":1,\"persistenceCount\":9}"))
+                .andExpect(status().isAccepted());
+        // A second, corroborating reporter.
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-md").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"MARKER_DISAGREE\",\"reporterDeviceId\":\"dev-2\",\"agreePass\":4,"
+                                + "\"disagreePass\":3,\"persistenceCount\":2}"))
+                .andExpect(status().isAccepted());
+
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-md").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.needsRevet").value(true))
+                .andExpect(jsonPath("$.revetReason.distinctReporters").value(2))
+                .andExpect(jsonPath("$.revetReason.totalOccurrences").value(3))     // dev-1 twice + dev-2 once
+                .andExpect(jsonPath("$.revetReason.maxPersistenceCount").value(9));  // dev-1's refreshed tally
+    }
+
+    @Test
+    void newOwnerDriftIsANominationNotARevet() throws Exception {
+        createConfig("drift-nom");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-nom").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"NEW_OWNER\",\"reporterDeviceId\":\"dev-1\",\"nominatedOwnerHandle\":\"cand.owner\"}"))
+                .andExpect(status().isAccepted());
+
+        // A new-owner nomination does NOT flag the config for re-vet…
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-nom").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.needsRevet").value(false));
+        // …it surfaces on the review-candidate nominations view.
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/nominations", "drift-nom").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].kind").value("NEW_OWNER"))
+                .andExpect(jsonPath("$[0].nominatedOwnerHandle").value("cand.owner"))
+                .andExpect(jsonPath("$[0].reporterDeviceId").value("dev-1"))
+                .andExpect(jsonPath("$[0].occurrenceCount").value(1))
+                .andExpect(jsonPath("$[0].resolved").value(false));
+    }
+
+    @Test
+    void vettingResolvesOpenMarkerDisagreeObservations() throws Exception {
+        createConfig("drift-vet");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-vet").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"MARKER_DISAGREE\",\"reporterDeviceId\":\"dev-1\",\"agreePass\":5,\"disagreePass\":2}"))
+                .andExpect(status().isAccepted());
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-vet").header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.needsRevet").value(true));
+
+        // A re-vet clears the derived flag.
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vet", "drift-vet").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-vet").header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.needsRevet").value(false))
+                .andExpect(jsonPath("$.revetReason").doesNotExist());
+
+        // A fresh drift after the re-vet re-opens the flag.
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-vet").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"MARKER_DISAGREE\",\"reporterDeviceId\":\"dev-1\",\"agreePass\":4,\"disagreePass\":4}"))
+                .andExpect(status().isAccepted());
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-vet").header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.needsRevet").value(true))
+                .andExpect(jsonPath("$.revetReason.totalOccurrences").value(2));    // same row, occurrence bumped
+    }
+
+    @Test
+    void vetVettedProfileResolvesOpenMarkerDisagreeObservations() throws Exception {
+        createConfig("drift-vp");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-vp").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"MARKER_DISAGREE\",\"reporterDeviceId\":\"dev-1\",\"agreePass\":5,\"disagreePass\":2}"))
+                .andExpect(status().isAccepted());
+
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vetted-profile/vet", "drift-vp")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON).content(VETTED_BODY))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-vp").header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.needsRevet").value(false));
+    }
+
+    @Test
+    void newOwnerDriftWithoutAHandleIsBadRequest() throws Exception {
+        createConfig("drift-nohandle");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-nohandle").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"NEW_OWNER\",\"reporterDeviceId\":\"dev-1\"}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void driftWithoutAReporterDeviceIsBadRequest() throws Exception {
+        createConfig("drift-nodev");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-nodev").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"MARKER_DISAGREE\",\"reporterDeviceId\":\"\"}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void driftForUnknownConfigIsNotFound() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-none").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"MARKER_DISAGREE\",\"reporterDeviceId\":\"dev-1\"}"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void nominationsForUnknownConfigIsNotFound() throws Exception {
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/nominations", "drift-nom-none").header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void driftWithoutTheKeyIsUnauthorized() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-401")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"MARKER_DISAGREE\",\"reporterDeviceId\":\"dev-1\"}"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void listExposesTheDerivedNeedsRevetFlag() throws Exception {
+        createConfig("drift-list");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-list").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"MARKER_DISAGREE\",\"reporterDeviceId\":\"dev-1\",\"agreePass\":5,\"disagreePass\":2}"))
+                .andExpect(status().isAccepted());
+
+        mockMvc.perform(get("/supportgroup/v1/internal/groups").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.igAccount=='drift-list')].needsRevet").value(Matchers.hasItem(true)));
+    }
+
     private static final String KEY_HEADER = "X-Internal-Api-Key";
 }

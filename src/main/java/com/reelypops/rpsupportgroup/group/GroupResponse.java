@@ -34,6 +34,8 @@ public record GroupResponse(
         SgConfigMode mode,
         Long activeSnapshotVersion,
         List<ChangeNoteEntry> changeNote,
+        boolean needsRevet,
+        RevetReason revetReason,
         Instant createdAt,
         Instant updatedAt,
         List<String> categories) {
@@ -48,10 +50,21 @@ public record GroupResponse(
      * {@link #of(SupportGroupConfig)} (empty note) — the note only matters when the client polls the current config.
      */
     static GroupResponse of(SupportGroupConfig c, List<ChangeNoteEntry> changeNote) {
+        return of(c, changeNote, false, null);
+    }
+
+    /**
+     * M5 re-vet consumer: the admin surfaces also carry the config's derived {@code needsRevet} flag + aggregated
+     * {@link RevetReason} (why), computed from unresolved marker-disagree drift observations. It is a pure read-side
+     * signal — the config itself is never mutated — so mutation responses leave it {@code false}/{@code null}.
+     */
+    static GroupResponse of(SupportGroupConfig c, List<ChangeNoteEntry> changeNote, boolean needsRevet,
+                            RevetReason revetReason) {
         return new GroupResponse(c.getId(), c.getIgAccount(), c.getStatus(), c.getOwnerId(),
                 c.isAdminAttributed(), c.isVetted(), c.getVettingState(), c.getRejectReason(), c.getCooldownUntil(),
                 c.getRejectedAt(), c.getDefinition(), weeklyScheduleOf(c), c.getDescription(), c.getVersion(),
-                c.getMode(), c.getActiveSnapshotVersion(), changeNote, c.getCreatedAt(), c.getUpdatedAt(),
+                c.getMode(), c.getActiveSnapshotVersion(), changeNote, needsRevet, revetReason,
+                c.getCreatedAt(), c.getUpdatedAt(),
                 c.getCategories().stream().map(SgCategory::getSlug).sorted().toList());
     }
 
