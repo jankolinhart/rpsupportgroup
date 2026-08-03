@@ -41,3 +41,6 @@ databaseChangeLog:
   - include:
       file: changes/014-vetted-profile-versioning.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/015-drift-observation.sql
+      relativeToChangelogFile: true

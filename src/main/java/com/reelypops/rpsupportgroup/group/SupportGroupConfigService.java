@@ -10,8 +10,14 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Collection;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * SG config registry (Phase 1, F1). A config is auto-registered {@code UNCLAIMED} by the first client to
@@ -24,10 +30,13 @@ public class SupportGroupConfigService {
 
     private final SupportGroupConfigRepository configs;
     private final VettedProfileVersionRepository versions;
+    private final DriftObservationRepository driftObservations;
 
-    public SupportGroupConfigService(SupportGroupConfigRepository configs, VettedProfileVersionRepository versions) {
+    public SupportGroupConfigService(SupportGroupConfigRepository configs, VettedProfileVersionRepository versions,
+                                     DriftObservationRepository driftObservations) {
         this.configs = configs;
         this.versions = versions;
+        this.driftObservations = driftObservations;
     }
 
     /**
@@ -124,7 +133,9 @@ public class SupportGroupConfigService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, igAccount + " has no definition yet and cannot be vetted");
         }
         c.vet();
-        return configs.save(c);
+        SupportGroupConfig saved = configs.save(c);
+        resolveMarkerDisagreeObservations(saved.getId());
+        return saved;
     }
 
     /**
@@ -185,7 +196,9 @@ public class SupportGroupConfigService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, igAccount + " is blocked and cannot be vetted");
         }
         c.vet();
-        return configs.save(c);
+        SupportGroupConfig saved = configs.save(c);
+        resolveMarkerDisagreeObservations(saved.getId());
+        return saved;
     }
 
     /**
@@ -278,6 +291,104 @@ public class SupportGroupConfigService {
         }
         c.removeMarkerOwner(handle);
         return configs.save(c);
+    }
+
+    /**
+     * Ingest one client-reported drift observation (M5 re-vet consumer): upserted per reporter. The first report from a
+     * reporter for this (config, kind [, nominated handle]) inserts a row; a later report bumps its occurrence count and
+     * refreshes the latest tally. An unresolved {@link DriftKind#MARKER_DISAGREE} observation derives the config's
+     * "needs re-vet" flag, so this never mutates the config or bumps its ETag (a pure read-side signal). A
+     * {@link DriftKind#NEW_OWNER} drift requires the nominated handle; a marker-disagree drift ignores it.
+     */
+    @Transactional
+    public DriftObservation recordDrift(String igAccount, DriftKind kind, String reporterDeviceId, UUID reporterUserId,
+                                        String nominatedOwnerHandle, Integer agreePass, Integer disagreePass,
+                                        Integer persistenceCount) {
+        if (kind == DriftKind.NEW_OWNER && (nominatedOwnerHandle == null || nominatedOwnerHandle.isBlank())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "nominatedOwnerHandle is required for a NEW_OWNER drift");
+        }
+        SupportGroupConfig c = require(igAccount);
+        String handle = kind == DriftKind.NEW_OWNER ? nominatedOwnerHandle : null;
+        Instant now = Instant.now();
+        Optional<DriftObservation> existing = handle == null
+                ? driftObservations.findByConfigIdAndKindAndReporterDeviceIdAndNominatedOwnerHandleIsNull(
+                        c.getId(), kind, reporterDeviceId)
+                : driftObservations.findByConfigIdAndKindAndReporterDeviceIdAndNominatedOwnerHandle(
+                        c.getId(), kind, reporterDeviceId, handle);
+        DriftObservation obs = existing
+                .map(o -> {
+                    o.observeAgain(agreePass, disagreePass, persistenceCount, now);
+                    return o;
+                })
+                .orElseGet(() -> DriftObservation.first(c.getId(), kind, reporterDeviceId, reporterUserId, handle,
+                        agreePass, disagreePass, persistenceCount, now));
+        return driftObservations.save(obs);
+    }
+
+    /** Resolve a config's open marker-disagree observations (a re-vet clears the derived "needs re-vet" flag). */
+    private void resolveMarkerDisagreeObservations(UUID configId) {
+        List<DriftObservation> open = driftObservations
+                .findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(configId, DriftKind.MARKER_DISAGREE);
+        open.forEach(DriftObservation::resolve);
+        driftObservations.saveAll(open);
+    }
+
+    /** The config's derived re-vet status (M5): unresolved marker-disagree observations flag it + aggregate the reason. */
+    @Transactional(readOnly = true)
+    public RevetStatus revetStatus(SupportGroupConfig c) {
+        return revetStatusOf(driftObservations
+                .findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(c.getId(), DriftKind.MARKER_DISAGREE));
+    }
+
+    /**
+     * The re-vet status of every given config (M5 admin list): one query fetches all their unresolved marker-disagree
+     * observations, grouped in memory, so the list endpoint never issues a per-row query. Every config id maps to a
+     * status (a config with no open observations maps to {@link RevetStatus#none()}).
+     */
+    @Transactional(readOnly = true)
+    public Map<UUID, RevetStatus> revetStatuses(Collection<SupportGroupConfig> cs) {
+        List<UUID> ids = cs.stream().map(SupportGroupConfig::getId).toList();
+        Map<UUID, List<DriftObservation>> byConfig = ids.isEmpty()
+                ? Map.of()
+                : driftObservations.findByConfigIdInAndKindAndResolvedFalse(ids, DriftKind.MARKER_DISAGREE).stream()
+                        .collect(Collectors.groupingBy(DriftObservation::getConfigId));
+        Map<UUID, RevetStatus> out = new HashMap<>();
+        for (SupportGroupConfig c : cs) {
+            out.put(c.getId(), revetStatusOf(byConfig.getOrDefault(c.getId(), List.of())));
+        }
+        return out;
+    }
+
+    /** Aggregate a config's open marker-disagree observations into a re-vet status ({@code none} when there are none). */
+    private RevetStatus revetStatusOf(List<DriftObservation> open) {
+        if (open.isEmpty()) {
+            return RevetStatus.none();
+        }
+        DriftObservation latest = open.stream().max(Comparator.comparing(DriftObservation::getLastSeenAt)).orElseThrow();
+        long totalOccurrences = open.stream().mapToLong(DriftObservation::getOccurrenceCount).sum();
+        int distinctReporters = (int) open.stream().map(DriftObservation::getReporterDeviceId).distinct().count();
+        Integer maxPersistence = open.stream()
+                .map(DriftObservation::getPersistenceCount).filter(Objects::nonNull)
+                .max(Integer::compareTo).orElse(null);
+        Instant firstSeen = open.stream().map(DriftObservation::getFirstSeenAt).min(Comparator.naturalOrder()).orElseThrow();
+        RevetReason reason = new RevetReason(distinctReporters, totalOccurrences, latest.getAgreePass(),
+                latest.getDisagreePass(), maxPersistence, firstSeen, latest.getLastSeenAt());
+        return new RevetStatus(true, reason);
+    }
+
+    /** A config's open new-owner nominations, newest-seen first (M5 admin review-candidate surface). */
+    @Transactional(readOnly = true)
+    public List<DriftObservation> newOwnerNominations(String igAccount) {
+        SupportGroupConfig c = require(igAccount);
+        return driftObservations.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(c.getId(), DriftKind.NEW_OWNER);
+    }
+
+    /** A config's derived re-vet status (M5): whether it needs re-vetting + the aggregated reason ({@code null} if not). */
+    public record RevetStatus(boolean needsRevet, RevetReason reason) {
+        static RevetStatus none() {
+            return new RevetStatus(false, null);
+        }
     }
 
     private SupportGroupConfig require(String igAccount) {

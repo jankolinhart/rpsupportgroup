@@ -17,6 +17,8 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 /**
  * Internal service-to-service SG config surface on {@code /supportgroup/v1/internal/groups}, authenticated by the
@@ -41,7 +43,14 @@ public class InternalGroupController {
 
     @GetMapping
     public List<GroupResponse> list() {
-        return service.list().stream().map(GroupResponse::of).toList();
+        List<SupportGroupConfig> cs = service.list();
+        Map<UUID, SupportGroupConfigService.RevetStatus> revet = service.revetStatuses(cs);
+        return cs.stream()
+                .map(c -> {
+                    SupportGroupConfigService.RevetStatus s = revet.get(c.getId());
+                    return GroupResponse.of(c, List.of(), s.needsRevet(), s.reason());
+                })
+                .toList();
     }
 
     /**
@@ -61,7 +70,8 @@ public class InternalGroupController {
     @GetMapping("/{igAccount}")
     public GroupResponse get(@PathVariable String igAccount) {
         SupportGroupConfig c = service.get(igAccount);
-        return GroupResponse.of(c, service.activeChangeNote(c));
+        SupportGroupConfigService.RevetStatus s = service.revetStatus(c);
+        return GroupResponse.of(c, service.activeChangeNote(c), s.needsRevet(), s.reason());
     }
 
     /** The BFF forwards a client's 3b upload here: auto-register the config as UNCLAIMED (§6). */
@@ -184,5 +194,23 @@ public class InternalGroupController {
     @PutMapping("/{igAccount}/mode/{mode}")
     public GroupResponse setMode(@PathVariable String igAccount, @PathVariable SgConfigMode mode) {
         return GroupResponse.of(service.setMode(igAccount, mode));
+    }
+
+    /**
+     * M5 re-vet consumer: rpenduser forwards one client-reported drift observation here (a persistent marker-disagree
+     * tally or a new-owner nomination). Upserted per reporter; an unresolved marker-disagree observation derives the
+     * config's "needs re-vet" flag. Returns 202 — the config is unchanged (a read-side signal, no ETag bump).
+     */
+    @PostMapping("/{igAccount}/drift")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public void reportDrift(@PathVariable String igAccount, @Valid @RequestBody DriftReport req) {
+        service.recordDrift(igAccount, req.kind(), req.reporterDeviceId(), req.reporterUserId(),
+                req.nominatedOwnerHandle(), req.agreePass(), req.disagreePass(), req.persistenceCount());
+    }
+
+    /** Admin: a config's open new-owner nominations (M5 review-candidate surface), newest-seen first. */
+    @GetMapping("/{igAccount}/nominations")
+    public List<DriftObservationResponse> nominations(@PathVariable String igAccount) {
+        return service.newOwnerNominations(igAccount).stream().map(DriftObservationResponse::of).toList();
     }
 }
