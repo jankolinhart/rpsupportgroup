@@ -60,7 +60,8 @@ public class InternalGroupController {
 
     @GetMapping("/{igAccount}")
     public GroupResponse get(@PathVariable String igAccount) {
-        return GroupResponse.of(service.get(igAccount));
+        SupportGroupConfig c = service.get(igAccount);
+        return GroupResponse.of(c, service.activeChangeNote(c));
     }
 
     /** The BFF forwards a client's 3b upload here: auto-register the config as UNCLAIMED (§6). */

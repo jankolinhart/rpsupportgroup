@@ -1,5 +1,7 @@
 package com.reelypops.rpsupportgroup.group;
 
+import com.reelypops.rpsupportgroup.group.VettedProfileVersion.ChangeNoteEntry;
+
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -31,15 +33,25 @@ public record GroupResponse(
         long version,
         SgConfigMode mode,
         Long activeSnapshotVersion,
+        List<ChangeNoteEntry> changeNote,
         Instant createdAt,
         Instant updatedAt,
         List<String> categories) {
 
     static GroupResponse of(SupportGroupConfig c) {
+        return of(c, List.of());
+    }
+
+    /**
+     * M5.3b: the client GET carries the active snapshot's structured field-level change-note so the desktop client
+     * can render a {@code CONFIG_CHANGED} announcement on adopt. Mutation / admin-list responses use
+     * {@link #of(SupportGroupConfig)} (empty note) — the note only matters when the client polls the current config.
+     */
+    static GroupResponse of(SupportGroupConfig c, List<ChangeNoteEntry> changeNote) {
         return new GroupResponse(c.getId(), c.getIgAccount(), c.getStatus(), c.getOwnerId(),
                 c.isAdminAttributed(), c.isVetted(), c.getVettingState(), c.getRejectReason(), c.getCooldownUntil(),
                 c.getRejectedAt(), c.getDefinition(), weeklyScheduleOf(c), c.getDescription(), c.getVersion(),
-                c.getMode(), c.getActiveSnapshotVersion(), c.getCreatedAt(), c.getUpdatedAt(),
+                c.getMode(), c.getActiveSnapshotVersion(), changeNote, c.getCreatedAt(), c.getUpdatedAt(),
                 c.getCategories().stream().map(SgCategory::getSlug).sorted().toList());
     }
 
