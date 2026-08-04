@@ -24,6 +24,7 @@ public class RpAiGatewayClient {
     static final String VETTING_PATH = "/aigateway/v1/internal/vetting";
     static final String REFINE_PATH = "/aigateway/v1/internal/vetting/refine";
     static final String READ_PATH = "/aigateway/v1/internal/vetting/read";
+    static final String OCR_IMAGE_PATH = "/aigateway/v1/internal/vetting/ocr-image";
 
     private static final Logger log = LoggerFactory.getLogger(RpAiGatewayClient.class);
 
@@ -94,6 +95,25 @@ public class RpAiGatewayClient {
     }
 
     /**
+     * Single-image OCR (Vetting Portal hand-added marker): transcribe the overlay text on ONE operator-chosen image so a
+     * {@code TEXT_OVERLAY} marker built from the corpus grid or an upload carries the OCR target text the client matches
+     * on. Empty when disabled or on any failure — the operator then types the text in by hand. The gateway reads the
+     * image <em>unconditionally</em> (it never gates on an "is this a marker" classification).
+     */
+    public Optional<OcrImageResponse> ocrImage(OcrImageRequest request) {
+        if (!enabled) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.ofNullable(restClient.post().uri(OCR_IMAGE_PATH).body(request)
+                    .retrieve().body(OcrImageResponse.class));
+        } catch (RestClientException e) {
+            log.warn("AI single-image OCR call failed, leaving the marker text blank: {}", e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    /**
      * The refinement request (mirrors the gateway's contract): the same numbered candidate {@link VettingRequest.Cluster
      * clusters} (representative images) plus the marker texts already identified, so the AI returns only the DISTINCT
      * templates still missing.
@@ -131,6 +151,18 @@ public class RpAiGatewayClient {
      */
     public record ReadResponse(List<VettingResponse.Reference> markers,
                                List<VettingResponse.Reference> markerReads, Usage usage) {
+    }
+
+    /**
+     * The single-image OCR request (mirrors the gateway's contract): the image to read as a {@code data:} URL (base64
+     * bytes) or an http URL. {@code igAccount} is optional logging context ({@code null} for an upload, which has no
+     * group scope).
+     */
+    public record OcrImageRequest(String igAccount, String imageUrl) {
+    }
+
+    /** The single-image OCR reply (mirrors the gateway's contract): the overlay text read, or {@code null} when none. */
+    public record OcrImageResponse(String ocrText) {
     }
 
     /**

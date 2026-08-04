@@ -232,6 +232,28 @@ class InternalCorpusControllerTest {
     }
 
     @Test
+    void ocrRepresentativeReturns200ForAStoredImage() throws Exception {
+        String id = openSnapshot("corp-ocr", "REQUEST");
+        mockMvc.perform(put("/supportgroup/v1/internal/corpus/snapshots/{id}/representatives/{sc}", id, "AAA")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.IMAGE_PNG).content(new byte[]{1, 2, 3}))
+                .andExpect(status().isNoContent());
+
+        // The AI gateway is off in tests, so the read fails open to a null ocrText (omitted from the JSON by NON_NULL) —
+        // the endpoint still returns 200. The actual OCR text path is covered by MarkerOcrServiceTest.
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/representatives/{sc}/ocr", id, "AAA")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void ocrUnknownRepresentativeIsNotFound() throws Exception {
+        String id = openSnapshot("corp-ocr-missing", "REQUEST");
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/representatives/{sc}/ocr", id, "ZZZ")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
     void representativeUploadUpsertsBytes() throws Exception {
         String id = openSnapshot("corp-rep-upsert", "DUTY");
         mockMvc.perform(put("/supportgroup/v1/internal/corpus/snapshots/{id}/representatives/{sc}", id, "AAA")

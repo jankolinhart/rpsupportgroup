@@ -1,5 +1,6 @@
 package com.reelypops.rpsupportgroup.vetting;
 
+import com.reelypops.rpsupportgroup.aigateway.MarkerOcrService;
 import com.reelypops.rpsupportgroup.group.DetectedProfile;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -28,13 +29,16 @@ public class InternalVettingController {
     private final DetectedProfileService detectedProfiles;
     private final AiDiscoveryService aiDiscovery;
     private final MarkerImageService markerImages;
+    private final MarkerOcrService markerOcr;
 
     public InternalVettingController(VettingProposalService service, DetectedProfileService detectedProfiles,
-                                     AiDiscoveryService aiDiscovery, MarkerImageService markerImages) {
+                                     AiDiscoveryService aiDiscovery, MarkerImageService markerImages,
+                                     MarkerOcrService markerOcr) {
         this.service = service;
         this.detectedProfiles = detectedProfiles;
         this.aiDiscovery = aiDiscovery;
         this.markerImages = markerImages;
+        this.markerOcr = markerOcr;
     }
 
     /** The advisory vetting proposal derived from a snapshot's corpus (404 if the snapshot is unknown). */
@@ -76,15 +80,20 @@ public class InternalVettingController {
 
     /**
      * Store a marker image an operator uploaded by hand in the Vetting Portal (M3 follow-up) when the auto-detected
-     * corpus missed a marker. Returns the new id (for serving) and its best-effort perceptual dHash (for matching).
-     * 400 when the body is empty or not a decodable image.
+     * corpus missed a marker, and <strong>auto-OCR</strong> it so a {@code TEXT_OVERLAY} marker carries the OCR target
+     * text the client matches on. Returns the new id (for serving), its best-effort perceptual dHash (for matching), and
+     * the read {@code ocrText} ({@code null} when the gateway is off/unavailable or the image bears no text — the
+     * operator types it in). 400 when the body is empty or not a decodable image. OCR runs AFTER the store (outside its
+     * transaction) and is fail-open, so a gateway outage never blocks the upload.
      */
     @PostMapping("/marker-images")
     @ResponseStatus(HttpStatus.CREATED)
     public MarkerImageResponse uploadMarkerImage(
             @RequestHeader(value = "Content-Type", required = false) String contentType,
             @RequestBody(required = false) byte[] image) {
-        return MarkerImageResponse.of(markerImages.upload(image, contentType));
+        UploadedMarkerImage stored = markerImages.upload(image, contentType);
+        String ocrText = markerOcr.readOverlayText(image, contentType, null).orElse(null);
+        return MarkerImageResponse.of(stored, ocrText);
     }
 
     /** Serve an uploaded marker image's bytes (404 when the id is unknown). */
