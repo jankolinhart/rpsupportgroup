@@ -741,13 +741,14 @@ class InternalGroupControllerTest {
         mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-md").header(KEY_HEADER, KEY))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.needsRevet").value(true))
-                .andExpect(jsonPath("$.revetReason.distinctReporters").value(1))
-                .andExpect(jsonPath("$.revetReason.totalOccurrences").value(1))
-                .andExpect(jsonPath("$.revetReason.latestAgreePass").value(5))
-                .andExpect(jsonPath("$.revetReason.latestDisagreePass").value(2))
-                .andExpect(jsonPath("$.revetReason.maxPersistenceCount").value(4))
-                .andExpect(jsonPath("$.revetReason.firstSeenAt").exists())
-                .andExpect(jsonPath("$.revetReason.lastSeenAt").exists());
+                .andExpect(jsonPath("$.revetReasons[0].kind").value("MARKER_DISAGREE"))
+                .andExpect(jsonPath("$.revetReasons[0].distinctReporters").value(1))
+                .andExpect(jsonPath("$.revetReasons[0].totalOccurrences").value(1))
+                .andExpect(jsonPath("$.revetReasons[0].latestAgreePass").value(5))
+                .andExpect(jsonPath("$.revetReasons[0].latestDisagreePass").value(2))
+                .andExpect(jsonPath("$.revetReasons[0].maxPersistenceCount").value(4))
+                .andExpect(jsonPath("$.revetReasons[0].firstSeenAt").exists())
+                .andExpect(jsonPath("$.revetReasons[0].lastSeenAt").exists());
 
         // Same reporter reports again → occurrence bumps, reporter count stays 1.
         mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-md").header(KEY_HEADER, KEY)
@@ -765,24 +766,27 @@ class InternalGroupControllerTest {
         mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-md").header(KEY_HEADER, KEY))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.needsRevet").value(true))
-                .andExpect(jsonPath("$.revetReason.distinctReporters").value(2))
-                .andExpect(jsonPath("$.revetReason.totalOccurrences").value(3))     // dev-1 twice + dev-2 once
-                .andExpect(jsonPath("$.revetReason.maxPersistenceCount").value(9));  // dev-1's refreshed tally
+                .andExpect(jsonPath("$.revetReasons[0].distinctReporters").value(2))
+                .andExpect(jsonPath("$.revetReasons[0].totalOccurrences").value(3))     // dev-1 twice + dev-2 once
+                .andExpect(jsonPath("$.revetReasons[0].maxPersistenceCount").value(9));  // dev-1's refreshed tally
     }
 
     @Test
-    void newOwnerDriftIsANominationNotARevet() throws Exception {
+    void newOwnerDriftFlagsRevetAndSurfacesTheNomination() throws Exception {
         createConfig("drift-nom");
         mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-nom").header(KEY_HEADER, KEY)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"kind\":\"NEW_OWNER\",\"reporterDeviceId\":\"dev-1\",\"nominatedOwnerHandle\":\"cand.owner\"}"))
                 .andExpect(status().isAccepted());
 
-        // A new-owner nomination does NOT flag the config for re-vet…
+        // M5.20: a new-owner nomination now flags the config for re-vet, with a NEW_OWNER reason carrying the handle…
         mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-nom").header(KEY_HEADER, KEY))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.needsRevet").value(false));
-        // …it surfaces on the review-candidate nominations view.
+                .andExpect(jsonPath("$.needsRevet").value(true))
+                .andExpect(jsonPath("$.revetReasons[0].kind").value("NEW_OWNER"))
+                .andExpect(jsonPath("$.revetReasons[0].nominatedOwnerHandles[0]").value("cand.owner"))
+                .andExpect(jsonPath("$.revetReasons[0].distinctReporters").value(1));
+        // …and it surfaces on the review-candidate nominations view.
         mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/nominations", "drift-nom").header(KEY_HEADER, KEY))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(1))
@@ -791,6 +795,43 @@ class InternalGroupControllerTest {
                 .andExpect(jsonPath("$[0].reporterDeviceId").value("dev-1"))
                 .andExpect(jsonPath("$[0].occurrenceCount").value(1))
                 .andExpect(jsonPath("$[0].resolved").value(false));
+    }
+
+    @Test
+    void confirmNominationAddsTheOwnerBumpsVersionAndClearsTheReVet() throws Exception {
+        createConfig("nom-confirm");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "nom-confirm").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"NEW_OWNER\",\"reporterDeviceId\":\"dev-1\",\"nominatedOwnerHandle\":\"new.owner\"}"))
+                .andExpect(status().isAccepted());
+
+        // Add: the handle joins the vetted marker owners; the nomination clears; needsRevet drops.
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/nominations/{h}/confirm", "nom-confirm", "new.owner")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.definition.markerOwners[0]").value("new.owner"))
+                .andExpect(jsonPath("$.needsRevet").value(false));
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/nominations", "nom-confirm").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    @Test
+    void dismissNominationClearsTheReVetWithoutAddingAnOwner() throws Exception {
+        createConfig("nom-dismiss");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "nom-dismiss").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"NEW_OWNER\",\"reporterDeviceId\":\"dev-1\",\"nominatedOwnerHandle\":\"not.owner\"}"))
+                .andExpect(status().isAccepted());
+
+        // Dismiss: the nomination clears + needsRevet drops, but the owner set is untouched.
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/nominations/{h}/dismiss", "nom-dismiss", "not.owner")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.needsRevet").value(false));
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/nominations", "nom-dismiss").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
     }
 
     @Test
@@ -808,7 +849,7 @@ class InternalGroupControllerTest {
                 .andExpect(status().isOk());
         mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-vet").header(KEY_HEADER, KEY))
                 .andExpect(jsonPath("$.needsRevet").value(false))
-                .andExpect(jsonPath("$.revetReason").doesNotExist());
+                .andExpect(jsonPath("$.revetReasons").isEmpty());
 
         // A fresh drift after the re-vet re-opens the flag.
         mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-vet").header(KEY_HEADER, KEY)
@@ -817,7 +858,7 @@ class InternalGroupControllerTest {
                 .andExpect(status().isAccepted());
         mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-vet").header(KEY_HEADER, KEY))
                 .andExpect(jsonPath("$.needsRevet").value(true))
-                .andExpect(jsonPath("$.revetReason.totalOccurrences").value(2));    // same row, occurrence bumped
+                .andExpect(jsonPath("$.revetReasons[0].totalOccurrences").value(2));    // same row, occurrence bumped
     }
 
     @Test
@@ -905,7 +946,7 @@ class InternalGroupControllerTest {
         mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift/acknowledge", "drift-ack").header(KEY_HEADER, KEY))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.needsRevet").value(false))
-                .andExpect(jsonPath("$.revetReason").doesNotExist())
+                .andExpect(jsonPath("$.revetReasons").isEmpty())
                 .andExpect(jsonPath("$.version").value(1))                            // no ETag bump — config not re-shipped
                 .andExpect(jsonPath("$.vetted").value(false));                        // and NOT vetted
 

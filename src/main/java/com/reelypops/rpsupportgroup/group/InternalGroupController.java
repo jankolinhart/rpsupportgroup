@@ -48,7 +48,7 @@ public class InternalGroupController {
         return cs.stream()
                 .map(c -> {
                     SupportGroupConfigService.RevetStatus s = revet.get(c.getId());
-                    return GroupResponse.of(c, List.of(), s.needsRevet(), s.reason());
+                    return GroupResponse.of(c, List.of(), s.needsRevet(), s.reasons());
                 })
                 .toList();
     }
@@ -71,7 +71,7 @@ public class InternalGroupController {
     public GroupResponse get(@PathVariable String igAccount) {
         SupportGroupConfig c = service.get(igAccount);
         SupportGroupConfigService.RevetStatus s = service.revetStatus(c);
-        return GroupResponse.of(c, service.activeChangeNote(c), s.needsRevet(), s.reason());
+        return GroupResponse.of(c, service.activeChangeNote(c), s.needsRevet(), s.reasons());
     }
 
     /** The BFF forwards a client's 3b upload here: auto-register the config as UNCLAIMED (§6). */
@@ -217,12 +217,36 @@ public class InternalGroupController {
     public GroupResponse acknowledgeRevet(@PathVariable String igAccount) {
         SupportGroupConfig c = service.acknowledgeRevet(igAccount);
         SupportGroupConfigService.RevetStatus s = service.revetStatus(c);
-        return GroupResponse.of(c, service.activeChangeNote(c), s.needsRevet(), s.reason());
+        return GroupResponse.of(c, service.activeChangeNote(c), s.needsRevet(), s.reasons());
     }
 
     /** Admin: a config's open new-owner nominations (M5 review-candidate surface), newest-seen first. */
     @GetMapping("/{igAccount}/nominations")
     public List<DriftObservationResponse> nominations(@PathVariable String igAccount) {
         return service.newOwnerNominations(igAccount).stream().map(DriftObservationResponse::of).toList();
+    }
+
+    /**
+     * Admin "Add" (M5.20): confirm a new-owner nomination — add the handle to the config's vetted marker owners
+     * (idempotent; bumps the version so the client adopts it on its next poll) and drop the handle off the review
+     * list. Returns the updated config with its recomputed re-vet status.
+     */
+    @PostMapping("/{igAccount}/nominations/{handle}/confirm")
+    public GroupResponse confirmNomination(@PathVariable String igAccount, @PathVariable String handle) {
+        SupportGroupConfig c = service.confirmNomination(igAccount, handle);
+        SupportGroupConfigService.RevetStatus s = service.revetStatus(c);
+        return GroupResponse.of(c, service.activeChangeNote(c), s.needsRevet(), s.reasons());
+    }
+
+    /**
+     * Admin "Dismiss" (M5.20): reject a new-owner nomination (not a marker owner) — drop the handle off the review
+     * list without changing the owner set or the config version. A later re-nomination re-raises it. Returns the
+     * (unchanged) config with its recomputed re-vet status.
+     */
+    @PostMapping("/{igAccount}/nominations/{handle}/dismiss")
+    public GroupResponse dismissNomination(@PathVariable String igAccount, @PathVariable String handle) {
+        SupportGroupConfig c = service.dismissNomination(igAccount, handle);
+        SupportGroupConfigService.RevetStatus s = service.revetStatus(c);
+        return GroupResponse.of(c, service.activeChangeNote(c), s.needsRevet(), s.reasons());
     }
 }
