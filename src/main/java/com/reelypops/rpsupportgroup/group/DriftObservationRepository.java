@@ -23,4 +23,14 @@ public interface DriftObservationRepository extends JpaRepository<DriftObservati
 
     /** Unresolved observations of a kind across many configs — powers the batch re-vet derivation for the admin list. */
     List<DriftObservation> findByConfigIdInAndKindAndResolvedFalse(Collection<UUID> configIds, DriftKind kind);
+
+    /** ALL unresolved observations (every kind) for one config — the re-vet derivation now spans marker-disagree + new-owner. */
+    List<DriftObservation> findByConfigIdAndResolvedFalse(UUID configId);
+
+    /** ALL unresolved observations (every kind) across many configs — the batch re-vet derivation for the admin list. */
+    List<DriftObservation> findByConfigIdInAndResolvedFalse(Collection<UUID> configIds);
+
+    /** The open observations of a kind nominating a specific handle (every reporter) — resolved by confirm/dismiss. */
+    List<DriftObservation> findByConfigIdAndKindAndNominatedOwnerHandleAndResolvedFalse(
+            UUID configId, DriftKind kind, String nominatedOwnerHandle);
 }

@@ -14,6 +14,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -148,13 +149,12 @@ class SupportGroupConfigServiceTest {
         UUID configId = UUID.randomUUID();
         SupportGroupConfig c = mock(SupportGroupConfig.class);
         when(c.getId()).thenReturn(configId);
-        when(driftObservations.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(
-                configId, DriftKind.MARKER_DISAGREE)).thenReturn(List.of());
+        when(driftObservations.findByConfigIdAndResolvedFalse(configId)).thenReturn(List.of());
 
         RevetStatus status = service.revetStatus(c);
 
         assertThat(status.needsRevet()).isFalse();
-        assertThat(status.reason()).isNull();
+        assertThat(status.reasons()).isEmpty();
     }
 
     @Test
@@ -167,13 +167,14 @@ class SupportGroupConfigServiceTest {
                 5, 2, null, Instant.parse("2026-01-01T00:00:00Z"));
         DriftObservation b = DriftObservation.first(configId, DriftKind.MARKER_DISAGREE, "dev-b", null, null,
                 7, 3, 3, Instant.parse("2026-01-02T00:00:00Z"));
-        when(driftObservations.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(
-                configId, DriftKind.MARKER_DISAGREE)).thenReturn(List.of(a, b));
+        when(driftObservations.findByConfigIdAndResolvedFalse(configId)).thenReturn(List.of(a, b));
 
         RevetStatus status = service.revetStatus(c);
 
         assertThat(status.needsRevet()).isTrue();
-        RevetReason reason = status.reason();
+        assertThat(status.reasons()).hasSize(1);
+        RevetReason reason = status.reasons().get(0);
+        assertThat(reason.kind()).isEqualTo(DriftKind.MARKER_DISAGREE);
         assertThat(reason.distinctReporters()).isEqualTo(2);
         assertThat(reason.totalOccurrences()).isEqualTo(2L);
         assertThat(reason.latestAgreePass()).isEqualTo(7);             // from B, the newest last-seen
@@ -190,10 +191,9 @@ class SupportGroupConfigServiceTest {
         when(c.getId()).thenReturn(configId);
         DriftObservation a = DriftObservation.first(configId, DriftKind.MARKER_DISAGREE, "dev-a", null, null,
                 5, 2, null, Instant.parse("2026-01-01T00:00:00Z"));
-        when(driftObservations.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(
-                configId, DriftKind.MARKER_DISAGREE)).thenReturn(List.of(a));
+        when(driftObservations.findByConfigIdAndResolvedFalse(configId)).thenReturn(List.of(a));
 
-        assertThat(service.revetStatus(c).reason().maxPersistenceCount()).isNull();
+        assertThat(service.revetStatus(c).reasons().get(0).maxPersistenceCount()).isNull();
     }
 
     @Test
@@ -212,14 +212,14 @@ class SupportGroupConfigServiceTest {
         when(c2.getId()).thenReturn(id2);
         DriftObservation obs = DriftObservation.first(id1, DriftKind.MARKER_DISAGREE, "dev-a", null, null,
                 5, 2, 1, Instant.parse("2026-01-01T00:00:00Z"));
-        when(driftObservations.findByConfigIdInAndKindAndResolvedFalse(List.of(id1, id2), DriftKind.MARKER_DISAGREE))
+        when(driftObservations.findByConfigIdInAndResolvedFalse(List.of(id1, id2)))
                 .thenReturn(List.of(obs));
 
         Map<UUID, RevetStatus> statuses = service.revetStatuses(List.of(c1, c2));
 
         assertThat(statuses.get(id1).needsRevet()).isTrue();
         assertThat(statuses.get(id2).needsRevet()).isFalse();          // no open observation → none
-        assertThat(statuses.get(id2).reason()).isNull();
+        assertThat(statuses.get(id2).reasons()).isEmpty();
     }
 
     @Test
@@ -234,6 +234,92 @@ class SupportGroupConfigServiceTest {
                 configId, DriftKind.NEW_OWNER)).thenReturn(List.of(nom));
 
         assertThat(service.newOwnerNominations("ig")).containsExactly(nom);
+    }
+
+    @Test
+    void newOwnerObservationsFlagRevetWithTheDistinctNominatedHandles() {
+        UUID configId = UUID.randomUUID();
+        SupportGroupConfig c = mock(SupportGroupConfig.class);
+        when(c.getId()).thenReturn(configId);
+        // Two reporters nominate two different handles (out of order → the reason sorts them).
+        DriftObservation n1 = DriftObservation.first(configId, DriftKind.NEW_OWNER, "dev-a", null, "cand.two",
+                null, null, null, Instant.parse("2026-01-02T00:00:00Z"));
+        DriftObservation n2 = DriftObservation.first(configId, DriftKind.NEW_OWNER, "dev-b", null, "cand.one",
+                null, null, null, Instant.parse("2026-01-01T00:00:00Z"));
+        when(driftObservations.findByConfigIdAndResolvedFalse(configId)).thenReturn(List.of(n1, n2));
+
+        RevetStatus status = service.revetStatus(c);
+
+        assertThat(status.needsRevet()).isTrue();
+        assertThat(status.reasons()).hasSize(1);
+        RevetReason reason = status.reasons().get(0);
+        assertThat(reason.kind()).isEqualTo(DriftKind.NEW_OWNER);
+        assertThat(reason.nominatedOwnerHandles()).containsExactly("cand.one", "cand.two"); // distinct + sorted
+        assertThat(reason.distinctReporters()).isEqualTo(2);
+        assertThat(reason.latestAgreePass()).isNull();                 // marker-disagree tally N/A for new-owner
+        assertThat(reason.maxPersistenceCount()).isNull();
+        assertThat(reason.firstSeenAt()).isEqualTo(Instant.parse("2026-01-01T00:00:00Z"));
+        assertThat(reason.lastSeenAt()).isEqualTo(Instant.parse("2026-01-02T00:00:00Z"));
+    }
+
+    @Test
+    void revetStatusCarriesOneReasonPerKindWhenBothArePresent() {
+        UUID configId = UUID.randomUUID();
+        SupportGroupConfig c = mock(SupportGroupConfig.class);
+        when(c.getId()).thenReturn(configId);
+        DriftObservation md = DriftObservation.first(configId, DriftKind.MARKER_DISAGREE, "dev-a", null, null,
+                5, 2, 3, Instant.parse("2026-01-01T00:00:00Z"));
+        DriftObservation no = DriftObservation.first(configId, DriftKind.NEW_OWNER, "dev-b", null, "cand.owner",
+                null, null, null, Instant.parse("2026-01-02T00:00:00Z"));
+        when(driftObservations.findByConfigIdAndResolvedFalse(configId)).thenReturn(List.of(no, md));
+
+        RevetStatus status = service.revetStatus(c);
+
+        assertThat(status.reasons()).hasSize(2);
+        assertThat(status.reasons().get(0).kind()).isEqualTo(DriftKind.MARKER_DISAGREE); // marker-disagree first
+        assertThat(status.reasons().get(1).kind()).isEqualTo(DriftKind.NEW_OWNER);
+        assertThat(status.reasons().get(1).nominatedOwnerHandles()).containsExactly("cand.owner");
+    }
+
+    @Test
+    void confirmNominationAddsTheOwnerResolvesTheHandlesNominationsAndSaves() {
+        UUID configId = UUID.randomUUID();
+        SupportGroupConfig c = mock(SupportGroupConfig.class);
+        when(c.getId()).thenReturn(configId);
+        when(configs.findByIgAccount("ig")).thenReturn(Optional.of(c));
+        when(configs.save(c)).thenReturn(c);
+        DriftObservation nom = DriftObservation.first(configId, DriftKind.NEW_OWNER, "dev-a", null, "cand.owner",
+                null, null, null, Instant.parse("2026-01-01T00:00:00Z"));
+        when(driftObservations.findByConfigIdAndKindAndNominatedOwnerHandleAndResolvedFalse(
+                configId, DriftKind.NEW_OWNER, "cand.owner")).thenReturn(List.of(nom));
+
+        SupportGroupConfig result = service.confirmNomination("ig", "cand.owner");
+
+        assertThat(result).isSameAs(c);
+        verify(c).addMarkerOwner("cand.owner");                        // incorporated (idempotent; bumps version)
+        assertThat(nom.isResolved()).isTrue();                         // its nomination dropped off the review list
+        verify(driftObservations).saveAll(List.of(nom));
+        verify(configs).save(c);                                       // persisted (the version bump reaches clients)
+    }
+
+    @Test
+    void dismissNominationResolvesTheHandlesNominationsWithoutTouchingTheOwnerSetOrVersion() {
+        UUID configId = UUID.randomUUID();
+        SupportGroupConfig c = mock(SupportGroupConfig.class);
+        when(c.getId()).thenReturn(configId);
+        when(configs.findByIgAccount("ig")).thenReturn(Optional.of(c));
+        DriftObservation nom = DriftObservation.first(configId, DriftKind.NEW_OWNER, "dev-a", null, "cand.owner",
+                null, null, null, Instant.parse("2026-01-01T00:00:00Z"));
+        when(driftObservations.findByConfigIdAndKindAndNominatedOwnerHandleAndResolvedFalse(
+                configId, DriftKind.NEW_OWNER, "cand.owner")).thenReturn(List.of(nom));
+
+        SupportGroupConfig result = service.dismissNomination("ig", "cand.owner");
+
+        assertThat(result).isSameAs(c);
+        assertThat(nom.isResolved()).isTrue();
+        verify(driftObservations).saveAll(List.of(nom));
+        verify(c, never()).addMarkerOwner(anyString());               // NOT a marker owner
+        verify(configs, never()).save(any());                          // no config mutation / no ETag bump
     }
 
     @Test

@@ -35,7 +35,7 @@ public record GroupResponse(
         Long activeSnapshotVersion,
         List<ChangeNoteEntry> changeNote,
         boolean needsRevet,
-        RevetReason revetReason,
+        List<RevetReason> revetReasons,
         Instant createdAt,
         Instant updatedAt,
         List<String> categories) {
@@ -50,20 +50,21 @@ public record GroupResponse(
      * {@link #of(SupportGroupConfig)} (empty note) — the note only matters when the client polls the current config.
      */
     static GroupResponse of(SupportGroupConfig c, List<ChangeNoteEntry> changeNote) {
-        return of(c, changeNote, false, null);
+        return of(c, changeNote, false, List.of());
     }
 
     /**
-     * M5 re-vet consumer: the admin surfaces also carry the config's derived {@code needsRevet} flag + aggregated
-     * {@link RevetReason} (why), computed from unresolved marker-disagree drift observations. It is a pure read-side
-     * signal — the config itself is never mutated — so mutation responses leave it {@code false}/{@code null}.
+     * M5 re-vet consumer: the admin surfaces also carry the config's derived {@code needsRevet} flag + a
+     * {@link RevetReason} per open drift kind (why), computed from unresolved marker-disagree + new-owner drift
+     * observations. It is a pure read-side signal — the config itself is never mutated — so mutation responses leave it
+     * {@code false}/empty.
      */
     static GroupResponse of(SupportGroupConfig c, List<ChangeNoteEntry> changeNote, boolean needsRevet,
-                            RevetReason revetReason) {
+                            List<RevetReason> revetReasons) {
         return new GroupResponse(c.getId(), c.getIgAccount(), c.getStatus(), c.getOwnerId(),
                 c.isAdminAttributed(), c.isVetted(), c.getVettingState(), c.getRejectReason(), c.getCooldownUntil(),
                 c.getRejectedAt(), c.getDefinition(), weeklyScheduleOf(c), c.getDescription(), c.getVersion(),
-                c.getMode(), c.getActiveSnapshotVersion(), changeNote, needsRevet, revetReason,
+                c.getMode(), c.getActiveSnapshotVersion(), changeNote, needsRevet, revetReasons,
                 c.getCreatedAt(), c.getUpdatedAt(),
                 c.getCategories().stream().map(SgCategory::getSlug).sorted().toList());
     }
