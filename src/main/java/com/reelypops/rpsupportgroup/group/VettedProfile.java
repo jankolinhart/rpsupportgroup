@@ -71,8 +71,18 @@ public record VettedProfile(
      *                       client's TEXT_OVERLAY two-pass verify (agenda&nbsp;#3), carried from AI discovery through the
      *                       Vetting Portal. Additive + nullable (jsonb-safe): legacy rows deserialize with {@code null}
      * @param matchThreshold the per-group Hamming match threshold for this reference
+     * @param source         admin-display provenance (Vetting Portal): how this reference was added — {@code advisory}
+     *                       (AI "Use"), {@code grid} (picked from the corpus grid) or {@code upload}; {@code null} on a
+     *                       legacy row
+     * @param shortcode      the corpus post shortcode whose thumbnail represents this reference (grid / advisory), so the
+     *                       Vetting Portal can re-render its image on reopen; {@code null} for an upload or legacy row
+     * @param imageUrl       the served image URL of an uploaded reference (which has no corpus shortcode), so the Portal
+     *                       can re-render it on reopen; {@code null} otherwise. Additive + nullable (jsonb-safe). These
+     *                       three are <strong>admin-display only</strong> — the client IGNORES them (they are not part of
+     *                       the match contract), which is safe because every client cloud DTO ignores unknown fields
      */
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record TypedMarkerReference(String markerType, List<String> dHashes, String ocrText, int matchThreshold) {
+    public record TypedMarkerReference(String markerType, List<String> dHashes, String ocrText, int matchThreshold,
+                                       String source, String shortcode, String imageUrl) {
     }
 }

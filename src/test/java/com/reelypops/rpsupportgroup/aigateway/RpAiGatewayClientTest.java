@@ -205,4 +205,45 @@ class RpAiGatewayClientTest {
         assertThat(client.read(readRequest())).isEmpty();
         server.verify();
     }
+
+    private static RpAiGatewayClient.OcrImageRequest ocrRequest() {
+        return new RpAiGatewayClient.OcrImageRequest("glow.grp", "data:image/jpeg;base64,AQID");
+    }
+
+    @Test
+    void disabledWhenNoBaseUrl_ocrImageIsNoOp() {
+        RpAiGatewayClient client = new RpAiGatewayClient(RestClient.builder(), "", "gw-key");
+
+        assertThat(client.ocrImage(ocrRequest())).isEmpty();
+    }
+
+    @Test
+    void ocrImage_sendsKeyAndBody_parsesTheText() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        RpAiGatewayClient client = new RpAiGatewayClient(builder, BASE, "gw-key");
+        server.expect(requestTo(BASE + "/aigateway/v1/internal/vetting/ocr-image"))
+                .andExpect(method(POST))
+                .andExpect(header("X-Internal-Api-Key", "gw-key"))
+                .andExpect(jsonPath("$.igAccount").value("glow.grp"))
+                .andExpect(jsonPath("$.imageUrl").value("data:image/jpeg;base64,AQID"))
+                .andRespond(withSuccess("{\"ocrText\":\"GB AGENCY ENDE Sonntag\"}", MediaType.APPLICATION_JSON));
+
+        Optional<RpAiGatewayClient.OcrImageResponse> ocr = client.ocrImage(ocrRequest());
+
+        assertThat(ocr).isPresent();
+        assertThat(ocr.get().ocrText()).isEqualTo("GB AGENCY ENDE Sonntag");
+        server.verify();
+    }
+
+    @Test
+    void ocrImage_providerFailure_fallsBackToEmpty() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        RpAiGatewayClient client = new RpAiGatewayClient(builder, BASE, "gw-key");
+        server.expect(requestTo(BASE + "/aigateway/v1/internal/vetting/ocr-image")).andRespond(withServerError());
+
+        assertThat(client.ocrImage(ocrRequest())).isEmpty();
+        server.verify();
+    }
 }
