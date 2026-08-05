@@ -36,6 +36,9 @@ class InternalGroupControllerTest {
     @Autowired
     MockMvc mockMvc;
 
+    @Autowired
+    MarkerImageRepository markerImages;
+
     private void createConfig(String ig) throws Exception {
         String body = "{\"igAccount\":\"" + ig + "\",\"definition\":{\"type\":\"CONTINUOUS\",\"timezone\":\"UTC\"}}";
         mockMvc.perform(post("/supportgroup/v1/groups")
@@ -70,6 +73,21 @@ class InternalGroupControllerTest {
     @Test
     void withKeyGetUnknownIsNotFound() throws Exception {
         mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "int-none").header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void servesAStoredMarkerImageByLocator() throws Exception {
+        markerImages.save(MarkerImage.create("mi-loc-abc", new byte[]{1, 2, 3}, MediaType.IMAGE_PNG_VALUE));
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/marker-images/{loc}", "mi-loc-abc").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType(MediaType.IMAGE_PNG))
+                .andExpect(content().bytes(new byte[]{1, 2, 3}));
+    }
+
+    @Test
+    void unknownMarkerImageLocatorIsNotFound() throws Exception {
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/marker-images/{loc}", "mi-none").header(KEY_HEADER, KEY))
                 .andExpect(status().isNotFound());
     }
 

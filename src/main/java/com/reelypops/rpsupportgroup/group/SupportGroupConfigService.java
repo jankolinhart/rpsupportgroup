@@ -31,12 +31,15 @@ public class SupportGroupConfigService {
     private final SupportGroupConfigRepository configs;
     private final VettedProfileVersionRepository versions;
     private final DriftObservationRepository driftObservations;
+    private final MarkerImageEnricher markerImageEnricher;
 
     public SupportGroupConfigService(SupportGroupConfigRepository configs, VettedProfileVersionRepository versions,
-                                     DriftObservationRepository driftObservations) {
+                                     DriftObservationRepository driftObservations,
+                                     MarkerImageEnricher markerImageEnricher) {
         this.configs = configs;
         this.versions = versions;
         this.driftObservations = driftObservations;
+        this.markerImageEnricher = markerImageEnricher;
     }
 
     /**
@@ -180,7 +183,7 @@ public class SupportGroupConfigService {
     @Transactional
     public SupportGroupConfig saveVettedProfile(String igAccount, VettedProfile profile) {
         SupportGroupConfig c = require(igAccount);
-        applyVettedProfile(c, profile);
+        applyVettedProfile(igAccount, c, profile);
         return configs.save(c);
     }
 
@@ -191,7 +194,7 @@ public class SupportGroupConfigService {
     @Transactional
     public SupportGroupConfig vetVettedProfile(String igAccount, VettedProfile profile) {
         SupportGroupConfig c = require(igAccount);
-        applyVettedProfile(c, profile);
+        applyVettedProfile(igAccount, c, profile);
         if (c.getVettingState() == VettingState.BLOCKED) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, igAccount + " is blocked and cannot be vetted");
         }
@@ -206,10 +209,11 @@ public class SupportGroupConfigService {
      * the structured field-level change-note vs the prior active snapshot) and repoint the config's active snapshot. The
      * history append + the config write commit together in the caller's transaction.
      */
-    private void applyVettedProfile(SupportGroupConfig c, VettedProfile profile) {
+    private void applyVettedProfile(String igAccount, SupportGroupConfig c, VettedProfile profile) {
+        VettedProfile enriched = markerImageEnricher.enrich(igAccount, profile);
         long next = nextSnapshotVersion(c.getId());
         VettedProfile before = c.getVettedProfile();
-        VettedProfile applied = c.saveVettedProfile(profile, next);
+        VettedProfile applied = c.saveVettedProfile(enriched, next);
         // First snapshot has no prior version to diff → empty change-note (first-ready is announced via SG_VETTED, not
         // a CONFIG_CHANGED diff; vision §5.16). Every later save carries the structured field-level diff vs the prior
         // active snapshot, which the client renders into an i18n announcement (#5.3).
