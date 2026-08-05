@@ -22,7 +22,7 @@ class VettedProfileTest {
         return new DayDefinition(weekday, open, SgType.TWO_MARKER, start, end, 0, null,
                 "18:00", 0, "18:05", 0, maxTagged, MarkerStyle.TEXT_OVERLAY,
                 List.of(new VettedProfile.TypedMarkerReference("start", List.of("hash"), "GB AGENCY START", 4,
-                        "grid", "SC1", null)));
+                        "grid", "SC1", null, null)));
     }
 
     @Test

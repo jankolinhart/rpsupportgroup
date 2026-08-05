@@ -33,12 +33,14 @@ public class InternalGroupController {
     private final SupportGroupConfigService service;
     private final SupportGroupAvatarService avatarService;
     private final SgCategoryService categoryService;
+    private final MarkerImageStore markerImageStore;
 
     public InternalGroupController(SupportGroupConfigService service, SupportGroupAvatarService avatarService,
-                                   SgCategoryService categoryService) {
+                                   SgCategoryService categoryService, MarkerImageStore markerImageStore) {
         this.service = service;
         this.avatarService = avatarService;
         this.categoryService = categoryService;
+        this.markerImageStore = markerImageStore;
     }
 
     @GetMapping
@@ -175,6 +177,17 @@ public class InternalGroupController {
     public ResponseEntity<byte[]> getAvatar(@PathVariable String igAccount) {
         return avatarService.get(igAccount)
                 .map(a -> ResponseEntity.ok().contentType(MediaType.parseMediaType(a.getContentType())).body(a.getImage()))
+                .orElseGet(() -> ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Serve a durable marker DISPLAY image by its content-hash {@code locator} (sg-per-weekday-marker-images.md) — the
+     * canonical per-weekday marker the client fetches + caches by content. 404 when the locator is unknown.
+     */
+    @GetMapping("/marker-images/{locator}")
+    public ResponseEntity<byte[]> getMarkerImage(@PathVariable String locator) {
+        return markerImageStore.find(locator)
+                .map(m -> ResponseEntity.ok().contentType(MediaType.parseMediaType(m.getContentType())).body(m.getImage()))
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }
 

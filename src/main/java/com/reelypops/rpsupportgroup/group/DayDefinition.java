@@ -63,4 +63,11 @@ public record DayDefinition(
     VettedProfile.DetectorArtifacts toDetector() {
         return new VettedProfile.DetectorArtifacts(style, references == null ? List.of() : references);
     }
+
+    /** A copy of this day carrying {@code refs} in place of its marker references (vet-time image-locator enrichment). */
+    DayDefinition withReferences(List<VettedProfile.TypedMarkerReference> refs) {
+        return new DayDefinition(weekday, open, type, startMarkerTime, endMarkerTime, endMarkerDayOffset,
+                singleMarkerTime, likesUntilTime, likesUntilDayOffset, tagRemoveEarliestTime, tagRemoveEarliestDayOffset,
+                maxTaggedPosts, style, refs);
+    }
 }

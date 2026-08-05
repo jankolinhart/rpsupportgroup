@@ -80,9 +80,20 @@ public record VettedProfile(
      *                       can re-render it on reopen; {@code null} otherwise. Additive + nullable (jsonb-safe). These
      *                       three are <strong>admin-display only</strong> — the client IGNORES them (they are not part of
      *                       the match contract), which is safe because every client cloud DTO ignores unknown fields
+     * @param imageLocator   the content-hash locator of this reference's durable DISPLAY thumbnail
+     *                       (sg-per-weekday-marker-images.md). Unlike {@code shortcode}/{@code imageUrl} (admin-display,
+     *                       snapshot-scoped) this is <strong>client-facing + durable</strong>: the desktop client fetches
+     *                       it by locator and caches it by content to render the canonical per-weekday marker. Set at vet
+     *                       time from the reference's chosen image. Additive + nullable (jsonb-safe); {@code null} when no
+     *                       image resolved or on a legacy row. Not part of the match contract (matching uses the dHashes)
      */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record TypedMarkerReference(String markerType, List<String> dHashes, String ocrText, int matchThreshold,
-                                       String source, String shortcode, String imageUrl) {
+                                       String source, String shortcode, String imageUrl, String imageLocator) {
+
+        /** A copy of this reference carrying the given content-addressed display-image {@code locator} (vet-time enrichment). */
+        public TypedMarkerReference withImageLocator(String locator) {
+            return new TypedMarkerReference(markerType, dHashes, ocrText, matchThreshold, source, shortcode, imageUrl, locator);
+        }
     }
 }
