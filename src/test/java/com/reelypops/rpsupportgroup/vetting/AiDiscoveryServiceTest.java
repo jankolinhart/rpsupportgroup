@@ -496,6 +496,52 @@ class AiDiscoveryServiceTest {
         assertThat(tue.markers()).singleElement().satisfies(m -> assertThat(m.confidence()).isEqualTo(0.5)); // 1 Tuesday
     }
 
+    @Test
+    void detectsASwitcherHandoff_settingStartMarkerDayOffsetMinusOneOnTheNextDay() {
+        when(detected.detect(SNAP)).thenReturn(base());
+        // glow's Sunday HANDOFF: Sunday's START ("…Sonntag") is posted SATURDAY evening (20:34), coincident with
+        // Saturday's END ("…Samstag", 20:34); Sunday's own END ("…Sonntag ENDE") posts Sunday evening (20:31).
+        // 2026-01-03 is a SATURDAY, 2026-01-04 a SUNDAY.
+        Instant satEnd = Instant.parse("2026-01-03T20:34:00Z");            // ENDE Samstag
+        Instant sunStartPrePosted = Instant.parse("2026-01-03T20:34:00Z"); // START Sonntag, posted Saturday evening
+        Instant sunEnd = Instant.parse("2026-01-04T20:31:00Z");            // ENDE Sonntag
+        when(proposals.analyze(SNAP)).thenReturn(new SnapshotAnalysis(null, List.of(), List.of(), null, List.of(),
+                List.of(new AiMarkerSample(2, "glow", 2, 0.9, 0.9, 4.0, List.of("sc1"), List.of(satEnd)),
+                        new AiMarkerSample(2, "glow", 2, 0.9, 0.9, 4.0, List.of("sc2"), List.of(sunStartPrePosted)),
+                        new AiMarkerSample(2, "glow", 2, 0.9, 0.9, 4.0, List.of("sc3"), List.of(sunEnd))), List.of()));
+        when(corpus.getRepresentative(eq(SNAP), anyString())).thenReturn(Optional.of(rep()));
+        // No compound day schedule — the grounded weekdays (SAT + SUN) are added from the reads. Build order sends one
+        // image per sample: 1=ENDE Samstag(sc1), 2=START Sonntag(sc2), 3=ENDE Sonntag(sc3).
+        when(gateway.vet(any())).thenReturn(Optional.of(new VettingResponse("TEXT_OVERLAY", "TWO_MARKER", "glow",
+                List.of("glow"), List.of(), "START|ENDE", 0.8, "x", List.of(), null)));
+        when(gateway.read(any())).thenReturn(Optional.of(new RpAiGatewayClient.ReadResponse(
+                List.of(new VettingResponse.Reference("end", "GB AGENCY ENDE Samstag", 1),
+                        new VettingResponse.Reference("start", "GB AGENCY START Sonntag", 2),
+                        new VettingResponse.Reference("end", "GB AGENCY ENDE Sonntag", 3)),
+                List.of(new VettingResponse.Reference("end", "GB AGENCY ENDE Samstag", 1),
+                        new VettingResponse.Reference("start", "GB AGENCY START Sonntag", 2),
+                        new VettingResponse.Reference("end", "GB AGENCY ENDE Sonntag", 3)),
+                new RpAiGatewayClient.Usage("gpt-5", 40, 10, "0.0025", "USD"))));
+        SupportGroupConfig config = mock(SupportGroupConfig.class);
+        when(configs.findByIgAccount("glow.grp")).thenReturn(Optional.of(config));
+
+        DetectedProfile.AiDiscovery.WeeklySchedule ws = service(12).runAiDiscovery(SNAP).aiDiscovery().weeklySchedule();
+
+        assertThat(ws.days()).extracting(DetectedProfile.AiDiscovery.WeeklySchedule.DaySchedule::weekday)
+                .containsExactly("SAT", "SUN");
+        DetectedProfile.AiDiscovery.WeeklySchedule.DaySchedule sat = ws.days().get(0);
+        DetectedProfile.AiDiscovery.WeeklySchedule.DaySchedule sun = ws.days().get(1);
+        // Sunday IS the handoff: its start was pre-posted Saturday evening, coincident with Saturday's end.
+        assertThat(sun.startMarkerDayOffset()).isEqualTo(-1);
+        // Saturday is NOT a handoff (no start coincident with a Friday end here).
+        assertThat(sat.startMarkerDayOffset()).isNull();
+        // The Saturday-evening start banner bucketed to SAT (by its posting weekday); Sunday carries its own end.
+        assertThat(sat.markers()).extracting(DetectedProfile.AiDiscovery.AiReference::ocrText)
+                .containsExactlyInAnyOrder("GB AGENCY ENDE Samstag", "GB AGENCY START Sonntag");
+        assertThat(sun.markers()).extracting(DetectedProfile.AiDiscovery.AiReference::ocrText)
+                .containsExactly("GB AGENCY ENDE Sonntag");
+    }
+
     // ── Convergent refinement pass ──────────────────────────────────────────────────────────────────────────────────
 
     private DetectedProfile storedWithAi(List<DetectedProfile.AiDiscovery.AiReference> refs) {

@@ -27,7 +27,9 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -56,6 +58,11 @@ public class AiDiscoveryService {
     // Run-history pass kinds (persisted on AiDiscovery.passes): the first compound+read metrics pass, then refine passes.
     private static final String PASS_METRICS = "METRICS";
     private static final String PASS_REFINE = "REFINE";
+
+    // M5 switcher P4: a start marker posted within this many minutes of an end marker on the SAME weekday is treated as
+    // coincident with that day's boundary — i.e. the pre-posted start of the NEXT day's round (a handoff), not a
+    // same-day morning start (which is hours away from the evening end).
+    private static final int HANDOFF_COINCIDENCE_MINUTES = 90;
 
     private final DetectedProfileService detected;
     private final VettingProposalService proposals;
@@ -105,16 +112,21 @@ public class AiDiscoveryService {
         List<AiDiscovery.AiReference> references = read.isPresent()
                 ? toReferences(read.get().markers(), images.shortcodes())
                 : toReferences(verdict.get().references(), aiRequest.clusterShortcodes());
-        // Grounded per-weekday markers: bucket each read marker's cluster occurrences by weekday (null when read is down
-        // → the schedule keeps the compound per-day markers).
+        // Grounded per-weekday markers: accumulate each read marker's cluster occurrences ONCE, then bucket by weekday
+        // (null when read is down → the schedule keeps the compound per-day markers) and detect switcher handoffs from
+        // the same timing (a start coincident with a day's end ⇒ the next day opens the previous evening).
+        Collection<MarkerWeekdays> markerAccumulators =
+                read.map(r -> markersByText(r.markerReads(), images)).orElse(null);
         Map<String, List<AiDiscovery.AiReference>> weekdayMarkers =
-                read.map(r -> groundedWeekdayMarkers(r.markerReads(), images)).orElse(null);
+                markerAccumulators == null ? null : bucketByWeekday(markerAccumulators);
+        Map<String, Integer> handoffOffsets =
+                markerAccumulators == null ? Map.of() : detectHandoffWeekdays(markerAccumulators);
         AiDiscovery.Usage usage = combineUsage(verdict.get().usage(), read.map(ReadResponse::usage).orElse(null));
         // Record the metrics pass in the run history (markersAdded = the whole gallery it produced; never "converged").
         AiDiscovery.AiPass metricsPass = pass(PASS_METRICS, usage, references.size(), false);
         DetectedProfile enriched = withAi(base,
                 toDiscovery(verdict.get(), base.owner().roster(), references, usage, aiRequest.clusterShortcodes(),
-                        weekdayMarkers, List.of(metricsPass)));
+                        weekdayMarkers, handoffOffsets, List.of(metricsPass)));
         SupportGroupConfig config = configs.findByIgAccount(base.igAccount())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "no config for " + base.igAccount()));
@@ -315,6 +327,7 @@ public class AiDiscoveryService {
                                            List<AiDiscovery.AiReference> references,
                                            AiDiscovery.Usage usage, List<String> clusterShortcodes,
                                            Map<String, List<AiDiscovery.AiReference>> weekdayMarkers,
+                                           Map<String, Integer> handoffOffsets,
                                            List<AiDiscovery.AiPass> passes) {
         List<String> aiOwners = v.owners() != null && !v.owners().isEmpty()
                 ? v.owners()
@@ -324,7 +337,7 @@ public class AiDiscoveryService {
         owners.addAll(aiOwners);
         return new AiDiscovery(toStyle(v.style()), v.markerType(), v.owner(), List.copyOf(owners), references,
                 v.ocrTargetText(), v.confidence(), v.reasoning(), System.currentTimeMillis(),
-                toWeeklySchedule(v.schedule(), clusterShortcodes, weekdayMarkers), usage, passes);
+                toWeeklySchedule(v.schedule(), clusterShortcodes, weekdayMarkers, handoffOffsets), usage, passes);
     }
 
     /** Resolve gateway references (compound OR per-image OCR) to persisted references, each cited image → its shortcode. */
@@ -394,7 +407,8 @@ public class AiDiscoveryService {
      * compound day markers. Adds a day for any grounded weekday the compound pass didn't report. Null when neither.
      */
     private static WeeklySchedule toWeeklySchedule(List<VettingResponse.DaySchedule> days, List<String> clusterShortcodes,
-                                                   Map<String, List<AiDiscovery.AiReference>> weekdayMarkers) {
+                                                   Map<String, List<AiDiscovery.AiReference>> weekdayMarkers,
+                                                   Map<String, Integer> handoffOffsets) {
         boolean hasCompound = days != null && !days.isEmpty();
         if (!hasCompound && (weekdayMarkers == null || weekdayMarkers.isEmpty())) {
             return null;
@@ -408,14 +422,15 @@ public class AiDiscoveryService {
                         ? new ArrayList<>(weekdayMarkers.getOrDefault(d.weekday(), List.of()))
                         : compoundMarkers(d.markers(), clusterShortcodes);
                 mapped.add(new WeeklySchedule.DaySchedule(d.weekday(), d.open(), d.groupType(), d.style(), markers,
-                        d.start(), d.end(), d.endMarkerDayOffset(), d.maxTaggedPosts(), d.confidence()));
+                        d.start(), d.end(), d.endMarkerDayOffset(), handoffOffsets.get(d.weekday()),
+                        d.maxTaggedPosts(), d.confidence()));
             }
         }
         if (weekdayMarkers != null) {
             for (Map.Entry<String, List<AiDiscovery.AiReference>> e : weekdayMarkers.entrySet()) {
                 if (!covered.contains(e.getKey())) {
                     mapped.add(new WeeklySchedule.DaySchedule(e.getKey(), true, null, null,
-                            new ArrayList<>(e.getValue()), null, null, null, null, null));
+                            new ArrayList<>(e.getValue()), null, null, null, handoffOffsets.get(e.getKey()), null, null));
                 }
             }
         }
@@ -436,12 +451,11 @@ public class AiDiscoveryService {
     }
 
     /**
-     * GROUNDED per-weekday marker attribution (deterministic): group the per-image marker reads by text, union each
-     * marker's clusters' post {@code occurrences}, and bucket by weekday → the days each marker appears on, each with a
-     * count-based recurrence confidence and its role. Returns weekday ({@code MON}…{@code SUN}) → the markers seen.
+     * Accumulate each distinct marker (by normalised OCR text) with the union of its cited clusters' post
+     * {@code (weekday, HH:mm)} occurrences — the shared per-weekday raw material for both grounded bucketing and
+     * switcher-handoff detection. Skips a read with no text or an out-of-range cluster index.
      */
-    private static Map<String, List<AiDiscovery.AiReference>> groundedWeekdayMarkers(
-            List<VettingResponse.Reference> markerReads, ImageSubset images) {
+    private static Collection<MarkerWeekdays> markersByText(List<VettingResponse.Reference> markerReads, ImageSubset images) {
         Map<String, MarkerWeekdays> byText = new LinkedHashMap<>();
         if (markerReads != null) {
             for (VettingResponse.Reference read : markerReads) {
@@ -457,8 +471,17 @@ public class AiDiscoveryService {
                 }
             }
         }
+        return byText.values();
+    }
+
+    /**
+     * GROUNDED per-weekday marker attribution (deterministic): bucket each marker's weekday sightings → the days it
+     * appears on, each with a count-based recurrence confidence and its role. Returns weekday ({@code MON}…{@code SUN})
+     * → the markers seen.
+     */
+    private static Map<String, List<AiDiscovery.AiReference>> bucketByWeekday(Collection<MarkerWeekdays> markers) {
         Map<String, List<AiDiscovery.AiReference>> byWeekday = new LinkedHashMap<>();
-        for (MarkerWeekdays mw : byText.values()) {
+        for (MarkerWeekdays mw : markers) {
             for (Map.Entry<String, Integer> e : mw.weekdayCounts().entrySet()) {
                 byWeekday.computeIfAbsent(e.getKey(), k -> new ArrayList<>())
                         .add(new AiDiscovery.AiReference(mw.markerType(), mw.ocrText(), mw.shortcode(),
@@ -466,6 +489,56 @@ public class AiDiscoveryService {
             }
         }
         return byWeekday;
+    }
+
+    /**
+     * Deterministic switcher-HANDOFF detection (M5 P4), from marker post timing + role only (never the text/weekday
+     * word): a START-role marker whose sighting coincides in time (within {@link #HANDOFF_COINCIDENCE_MINUTES}) with an
+     * END-role marker on the SAME weekday W — the two posted together at that day's boundary — is the PRE-POSTED start
+     * of the NEXT day's round, so weekday W+1 opens the previous evening ({@code startMarkerDayOffset -1}). Returns the
+     * detected handoff weekdays ({@code MON}…{@code SUN}) → -1 (glow: a Saturday-evening start coincident with
+     * Saturday's end ⇒ {@code SUN → -1}).
+     */
+    private static Map<String, Integer> detectHandoffWeekdays(Collection<MarkerWeekdays> markers) {
+        Map<String, List<Integer>> endMinutesByWeekday = new HashMap<>();
+        for (MarkerWeekdays m : markers) {
+            if ("end".equals(m.markerType())) {
+                for (MarkerWeekdays.Sighting s : m.sightings()) {
+                    endMinutesByWeekday.computeIfAbsent(s.weekday(), k -> new ArrayList<>()).add(minuteOfDay(s.time()));
+                }
+            }
+        }
+        Map<String, Integer> handoffs = new LinkedHashMap<>();
+        for (MarkerWeekdays m : markers) {
+            if (!"start".equals(m.markerType())) {
+                continue;
+            }
+            for (MarkerWeekdays.Sighting s : m.sightings()) {
+                int startMinute = minuteOfDay(s.time());
+                boolean coincidesWithDayEnd = endMinutesByWeekday.getOrDefault(s.weekday(), List.of()).stream()
+                        .anyMatch(endMinute -> circularMinuteDiff(startMinute, endMinute) <= HANDOFF_COINCIDENCE_MINUTES);
+                if (coincidesWithDayEnd) {
+                    handoffs.putIfAbsent(nextWeekday(s.weekday()), -1);
+                }
+            }
+        }
+        return handoffs;
+    }
+
+    /** Minutes-since-midnight of a local {@code HH:mm} (the occurrences are locally formatted, so always well-formed). */
+    private static int minuteOfDay(String hhmm) {
+        return Integer.parseInt(hhmm.substring(0, 2)) * 60 + Integer.parseInt(hhmm.substring(3, 5));
+    }
+
+    /** The smaller of the two ways round a 24 h clock between two minute-of-day values (so 23:50 ↔ 00:10 = 20, not 1420). */
+    private static int circularMinuteDiff(int a, int b) {
+        int diff = Math.abs(a - b);
+        return Math.min(diff, 24 * 60 - diff);
+    }
+
+    /** The weekday after {@code weekday} ({@code SAT} → {@code SUN}, {@code SUN} → {@code MON}); occurrences emit MON…SUN. */
+    private static String nextWeekday(String weekday) {
+        return WEEKDAY_ORDER.get((WEEKDAY_ORDER.indexOf(weekday) + 1) % 7);
     }
 
     /** Count-based recurrence confidence: more distinct sightings on a weekday → higher, saturating (1→0.5, 2→0.75…). */
@@ -487,6 +560,7 @@ public class AiDiscoveryService {
         private final String shortcode;
         private final Set<String> seen = new HashSet<>();
         private final Map<String, Integer> weekdayCounts = new LinkedHashMap<>();
+        private final List<Sighting> sightings = new ArrayList<>();
 
         MarkerWeekdays(String markerType, String ocrText, String shortcode) {
             this.markerType = markerType;
@@ -497,7 +571,12 @@ public class AiDiscoveryService {
         void add(String weekday, String time) {
             if (seen.add(weekday + "|" + time)) { // drop repeats from multiple images of one cluster (same occurrences)
                 weekdayCounts.merge(weekday, 1, Integer::sum);
+                sightings.add(new Sighting(weekday, time));
             }
+        }
+
+        /** One distinct {@code (weekday, HH:mm)} sighting of this marker — the raw timing switcher-handoff detection reads. */
+        record Sighting(String weekday, String time) {
         }
 
         String markerType() {
@@ -514,6 +593,10 @@ public class AiDiscoveryService {
 
         Map<String, Integer> weekdayCounts() {
             return weekdayCounts;
+        }
+
+        List<Sighting> sightings() {
+            return sightings;
         }
     }
 
