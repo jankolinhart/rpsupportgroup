@@ -121,12 +121,14 @@ public class AiDiscoveryService {
                 markerAccumulators == null ? null : bucketByWeekday(markerAccumulators);
         Map<String, Integer> handoffOffsets =
                 markerAccumulators == null ? Map.of() : detectHandoffWeekdays(markerAccumulators);
+        Map<String, String> handoffStartTimes =
+                markerAccumulators == null ? Map.of() : detectHandoffStartTimes(markerAccumulators);
         AiDiscovery.Usage usage = combineUsage(verdict.get().usage(), read.map(ReadResponse::usage).orElse(null));
         // Record the metrics pass in the run history (markersAdded = the whole gallery it produced; never "converged").
         AiDiscovery.AiPass metricsPass = pass(PASS_METRICS, usage, references.size(), false);
         DetectedProfile enriched = withAi(base,
                 toDiscovery(verdict.get(), base.owner().roster(), references, usage, aiRequest.clusterShortcodes(),
-                        weekdayMarkers, handoffOffsets, List.of(metricsPass)));
+                        weekdayMarkers, handoffOffsets, handoffStartTimes, List.of(metricsPass)));
         SupportGroupConfig config = configs.findByIgAccount(base.igAccount())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "no config for " + base.igAccount()));
@@ -328,6 +330,7 @@ public class AiDiscoveryService {
                                            AiDiscovery.Usage usage, List<String> clusterShortcodes,
                                            Map<String, List<AiDiscovery.AiReference>> weekdayMarkers,
                                            Map<String, Integer> handoffOffsets,
+                                           Map<String, String> handoffStartTimes,
                                            List<AiDiscovery.AiPass> passes) {
         List<String> aiOwners = v.owners() != null && !v.owners().isEmpty()
                 ? v.owners()
@@ -337,7 +340,7 @@ public class AiDiscoveryService {
         owners.addAll(aiOwners);
         return new AiDiscovery(toStyle(v.style()), v.markerType(), v.owner(), List.copyOf(owners), references,
                 v.ocrTargetText(), v.confidence(), v.reasoning(), System.currentTimeMillis(),
-                toWeeklySchedule(v.schedule(), clusterShortcodes, weekdayMarkers, handoffOffsets), usage, passes);
+                toWeeklySchedule(v.schedule(), clusterShortcodes, weekdayMarkers, handoffOffsets, handoffStartTimes), usage, passes);
     }
 
     /** Resolve gateway references (compound OR per-image OCR) to persisted references, each cited image → its shortcode. */
@@ -408,7 +411,8 @@ public class AiDiscoveryService {
      */
     private static WeeklySchedule toWeeklySchedule(List<VettingResponse.DaySchedule> days, List<String> clusterShortcodes,
                                                    Map<String, List<AiDiscovery.AiReference>> weekdayMarkers,
-                                                   Map<String, Integer> handoffOffsets) {
+                                                   Map<String, Integer> handoffOffsets,
+                                                   Map<String, String> handoffStartTimes) {
         boolean hasCompound = days != null && !days.isEmpty();
         if (!hasCompound && (weekdayMarkers == null || weekdayMarkers.isEmpty())) {
             return null;
@@ -422,7 +426,8 @@ public class AiDiscoveryService {
                         ? new ArrayList<>(weekdayMarkers.getOrDefault(d.weekday(), List.of()))
                         : compoundMarkers(d.markers(), clusterShortcodes);
                 mapped.add(new WeeklySchedule.DaySchedule(d.weekday(), d.open(), d.groupType(), d.style(), markers,
-                        d.start(), d.end(), d.endMarkerDayOffset(), handoffOffsets.get(d.weekday()),
+                        startWithHandoffFallback(d.start(), d.weekday(), handoffStartTimes),
+                        d.end(), d.endMarkerDayOffset(), handoffOffsets.get(d.weekday()),
                         d.maxTaggedPosts(), d.confidence()));
             }
         }
@@ -430,12 +435,22 @@ public class AiDiscoveryService {
             for (Map.Entry<String, List<AiDiscovery.AiReference>> e : weekdayMarkers.entrySet()) {
                 if (!covered.contains(e.getKey())) {
                     mapped.add(new WeeklySchedule.DaySchedule(e.getKey(), true, null, null,
-                            new ArrayList<>(e.getValue()), null, null, null, handoffOffsets.get(e.getKey()), null, null));
+                            new ArrayList<>(e.getValue()), handoffStartTimes.get(e.getKey()), null, null,
+                            handoffOffsets.get(e.getKey()), null, null));
                 }
             }
         }
         mapped.sort(Comparator.comparingInt(d -> weekdayOrder(d.weekday())));
         return new WeeklySchedule(TIMEZONE, mapped);
+    }
+
+    /**
+     * The day's start time, falling back to the pre-posted handoff start (previous-evening) when the compound verdict
+     * left it blank — so a HANDOFF day's start-time advisory shows the real time (e.g. glow's Sunday {@code 20:34})
+     * instead of "-". A non-handoff day (no entry in {@code handoffStartTimes}) keeps its compound value or null.
+     */
+    private static String startWithHandoffFallback(String compoundStart, String weekday, Map<String, String> handoffStartTimes) {
+        return compoundStart != null ? compoundStart : handoffStartTimes.get(weekday);
     }
 
     /** The compound verdict's per-day markers, mapped to references (used only when the grounded read pass is down). */
@@ -511,25 +526,36 @@ public class AiDiscoveryService {
     }
 
     /**
-     * True when {@code marker} is a START whose sighting on {@code weekday} coincides in time (within {@link
+     * The pre-posted START sighting on {@code weekday} that coincides in time (within {@link
      * #HANDOFF_COINCIDENCE_MINUTES}) with an END marker on that same weekday — i.e. it was pre-posted at that day's
-     * boundary and is really the start of the NEXT day's round (a switcher handoff).
+     * boundary and is really the start of the NEXT day's round (a switcher handoff). Empty when {@code marker} is not
+     * a START, or has no coincident sighting on {@code weekday}.
      */
-    private static boolean handoffCoincidentOn(MarkerWeekdays marker, String weekday,
-                                               Map<String, List<Integer>> endMinutesByWeekday) {
+    private static Optional<MarkerWeekdays.Sighting> handoffCoincidentSighting(MarkerWeekdays marker, String weekday,
+                                                                               Map<String, List<Integer>> endMinutesByWeekday) {
         if (!"start".equals(marker.markerType())) {
-            return false;
+            return Optional.empty();
         }
         List<Integer> ends = endMinutesByWeekday.getOrDefault(weekday, List.of());
         for (MarkerWeekdays.Sighting s : marker.sightings()) {
             if (s.weekday().equals(weekday)) {
                 int startMinute = minuteOfDay(s.time());
                 if (ends.stream().anyMatch(endMinute -> circularMinuteDiff(startMinute, endMinute) <= HANDOFF_COINCIDENCE_MINUTES)) {
-                    return true;
+                    return Optional.of(s);
                 }
             }
         }
-        return false;
+        return Optional.empty();
+    }
+
+    /**
+     * True when {@code marker} is a START whose sighting on {@code weekday} coincides in time (within {@link
+     * #HANDOFF_COINCIDENCE_MINUTES}) with an END marker on that same weekday — i.e. it was pre-posted at that day's
+     * boundary and is really the start of the NEXT day's round (a switcher handoff).
+     */
+    private static boolean handoffCoincidentOn(MarkerWeekdays marker, String weekday,
+                                               Map<String, List<Integer>> endMinutesByWeekday) {
+        return handoffCoincidentSighting(marker, weekday, endMinutesByWeekday).isPresent();
     }
 
     /**
@@ -551,6 +577,25 @@ public class AiDiscoveryService {
             }
         }
         return handoffs;
+    }
+
+    /**
+     * The pre-posted START time ({@code HH:mm}) per switcher-HANDOFF weekday (M5 P5c) — the time of the start sighting
+     * that coincides with the previous day's END boundary, i.e. the real time the next day's round opens (glow's
+     * Sunday opens ~Sat {@code 20:34}). Same keys as {@link #detectHandoffWeekdays}. Surfaced as the handoff day's
+     * start-time advisory so it shows that value instead of "-" (the compound verdict has no same-day start for a
+     * pre-posted handoff).
+     */
+    private static Map<String, String> detectHandoffStartTimes(Collection<MarkerWeekdays> markers) {
+        Map<String, List<Integer>> endMinutesByWeekday = endMinutesByWeekday(markers);
+        Map<String, String> startTimes = new LinkedHashMap<>();
+        for (MarkerWeekdays m : markers) {
+            for (Map.Entry<String, Integer> e : m.weekdayCounts().entrySet()) {
+                handoffCoincidentSighting(m, e.getKey(), endMinutesByWeekday)
+                        .ifPresent(s -> startTimes.putIfAbsent(nextWeekday(e.getKey()), s.time()));
+            }
+        }
+        return startTimes;
     }
 
     /** Minutes-since-midnight of a local {@code HH:mm} (the occurrences are locally formatted, so always well-formed). */

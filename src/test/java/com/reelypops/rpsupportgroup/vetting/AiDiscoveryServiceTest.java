@@ -535,6 +535,9 @@ class AiDiscoveryServiceTest {
         assertThat(sun.startMarkerDayOffset()).isEqualTo(-1);
         // Saturday is NOT a handoff (no start coincident with a Friday end here).
         assertThat(sat.startMarkerDayOffset()).isNull();
+        // WS-A: the pre-posted handoff START TIME is surfaced as Sunday's start-time advisory (~Sat 20:34), not "-".
+        assertThat(sun.start()).isEqualTo("20:34");
+        assertThat(sat.start()).isNull(); // Saturday isn't a handoff and the compound verdict gave it no start
         // The Saturday-evening handoff start is RE-ATTRIBUTED to Sunday's round (M5 P5 — not offered on the Saturday
         // card); Saturday keeps only its own end.
         assertThat(sat.markers()).extracting(DetectedProfile.AiDiscovery.AiReference::ocrText)
