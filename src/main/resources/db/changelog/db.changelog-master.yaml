@@ -47,3 +47,6 @@ databaseChangeLog:
   - include:
       file: changes/016-marker-image.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/017-cascade-config-children.sql
+      relativeToChangelogFile: true
