@@ -57,7 +57,7 @@ class RoundClassTest {
     }
 
     private static DayDefinition def(SgType type, boolean open, Integer endOffset) {
-        return new DayDefinition(1, open, type, "09:00", "17:00", endOffset, null,
+        return new DayDefinition(1, open, type, "09:00", "17:00", endOffset, null, null,
                 null, null, null, null, null, MarkerStyle.FLAT_BANNER, List.of());
     }
 }

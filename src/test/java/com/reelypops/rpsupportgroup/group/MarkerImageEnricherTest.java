@@ -49,7 +49,7 @@ class MarkerImageEnricherTest {
 
         VettedProfile.DetectorArtifacts detector = new VettedProfile.DetectorArtifacts(MarkerStyle.FLAT_BANNER,
                 List.of(ref("start", "SC1"), ref("end", "SC2"), ref("single", null)));
-        DayDefinition open = new DayDefinition(1, true, SgType.TWO_MARKER, "08:00", "20:00", 0, null, "23:00", 0,
+        DayDefinition open = new DayDefinition(1, true, SgType.TWO_MARKER, "08:00", "20:00", 0, null, null, "23:00", 0,
                 "10:00", 0, 2, MarkerStyle.FLAT_BANNER, List.of(ref("start", "SC1")));
         WeeklyScheduleDefinition weekly = new WeeklyScheduleDefinition(List.of(open));
 

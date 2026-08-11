@@ -17,6 +17,9 @@ import java.util.List;
  * @param startMarkerTime            {@code HH:mm} of the start marker (2-marker), else null
  * @param endMarkerTime              {@code HH:mm} of the end marker (2-marker), else null
  * @param endMarkerDayOffset         whole-day offset of the end marker from the start, else null
+ * @param startMarkerDayOffset       whole days the start marker is posted relative to the round's NOMINAL (identity)
+ *                                   weekday: null/0 = same day (default); -1 = the previous evening (a SWITCHER
+ *                                   handoff, e.g. a Sunday start pre-posted on Saturday). Additive + nullable
  * @param singleMarkerTime           {@code HH:mm} of the single marker (single-marker), else null
  * @param likesUntilTime             {@code HH:mm} the liking duty must be complete by, else null
  * @param likesUntilDayOffset        day offset of the liking deadline, else null
@@ -34,6 +37,7 @@ public record DayDefinition(
         String startMarkerTime,
         String endMarkerTime,
         Integer endMarkerDayOffset,
+        Integer startMarkerDayOffset,
         String singleMarkerTime,
         String likesUntilTime,
         Integer likesUntilDayOffset,
@@ -67,7 +71,7 @@ public record DayDefinition(
     /** A copy of this day carrying {@code refs} in place of its marker references (vet-time image-locator enrichment). */
     DayDefinition withReferences(List<VettedProfile.TypedMarkerReference> refs) {
         return new DayDefinition(weekday, open, type, startMarkerTime, endMarkerTime, endMarkerDayOffset,
-                singleMarkerTime, likesUntilTime, likesUntilDayOffset, tagRemoveEarliestTime, tagRemoveEarliestDayOffset,
-                maxTaggedPosts, style, refs);
+                startMarkerDayOffset, singleMarkerTime, likesUntilTime, likesUntilDayOffset, tagRemoveEarliestTime,
+                tagRemoveEarliestDayOffset, maxTaggedPosts, style, refs);
     }
 }

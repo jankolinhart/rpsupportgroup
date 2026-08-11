@@ -1,5 +1,6 @@
 package com.reelypops.rpsupportgroup.group;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -19,10 +20,23 @@ class VettedProfileTest {
     }
 
     private static DayDefinition day(int weekday, boolean open, String start, String end, Integer maxTagged) {
-        return new DayDefinition(weekday, open, SgType.TWO_MARKER, start, end, 0, null,
+        return new DayDefinition(weekday, open, SgType.TWO_MARKER, start, end, 0, null, null,
                 "18:00", 0, "18:05", 0, maxTagged, MarkerStyle.TEXT_OVERLAY,
                 List.of(new VettedProfile.TypedMarkerReference("start", List.of("hash"), "GB AGENCY START", 4,
                         "grid", "SC1", null, null)));
+    }
+
+    @Test
+    void startMarkerDayOffset_roundTripsThroughJson_forSwitcherHandoff() throws Exception {
+        // M5 switcher — the per-day start anchor survives serialization to the client contract (-1 = the start
+        // marker is posted the previous evening, a handoff) and reads back through the accessor.
+        ObjectMapper mapper = new ObjectMapper();
+        DayDefinition d = new DayDefinition(0, true, SgType.TWO_MARKER, "20:34", "20:31", 1, -1, null,
+                null, null, null, null, 1, MarkerStyle.TEXT_OVERLAY, List.of());
+        String json = mapper.writeValueAsString(d);
+        assertThat(json).contains("\"startMarkerDayOffset\":-1");
+        DayDefinition back = mapper.readValue(json, DayDefinition.class);
+        assertThat(back.startMarkerDayOffset()).isEqualTo(-1);
     }
 
     @Test
@@ -74,7 +88,7 @@ class VettedProfileTest {
 
     @Test
     void toDetector_handlesNullReferencesAndFlattensSingleMarker() {
-        DayDefinition d = new DayDefinition(1, true, SgType.SINGLE_MARKER, null, null, null, "12:00",
+        DayDefinition d = new DayDefinition(1, true, SgType.SINGLE_MARKER, null, null, null, null, "12:00",
                 null, null, null, null, 1, MarkerStyle.FLAT_BANNER, null);
         VettedProfile out = new VettedProfile(base(), null, "b", new WeeklyScheduleDefinition(List.of(d)))
                 .withDerivedDefinition();
