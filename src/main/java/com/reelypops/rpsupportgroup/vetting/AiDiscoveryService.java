@@ -476,19 +476,60 @@ public class AiDiscoveryService {
 
     /**
      * GROUNDED per-weekday marker attribution (deterministic): bucket each marker's weekday sightings → the days it
-     * appears on, each with a count-based recurrence confidence and its role. Returns weekday ({@code MON}…{@code SUN})
-     * → the markers seen.
+     * appears on, each with a count-based recurrence confidence and its role. A pre-posted HANDOFF start (a start
+     * coincident with the day's end — see {@link #handoffCoincidentOn}) is attributed to the NEXT day's round, not the
+     * evening it was posted on, so it is NOT offered on the previous day's card (M5 P5 — "markers stay attributed to
+     * their round"). Returns weekday ({@code MON}…{@code SUN}) → the markers seen.
      */
     private static Map<String, List<AiDiscovery.AiReference>> bucketByWeekday(Collection<MarkerWeekdays> markers) {
+        Map<String, List<Integer>> endMinutesByWeekday = endMinutesByWeekday(markers);
         Map<String, List<AiDiscovery.AiReference>> byWeekday = new LinkedHashMap<>();
         for (MarkerWeekdays mw : markers) {
             for (Map.Entry<String, Integer> e : mw.weekdayCounts().entrySet()) {
-                byWeekday.computeIfAbsent(e.getKey(), k -> new ArrayList<>())
+                String weekday = handoffCoincidentOn(mw, e.getKey(), endMinutesByWeekday)
+                        ? nextWeekday(e.getKey())   // a pre-posted handoff start belongs to the NEXT day's round
+                        : e.getKey();
+                byWeekday.computeIfAbsent(weekday, k -> new ArrayList<>())
                         .add(new AiDiscovery.AiReference(mw.markerType(), mw.ocrText(), mw.shortcode(),
                                 recurrenceConfidence(e.getValue())));
             }
         }
         return byWeekday;
+    }
+
+    /** Each weekday's END-marker post minutes-of-day — the boundary a handoff start is tested for coincidence against. */
+    private static Map<String, List<Integer>> endMinutesByWeekday(Collection<MarkerWeekdays> markers) {
+        Map<String, List<Integer>> ends = new HashMap<>();
+        for (MarkerWeekdays m : markers) {
+            if ("end".equals(m.markerType())) {
+                for (MarkerWeekdays.Sighting s : m.sightings()) {
+                    ends.computeIfAbsent(s.weekday(), k -> new ArrayList<>()).add(minuteOfDay(s.time()));
+                }
+            }
+        }
+        return ends;
+    }
+
+    /**
+     * True when {@code marker} is a START whose sighting on {@code weekday} coincides in time (within {@link
+     * #HANDOFF_COINCIDENCE_MINUTES}) with an END marker on that same weekday — i.e. it was pre-posted at that day's
+     * boundary and is really the start of the NEXT day's round (a switcher handoff).
+     */
+    private static boolean handoffCoincidentOn(MarkerWeekdays marker, String weekday,
+                                               Map<String, List<Integer>> endMinutesByWeekday) {
+        if (!"start".equals(marker.markerType())) {
+            return false;
+        }
+        List<Integer> ends = endMinutesByWeekday.getOrDefault(weekday, List.of());
+        for (MarkerWeekdays.Sighting s : marker.sightings()) {
+            if (s.weekday().equals(weekday)) {
+                int startMinute = minuteOfDay(s.time());
+                if (ends.stream().anyMatch(endMinute -> circularMinuteDiff(startMinute, endMinute) <= HANDOFF_COINCIDENCE_MINUTES)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -500,25 +541,12 @@ public class AiDiscoveryService {
      * Saturday's end ⇒ {@code SUN → -1}).
      */
     private static Map<String, Integer> detectHandoffWeekdays(Collection<MarkerWeekdays> markers) {
-        Map<String, List<Integer>> endMinutesByWeekday = new HashMap<>();
-        for (MarkerWeekdays m : markers) {
-            if ("end".equals(m.markerType())) {
-                for (MarkerWeekdays.Sighting s : m.sightings()) {
-                    endMinutesByWeekday.computeIfAbsent(s.weekday(), k -> new ArrayList<>()).add(minuteOfDay(s.time()));
-                }
-            }
-        }
+        Map<String, List<Integer>> endMinutesByWeekday = endMinutesByWeekday(markers);
         Map<String, Integer> handoffs = new LinkedHashMap<>();
         for (MarkerWeekdays m : markers) {
-            if (!"start".equals(m.markerType())) {
-                continue;
-            }
-            for (MarkerWeekdays.Sighting s : m.sightings()) {
-                int startMinute = minuteOfDay(s.time());
-                boolean coincidesWithDayEnd = endMinutesByWeekday.getOrDefault(s.weekday(), List.of()).stream()
-                        .anyMatch(endMinute -> circularMinuteDiff(startMinute, endMinute) <= HANDOFF_COINCIDENCE_MINUTES);
-                if (coincidesWithDayEnd) {
-                    handoffs.putIfAbsent(nextWeekday(s.weekday()), -1);
+            for (Map.Entry<String, Integer> e : m.weekdayCounts().entrySet()) {
+                if (handoffCoincidentOn(m, e.getKey(), endMinutesByWeekday)) {
+                    handoffs.putIfAbsent(nextWeekday(e.getKey()), -1);
                 }
             }
         }
