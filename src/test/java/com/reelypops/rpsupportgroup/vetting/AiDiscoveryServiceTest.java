@@ -535,11 +535,12 @@ class AiDiscoveryServiceTest {
         assertThat(sun.startMarkerDayOffset()).isEqualTo(-1);
         // Saturday is NOT a handoff (no start coincident with a Friday end here).
         assertThat(sat.startMarkerDayOffset()).isNull();
-        // The Saturday-evening start banner bucketed to SAT (by its posting weekday); Sunday carries its own end.
+        // The Saturday-evening handoff start is RE-ATTRIBUTED to Sunday's round (M5 P5 — not offered on the Saturday
+        // card); Saturday keeps only its own end.
         assertThat(sat.markers()).extracting(DetectedProfile.AiDiscovery.AiReference::ocrText)
-                .containsExactlyInAnyOrder("GB AGENCY ENDE Samstag", "GB AGENCY START Sonntag");
+                .containsExactly("GB AGENCY ENDE Samstag");
         assertThat(sun.markers()).extracting(DetectedProfile.AiDiscovery.AiReference::ocrText)
-                .containsExactly("GB AGENCY ENDE Sonntag");
+                .containsExactlyInAnyOrder("GB AGENCY START Sonntag", "GB AGENCY ENDE Sonntag");
     }
 
     // ── Convergent refinement pass ──────────────────────────────────────────────────────────────────────────────────
