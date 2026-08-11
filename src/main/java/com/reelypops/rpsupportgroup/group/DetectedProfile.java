@@ -186,13 +186,16 @@ public record DetectedProfile(
              * @param start              the round start time-of-day ({@code HH:mm}), or null
              * @param end                the round end time-of-day ({@code HH:mm}), or null
              * @param endMarkerDayOffset whole days from the start marker to the end marker (0 = same day), or null
+             * @param startMarkerDayOffset whole days the start marker is posted before the round's IDENTITY day (M5
+             *                           switcher P4): null/0 = same day, -1 = the previous evening (a handoff), or null
              * @param maxTaggedPosts     the per-member cap (max non-marker posts per round), or null
              * @param confidence         0..1 — the model's confidence in this day, or null
              */
             @JsonIgnoreProperties(ignoreUnknown = true)
             public record DaySchedule(String weekday, boolean open, String groupType, String style,
                                       List<AiReference> markers, String start, String end,
-                                      Integer endMarkerDayOffset, Integer maxTaggedPosts, Double confidence) {
+                                      Integer endMarkerDayOffset, Integer startMarkerDayOffset,
+                                      Integer maxTaggedPosts, Double confidence) {
 
                 /** The derived round CLASS (M5 A3) for this open TWO_MARKER weekday; null when CLOSED or not TWO_MARKER. */
                 @JsonProperty("roundClass")

@@ -53,7 +53,7 @@ class RoundClassTest {
     }
 
     private static DaySchedule day(String groupType, boolean open, Integer endOffset) {
-        return new DaySchedule("MON", open, groupType, "FLAT_BANNER", List.of(), "09:00", "17:00", endOffset, 2, 0.8);
+        return new DaySchedule("MON", open, groupType, "FLAT_BANNER", List.of(), "09:00", "17:00", endOffset, null, 2, 0.8);
     }
 
     private static DayDefinition def(SgType type, boolean open, Integer endOffset) {
