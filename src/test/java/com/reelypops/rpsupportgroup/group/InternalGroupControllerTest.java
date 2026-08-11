@@ -39,6 +39,9 @@ class InternalGroupControllerTest {
     @Autowired
     MarkerImageRepository markerImages;
 
+    @Autowired
+    SupportGroupConfigService configService;
+
     private void createConfig(String ig) throws Exception {
         String body = "{\"igAccount\":\"" + ig + "\",\"definition\":{\"type\":\"CONTINUOUS\",\"timezone\":\"UTC\"}}";
         mockMvc.perform(post("/supportgroup/v1/groups")
@@ -174,6 +177,21 @@ class InternalGroupControllerTest {
     @Test
     void vetUnknownConfigIsNotFound() throws Exception {
         mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vet", "int-vet-none").header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void removingAConfigWithDependentRowsCascades() throws Exception {
+        // Regression (migration 017, 2026-08-11): a config with a child row referencing it — drift_observation (015)
+        // or vetted_profile_version (014) — used to FK-violate on delete because those FKs lacked ON DELETE CASCADE,
+        // so the admin SG-config DELETE returned 502. Seed a drift_observation, then the delete must CASCADE (204),
+        // not 502, and the config must be gone.
+        createConfig("int-del-cascade");
+        configService.recordDrift("int-del-cascade", DriftKind.MARKER_DISAGREE, "dev-1", null, null, 1, 2, 3);
+
+        mockMvc.perform(delete("/supportgroup/v1/internal/groups/{ig}", "int-del-cascade").header(KEY_HEADER, KEY))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "int-del-cascade").header(KEY_HEADER, KEY))
                 .andExpect(status().isNotFound());
     }
 
