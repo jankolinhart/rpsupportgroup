@@ -13,7 +13,8 @@ import java.util.UUID;
  * latest corpus snapshot's representative for the reference's {@code shortcode} — is captured into the
  * {@link MarkerImageStore} and the resulting locator recorded on the reference, so the desktop client can fetch + cache
  * + display the canonical per-weekday marker. References with no resolvable corpus image (uploads, a legacy row, or a
- * pruned snapshot) are left unchanged (their {@code imageLocator} stays {@code null}).
+ * pruned snapshot) are left unchanged (their {@code imageLocator} stays {@code null}), as are references whose
+ * display image came from a client's live capture ({@code source = client-drift}) — see {@link VettedProfileHashAdopter}.
  */
 @Service
 public class MarkerImageEnricher {
@@ -49,6 +50,13 @@ public class MarkerImageEnricher {
 
     private VettedProfile.TypedMarkerReference enrichRef(UUID snapshotId, VettedProfile.TypedMarkerReference ref) {
         if (snapshotId == null || ref.shortcode() == null || ref.shortcode().isBlank()) {
+            return ref;
+        }
+        // A picture a CLIENT delivered (an adopted banner drift) is newer than anything the corpus holds — the
+        // corpus snapshot predates the drift by definition. Re-deriving from the shortcode here would silently
+        // put the SUPERSEDED image back, so an administrator would adopt the new banner and still be shown the
+        // old one. Adoption stamps this source precisely so this pass leaves it alone.
+        if (VettedProfileHashAdopter.SOURCE_CLIENT_DRIFT.equals(ref.source())) {
             return ref;
         }
         return corpus.getRepresentative(snapshotId, ref.shortcode())

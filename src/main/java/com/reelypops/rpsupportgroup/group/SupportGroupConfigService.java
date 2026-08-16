@@ -478,8 +478,10 @@ public class SupportGroupConfigService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT,
                         "the drift's picture is no longer stored"));
         String newHash = ImageDHash.hash(image);
+        // Repoints the DISPLAY image too: the hash list keeps every version, but what a human looks at should be
+        // what the owner is posting today.
         VettedProfile updated = VettedProfileHashAdopter.append(
-                profile, obs.getMarkerRole(), obs.getMarkerText(), newHash);
+                profile, obs.getMarkerRole(), obs.getMarkerText(), newHash, obs.getEvidenceImageLocator());
         applyVettedProfile(igAccount, c, updated);
         SupportGroupConfig saved = configs.save(c);
         obs.resolve();
@@ -645,10 +647,95 @@ public class SupportGroupConfigService {
      * ({@link #newOwnerNominations}), and would only appear twice here.</p>
      */
     @Transactional(readOnly = true)
-    public List<DriftObservation> markerReferenceDrifts(String igAccount) {
+    public List<ReferenceDriftView> markerReferenceDrifts(String igAccount) {
         SupportGroupConfig c = require(igAccount);
-        return driftObservations.findByConfigIdAndKindInAndResolvedFalseOrderByLastSeenAtDesc(
+        List<DriftObservation> open = driftObservations.findByConfigIdAndKindInAndResolvedFalseOrderByLastSeenAtDesc(
                 c.getId(), REFERENCE_HEALTH_KINDS);
+        return open.stream().map(o -> {
+            String referenceLocator = referencePictureFor(c, o);
+            return new ReferenceDriftView(o, referenceLocator, hashOfStoredImage(referenceLocator).orElse(null),
+                    hashOfStoredImage(o.getEvidenceImageLocator()).orElse(null), storedValueFor(c, o));
+        }).toList();
+    }
+
+    /**
+     * One open reference drift, paired with THE PICTURE THE REMEDY WILL USE — so the admin surface can show what is
+     * about to be written rather than describing it.
+     *
+     * <p>The two kinds take their picture from opposite places, which is the whole reason this is resolved here
+     * rather than guessed at the UI: a MEASURED drift adopts the banner the CLIENT captured
+     * ({@code evidenceImageLocator} on the observation), while a CORRUPT reference is repaired from the
+     * reference's OWN stored picture — nothing new arrives, the hash is simply recomputed from bytes already
+     * held. Showing the client's capture for a corrupt reference would promise something that will not happen.</p>
+     */
+    public record ReferenceDriftView(
+            DriftObservation observation,
+            /** The reference's OWN stored picture — what a repair recomputes from. */
+            String referenceImageLocator,
+            /** The hash that picture really produces — i.e. exactly what a repair would write. */
+            String referenceImageHash,
+            /** The hash the CLIENT's live banner produces — exactly what adopting it would write. */
+            String evidenceImageHash,
+            /** What the reference stores TODAY. For a corrupt reference this is the value that is not a hash. */
+            String storedValue) {
+    }
+
+    /**
+     * The value the named reference currently stores — shown beside the two real hashes so the fault is visible
+     * rather than described. For glow that is a 39-character post shortcode sitting where 64 binary digits belong;
+     * side by side with the hashes its own picture produces, no explanation is needed.
+     */
+    private String storedValueFor(SupportGroupConfig c, DriftObservation o) {
+        if (c.getVettedProfile() == null) {
+            return null;
+        }
+        return matchingReferences(c.getVettedProfile(), o)
+                .filter(r -> r.dHashes() != null && !r.dHashes().isEmpty())
+                .map(r -> r.dHashes().get(0))
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * The picture the remedy will hash for this observation, or {@code null} when there is none to show.
+     *
+     * <p>For a corrupt reference that means locating the reference the drift NAMES (by role, and by text where the
+     * client reported one) and returning its own stored image. A null here is itself informative: it means the
+     * repair has nothing to recompute from, and the admin surface should say so rather than offer a button that
+     * will 409.</p>
+     */
+    private String referencePictureFor(SupportGroupConfig c, DriftObservation o) {
+        if (c.getVettedProfile() == null) {
+            return null;
+        }
+        return matchingReferences(c.getVettedProfile(), o)
+                .filter(r -> r.imageLocator() != null && !r.imageLocator().isBlank())
+                .map(VettedProfile.TypedMarkerReference::imageLocator)
+                .findFirst()
+                .orElse(null);
+    }
+
+    /** The references a drift NAMES — by role, and by text where the client reported one. */
+    private static Stream<VettedProfile.TypedMarkerReference> matchingReferences(VettedProfile profile,
+                                                                                DriftObservation o) {
+        return allReferences(profile)
+                .filter(java.util.Objects::nonNull)
+                .filter(r -> o.getMarkerRole() == null || o.getMarkerRole().isBlank()
+                        || o.getMarkerRole().equalsIgnoreCase(r.markerType()))
+                .filter(r -> o.getMarkerText() == null || o.getMarkerText().isBlank()
+                        || o.getMarkerText().trim().equalsIgnoreCase(
+                                r.ocrText() == null ? "" : r.ocrText().trim()));
+    }
+
+    /** Every reference in a profile — the detector block and every weekday — as one stream. */
+    private static Stream<VettedProfile.TypedMarkerReference> allReferences(VettedProfile profile) {
+        return Stream.concat(
+                profile.detector() == null || profile.detector().references() == null
+                        ? Stream.empty() : profile.detector().references().stream(),
+                profile.weeklySchedule() == null || profile.weeklySchedule().days() == null
+                        ? Stream.empty() : profile.weeklySchedule().days().stream()
+                                .filter(d -> d != null && d.references() != null)
+                                .flatMap(d -> d.references().stream()));
     }
 
     /** A config's open new-owner nominations, newest-seen first (M5 admin review-candidate surface). */

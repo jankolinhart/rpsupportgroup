@@ -182,14 +182,100 @@ class CorruptReferenceRepairTest {
         when(drifts.findByConfigIdAndKindInAndResolvedFalseOrderByLastSeenAtDesc(any(), any()))
                 .thenReturn(List.of(corrupt));
 
-        List<DriftObservation> out = service.markerReferenceDrifts("glowbloggeragency");
+        List<SupportGroupConfigService.ReferenceDriftView> out =
+                service.markerReferenceDrifts("glowbloggeragency");
 
-        assertThat(out).singleElement().satisfies(o -> {
-            assertThat(o.getMarkerText()).isEqualTo("GB AGENCY START Sonntag");
-            assertThat(o.getDetail()).contains("shortcode");
+        assertThat(out).singleElement().satisfies(v -> {
+            assertThat(v.observation().getMarkerText()).isEqualTo("GB AGENCY START Sonntag");
+            assertThat(v.observation().getDetail()).contains("shortcode");
         });
         assertThat(DriftObservationResponse.of(corrupt).detail()).contains("shortcode");
         assertThat(DriftObservationResponse.of(corrupt).markerText()).isEqualTo("GB AGENCY START Sonntag");
+    }
+
+    @Test
+    void aCORRUPT_driftCarriesTheREFERENCES_OWN_picture_soTheAdminSeesWhatWillBeWritten() {
+        // Repair recomputes from bytes already held, so the preview must be the reference's OWN image. Showing a
+        // client capture here would promise something the remedy will not do.
+        SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
+        java.time.Instant now = java.time.Instant.now();
+        DriftObservation corrupt = DriftObservation.first(c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT, "d", null,
+                null, null, null, 1, now);
+        corrupt.measure("start", "GB AGENCY START Sonntag", null, null, null, null, "looks like a shortcode");
+        when(drifts.findByConfigIdAndKindInAndResolvedFalseOrderByLastSeenAtDesc(any(), any()))
+                .thenReturn(List.of(corrupt));
+
+        assertThat(service.markerReferenceDrifts("glowbloggeragency"))
+                .singleElement()
+                .extracting(SupportGroupConfigService.ReferenceDriftView::referenceImageLocator)
+                .isEqualTo(LOCATOR);
+    }
+
+    @Test
+    void theTEXT_picksTheRightReferencesPictureWhenARoleHasSeveral() {
+        // glow carries two START banners. Previewing the wrong one would show a picture the repair never touches.
+        SupportGroupConfig c = groupWith(
+                ref("start", "G B AGENCY START", "weekday-loc", GOOD),
+                ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
+        java.time.Instant now = java.time.Instant.now();
+        DriftObservation corrupt = DriftObservation.first(c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT, "d", null,
+                null, null, null, 1, now);
+        corrupt.measure("start", "GB AGENCY START Sonntag", null, null, null, null, "looks like a shortcode");
+        when(drifts.findByConfigIdAndKindInAndResolvedFalseOrderByLastSeenAtDesc(any(), any()))
+                .thenReturn(List.of(corrupt));
+
+        assertThat(service.markerReferenceDrifts("glowbloggeragency"))
+                .singleElement()
+                .extracting(SupportGroupConfigService.ReferenceDriftView::referenceImageLocator)
+                .isEqualTo(LOCATOR);
+    }
+
+    @Test
+    void noPictureToPreviewWhenTheReferenceHasNoStoredImage() {
+        // Informative on its own: the repair has nothing to recompute from, so the surface must not offer a
+        // button that will only 409.
+        SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", null, SHORTCODE));
+        java.time.Instant now = java.time.Instant.now();
+        DriftObservation corrupt = DriftObservation.first(c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT, "d", null,
+                null, null, null, 1, now);
+        corrupt.measure("start", "GB AGENCY START Sonntag", null, null, null, null, "looks like a shortcode");
+        when(drifts.findByConfigIdAndKindInAndResolvedFalseOrderByLastSeenAtDesc(any(), any()))
+                .thenReturn(List.of(corrupt));
+
+        assertThat(service.markerReferenceDrifts("glowbloggeragency"))
+                .singleElement()
+                .extracting(SupportGroupConfigService.ReferenceDriftView::referenceImageLocator)
+                .isNull();
+    }
+
+    @Test
+    void BOTH_picturesAndBOTH_hashesAreSurfacedForComparison() {
+        // What makes the fault self-evident rather than described: the vetted picture and the live one side by
+        // side, each with the hash it really produces, and the value the reference stores today — 39 characters of
+        // base64url next to two rows of 64 binary digits.
+        SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
+        java.time.Instant now = java.time.Instant.now();
+        DriftObservation corrupt = DriftObservation.first(c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT, "d", null,
+                null, null, null, 1, now);
+        corrupt.measure("start", "GB AGENCY START Sonntag", null, null, "DcEj0SRu", "live-loc", "looks like a shortcode");
+        when(drifts.findByConfigIdAndKindInAndResolvedFalseOrderByLastSeenAtDesc(any(), any()))
+                .thenReturn(List.of(corrupt));
+        MarkerImage storedRef = mock(MarkerImage.class);
+        when(storedRef.getImage()).thenReturn(png());
+        when(imageStore.find(LOCATOR)).thenReturn(Optional.of(storedRef));
+        MarkerImage live = mock(MarkerImage.class);
+        when(live.getImage()).thenReturn(png());
+        when(imageStore.find("live-loc")).thenReturn(Optional.of(live));
+
+        var v = service.markerReferenceDrifts("glowbloggeragency").get(0);
+
+        assertThat(v.referenceImageLocator()).isEqualTo(LOCATOR);     // the vetted picture
+        assertThat(v.observation().getEvidenceImageLocator()).isEqualTo("live-loc"); // the live banner
+        assertThat(v.referenceImageHash()).matches("[01]{64}");       // what a repair would write
+        assertThat(v.evidenceImageHash()).matches("[01]{64}");        // what adopting would write
+        assertThat(v.storedValue()).isEqualTo(SHORTCODE);             // what is stored today — the fault itself
+        assertThat(DriftObservationResponse.of(v).storedValue()).isEqualTo(SHORTCODE);
+        assertThat(DriftObservationResponse.of(v).evidenceImageHash()).matches("[01]{64}");
     }
 
     @Test

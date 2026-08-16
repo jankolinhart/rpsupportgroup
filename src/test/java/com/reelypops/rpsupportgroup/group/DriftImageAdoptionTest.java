@@ -1,5 +1,6 @@
 package com.reelypops.rpsupportgroup.group;
 
+import com.reelypops.rpsupportgroup.corpus.MarkerCorpusService;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -125,11 +126,39 @@ class DriftImageAdoptionTest {
 
         SupportGroupConfig out = service.adoptDriftedMarkerImage("glowbloggeragency", UUID.randomUUID());
 
-        List<String> hashes = out.getVettedProfile().weeklySchedule().days().get(0).references().get(0).dHashes();
-        assertThat(hashes).hasSize(2);
-        assertThat(hashes.get(0)).isEqualTo("1010".repeat(16)); // the old picture is KEPT
-        assertThat(hashes.get(1)).matches("[01]{64}");          // the newly adopted one
-        assertThat(o.isResolved()).isTrue();                     // and the drift is closed
+        VettedProfile.TypedMarkerReference ref =
+                out.getVettedProfile().weeklySchedule().days().get(0).references().get(0);
+        assertThat(ref.dHashes()).hasSize(2);
+        assertThat(ref.dHashes().get(0)).isEqualTo("1010".repeat(16)); // the old picture is KEPT
+        assertThat(ref.dHashes().get(1)).matches("[01]{64}");          // the newly adopted one
+        // The DISPLAY follows the newest picture — and survives MarkerImageEnricher, which re-derives the locator
+        // from the corpus on every save and would otherwise put the superseded image straight back.
+        assertThat(ref.imageLocator()).isEqualTo(LOCATOR);
+        assertThat(o.isResolved()).isTrue();                          // and the drift is closed
+    }
+
+    @Test
+    void theADOPTED_pictureSurvivesTheEnricherRatherThanBeingOverwritten() {
+        // The trap this guards: adoption goes through applyVettedProfile → MarkerImageEnricher.enrich, whose whole
+        // job is to stamp imageLocator from the corpus representative for the reference's shortcode. A corpus
+        // snapshot predates the drift by definition, so re-deriving here would silently restore the OLD banner.
+        SupportGroupConfig c = vettedGroup();
+        measuredDrift(c, LOCATOR);
+        MarkerImage stored = mock(MarkerImage.class);
+        when(stored.getImage()).thenReturn(png());
+        when(imageStore.find(LOCATOR)).thenReturn(Optional.of(stored));
+        // A REAL enricher, not the pass-through stub the other tests use.
+        MarkerCorpusService corpus = mock(MarkerCorpusService.class);
+        when(corpus.list(anyString())).thenReturn(List.of());
+        SupportGroupConfigService withEnricher = new SupportGroupConfigService(
+                configs, versions, drifts, new MarkerImageEnricher(corpus, imageStore), imageStore);
+
+        SupportGroupConfig out = withEnricher.adoptDriftedMarkerImage("glowbloggeragency", UUID.randomUUID());
+
+        VettedProfile.TypedMarkerReference ref =
+                out.getVettedProfile().weeklySchedule().days().get(0).references().get(0);
+        assertThat(ref.imageLocator()).isEqualTo(LOCATOR);
+        assertThat(ref.source()).isEqualTo("client-drift"); // the flag the enricher honours
     }
 
     @Test

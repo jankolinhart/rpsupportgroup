@@ -31,6 +31,33 @@ class MarkerImageEnricherTest {
     }
 
     @Test
+    void aCLIENT_DELIVERED_pictureIsNeverOverwrittenByTheCorpus() {
+        // The trap: this pass re-derives imageLocator from the corpus representative for the reference's
+        // shortcode on EVERY save, and adoption goes through that same save path. A corpus snapshot predates a
+        // drift by definition, so without this guard adopting today's banner would silently restore yesterday's —
+        // the operator clicks "Add to vetted profile" and is still shown the picture they just replaced.
+        UUID snap = UUID.randomUUID();
+        MarkerCorpusSnapshot snapshot = mock(MarkerCorpusSnapshot.class);
+        when(snapshot.getId()).thenReturn(snap);
+        when(corpus.list("g")).thenReturn(List.of(snapshot));
+        CorpusRepresentative rep = mock(CorpusRepresentative.class);
+        when(rep.getImage()).thenReturn(new byte[]{9, 9, 9});
+        when(corpus.getRepresentative(any(), any())).thenReturn(Optional.of(rep));
+        when(store.capture(any())).thenReturn(Optional.of("corpus-loc"));
+
+        VettedProfile.TypedMarkerReference adopted = new VettedProfile.TypedMarkerReference(
+                "start", List.of("1010".repeat(16)), "START", 4,
+                VettedProfileHashAdopter.SOURCE_CLIENT_DRIFT, "SC", null, "client-loc");
+        DayDefinition day = new DayDefinition(0, true, SgType.TWO_MARKER, "08:00", "20:00", 0, null, null,
+                "23:59", 0, null, 0, 0, MarkerStyle.TEXT_OVERLAY, List.of(adopted));
+
+        VettedProfile out = enricher.enrich("g", new VettedProfile(definition(), null, "d",
+                new WeeklyScheduleDefinition(List.of(day))));
+
+        assertThat(out.weeklySchedule().days().get(0).references().get(0).imageLocator()).isEqualTo("client-loc");
+    }
+
+    @Test
     void nullProfileIsNull() {
         assertThat(enricher.enrich("g", null)).isNull();
     }
