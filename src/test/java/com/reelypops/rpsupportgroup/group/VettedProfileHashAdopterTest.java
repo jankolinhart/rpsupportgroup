@@ -91,7 +91,7 @@ class VettedProfileHashAdopterTest {
         // hash on a reference is worse than a missing one.
         VettedProfile in = profile(null, List.of(ref("start", "START", OLD)));
 
-        assertThat(VettedProfileHashAdopter.append(in, null, NEW)).isSameAs(in);
+        assertThat(VettedProfileHashAdopter.append(in, null, NEW)).isSameAs(in);   // no role AND no text
         assertThat(VettedProfileHashAdopter.append(in, "  ", NEW)).isSameAs(in);
         assertThat(VettedProfileHashAdopter.append(in, "start", null)).isSameAs(in);
         assertThat(VettedProfileHashAdopter.append(in, "start", " ")).isSameAs(in);
@@ -262,6 +262,29 @@ class VettedProfileHashAdopterTest {
                 profile(null, List.of(ref("start", "START", "not-a-hash", NEW))), "start", "START", NEW);
 
         assertThat(out.weeklySchedule().days().get(0).references().get(0).dHashes()).containsExactly(NEW);
+    }
+
+    @Test
+    void REGRESSION_theTEXT_aloneIdentifiesAReferenceWhenTheRoleIsMissing() {
+        // Live on 16/08: a field-name mismatch upstream delivered a NULL role, adoption matched nothing, and a
+        // repair appeared to succeed while the live banner it was meant to add was silently dropped. The text
+        // identifies a reference precisely on its own, so it must be enough.
+        VettedProfile out = VettedProfileHashAdopter.append(
+                profile(null, List.of(ref("start", "GB AGENCY START Sonntag", OLD),
+                        ref("end", "GB AGENCY ENDE Sonntag", OLD))),
+                null, "GB AGENCY START Sonntag", NEW);
+
+        List<VettedProfile.TypedMarkerReference> refs = out.weeklySchedule().days().get(0).references();
+        assertThat(refs.get(0).dHashes()).containsExactly(OLD, NEW);
+        assertThat(refs.get(1).dHashes()).containsExactly(OLD); // the END banner is untouched
+    }
+
+    @Test
+    void withNEITHER_roleNorText_nothingIsTouched() {
+        // Without either, adding the picture anywhere would be a guess — and a wrong hash is worse than none.
+        VettedProfile in = profile(null, List.of(ref("start", "START", OLD)));
+        assertThat(VettedProfileHashAdopter.append(in, null, null, NEW)).isSameAs(in);
+        assertThat(VettedProfileHashAdopter.append(in, "  ", "  ", NEW)).isSameAs(in);
     }
 
     @Test

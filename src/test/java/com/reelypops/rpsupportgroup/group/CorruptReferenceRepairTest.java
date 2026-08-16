@@ -221,6 +221,63 @@ class CorruptReferenceRepairTest {
     }
 
     @Test
+    void REGRESSION_aSTALE_corruptionReportCannotReOpenAFixedFault() {
+        // Live on 16/08, one minute after a successful repair: the client re-reported against the snapshot it had
+        // not yet re-pulled, observeAgain re-opened the resolved observation, and the group went back to "needs
+        // re-vet" over a fault that no longer existed — with no way out, because Repair then finds nothing
+        // malformed and answers 409. The cloud holds the authoritative profile, so it checks rather than believes.
+        SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, GOOD)); // already repaired
+        java.time.Instant now = java.time.Instant.now();
+        DriftObservation stale = DriftObservation.first(c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT, "dev-1", null,
+                null, null, null, 1, now);
+        stale.measure("start", "GB AGENCY START Sonntag", null, null, null, null, "looks like a shortcode");
+        when(drifts.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(
+                c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT)).thenReturn(List.of(stale));
+        when(drifts.saveAll(any())).thenAnswer(i -> i.getArgument(0));
+
+        DriftObservation out = service.recordDrift("glowbloggeragency", DriftKind.MARKER_REFERENCE_CORRUPT, "dev-1",
+                null, null, null, null, 1, "start", "GB AGENCY START Sonntag", "looks like a shortcode",
+                null, null, null, new byte[0]);
+
+        assertThat(out).isNull();                 // not raised
+        assertThat(stale.isResolved()).isTrue();  // and the one it left behind is closed
+    }
+
+    @Test
+    void aGENUINE_corruptionReportIsStillRaised() {
+        SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
+        when(drifts.findByConfigIdAndKindAndReporterDeviceIdAndNominatedOwnerHandleIsNull(any(), any(), anyString()))
+                .thenReturn(Optional.empty());
+        when(drifts.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(any(), any())).thenReturn(List.of());
+        when(drifts.save(any())).thenAnswer(i -> i.getArgument(0));
+
+        DriftObservation out = service.recordDrift("glowbloggeragency", DriftKind.MARKER_REFERENCE_CORRUPT, "dev-1",
+                null, null, null, null, 1, "start", "GB AGENCY START Sonntag", "looks like a shortcode",
+                null, null, null, new byte[0]);
+
+        assertThat(out).isNotNull();
+        assertThat(c).isNotNull();
+    }
+
+    @Test
+    void anUNRECOGNISED_referenceIsBelieved_ratherThanContradicted() {
+        // We only contradict a client when we can positively see the fault is gone — never when we simply cannot
+        // find what it is talking about.
+        SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, GOOD));
+        when(drifts.findByConfigIdAndKindAndReporterDeviceIdAndNominatedOwnerHandleIsNull(any(), any(), anyString()))
+                .thenReturn(Optional.empty());
+        when(drifts.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(any(), any())).thenReturn(List.of());
+        when(drifts.save(any())).thenAnswer(i -> i.getArgument(0));
+
+        DriftObservation out = service.recordDrift("glowbloggeragency", DriftKind.MARKER_REFERENCE_CORRUPT, "dev-1",
+                null, null, null, null, 1, "start", "SOME OTHER BANNER", "looks like a shortcode",
+                null, null, null, new byte[0]);
+
+        assertThat(out).isNotNull();
+        assertThat(c).isNotNull();
+    }
+
+    @Test
     void refusesWhenEveryReferenceIsAlreadyWellFormed() {
         groupWith(ref("start", "START", LOCATOR, GOOD));
 
