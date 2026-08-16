@@ -182,6 +182,88 @@ class VettedProfileHashAdopterTest {
         assertThat(out.weeklySchedule().days().get(0).references().get(0).dHashes()).containsExactly(OLD);
     }
 
+    // ── The DISPLAY image, not just the fingerprint (16/08/2026) ──────────────
+
+    @Test
+    void adoptingALSO_repointsTheDisplayImageAtTheNewPicture() {
+        // Hashes accumulate; the display tracks current. Leaving imageLocator on the superseded picture meant an
+        // operator adopted the new banner and went on being shown the old one — the exact confusion the prompt
+        // exists to remove.
+        VettedProfile.TypedMarkerReference before = new VettedProfile.TypedMarkerReference(
+                "start", List.of(OLD), "START Sonntag", 4, "detected", "SC", "http://old.example/pic", "old-loc");
+
+        VettedProfile out = VettedProfileHashAdopter.append(
+                profile(null, List.of(before)), "start", "START Sonntag", NEW, "new-loc");
+
+        VettedProfile.TypedMarkerReference after = out.weeklySchedule().days().get(0).references().get(0);
+        assertThat(after.dHashes()).containsExactly(OLD, NEW);   // every version stays matchable
+        assertThat(after.imageLocator()).isEqualTo("new-loc");   // what a human sees is today's banner
+        assertThat(after.imageUrl()).isNull();                   // it named the SUPERSEDED image
+        assertThat(after.ocrText()).isEqualTo("START Sonntag");  // the banner's identity did not change
+        // Load-bearing: MarkerImageEnricher skips this source, so its corpus lookup cannot put the old picture back.
+        assertThat(after.source()).isEqualTo(VettedProfileHashAdopter.SOURCE_CLIENT_DRIFT);
+    }
+
+    @Test
+    void withNoLocatorTheDisplayIsLeftEXACTLY_asItWas() {
+        // A drift that arrived without a picture still contributes its hash; it must not blank the display.
+        VettedProfile.TypedMarkerReference before = new VettedProfile.TypedMarkerReference(
+                "start", List.of(OLD), "START", 4, "detected", "SC", "http://old.example/pic", "old-loc");
+
+        VettedProfile out = VettedProfileHashAdopter.append(profile(null, List.of(before)), "start", "START", NEW);
+
+        VettedProfile.TypedMarkerReference after = out.weeklySchedule().days().get(0).references().get(0);
+        assertThat(after.dHashes()).containsExactly(OLD, NEW);
+        assertThat(after.imageLocator()).isEqualTo("old-loc");
+        assertThat(after.imageUrl()).isEqualTo("http://old.example/pic");
+        assertThat(after.source()).isEqualTo("detected");
+    }
+
+    @Test
+    void adoptingTheSAME_pictureTwiceIsStillIdempotent() {
+        VettedProfile once = VettedProfileHashAdopter.append(
+                profile(null, List.of(ref("start", "START", OLD))), "start", "START", NEW, "new-loc");
+        VettedProfile twice = VettedProfileHashAdopter.append(once, "start", "START", NEW, "new-loc");
+
+        VettedProfile.TypedMarkerReference after = twice.weeklySchedule().days().get(0).references().get(0);
+        assertThat(after.dHashes()).containsExactly(OLD, NEW);
+        assertThat(after.imageLocator()).isEqualTo("new-loc");
+    }
+
+    @Test
+    void aKNOWN_hashWithANEW_pictureStillRepointsTheDisplay() {
+        // Two clients report the same drifted banner: the second delivers a picture the first could not retain.
+        // The hash is already known, but the display still has nothing to show — so this must not early-return.
+        VettedProfile in = profile(null, List.of(new VettedProfile.TypedMarkerReference(
+                "start", List.of(OLD, NEW), "START", 4, "detected", "SC", null, null)));
+
+        VettedProfile out = VettedProfileHashAdopter.append(in, "start", "START", NEW, "new-loc");
+
+        VettedProfile.TypedMarkerReference after = out.weeklySchedule().days().get(0).references().get(0);
+        assertThat(after.dHashes()).containsExactly(OLD, NEW); // no duplicate
+        assertThat(after.imageLocator()).isEqualTo("new-loc");
+    }
+
+    @Test
+    void ADOPTING_dropsAMalformedValueInsteadOfCarryingItAlong() {
+        // glow is both corrupt AND drifted. Appending beside the shortcode would build a profile the ingest
+        // boundary refuses with a 400 — so "Add the live picture" would fail on the very group it exists for.
+        String shortcode = "DbyhP29uyF5nHF-_saO60D-eic5SEtq5Qw3IAs0";
+        VettedProfile out = VettedProfileHashAdopter.append(
+                profile(null, List.of(ref("start", "START Sonntag", shortcode))), "start", "START Sonntag", NEW);
+
+        assertThat(out.weeklySchedule().days().get(0).references().get(0).dHashes()).containsExactly(NEW);
+    }
+
+    @Test
+    void cleaningHappensEvenWhenTheHashIsAlreadyKnown() {
+        // Otherwise the early "already adopted" return would leave the malformed value in place forever.
+        VettedProfile out = VettedProfileHashAdopter.append(
+                profile(null, List.of(ref("start", "START", "not-a-hash", NEW))), "start", "START", NEW);
+
+        assertThat(out.weeklySchedule().days().get(0).references().get(0).dHashes()).containsExactly(NEW);
+    }
+
     @Test
     void aReferenceWithNullHashListGainsTheNewOne() {
         VettedProfile.TypedMarkerReference nullHashes =

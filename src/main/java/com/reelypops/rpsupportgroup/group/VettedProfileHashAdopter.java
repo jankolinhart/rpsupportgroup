@@ -27,6 +27,14 @@ import java.util.List;
  */
 final class VettedProfileHashAdopter {
 
+    /**
+     * Provenance for a reference whose display image came from a CLIENT's live capture rather than the corpus.
+     *
+     * <p>Load-bearing, not cosmetic: {@link MarkerImageEnricher} skips these, so its corpus-derived locator cannot
+     * overwrite the adopted picture on the way through the save path.</p>
+     */
+    static final String SOURCE_CLIENT_DRIFT = "client-drift";
+
     private VettedProfileHashAdopter() {
     }
 
@@ -63,12 +71,35 @@ final class VettedProfileHashAdopter {
      * would be a guess, and a wrong hash on a reference is worse than a missing one.</p>
      */
     static VettedProfile append(VettedProfile profile, String markerRole, String markerText, String newHash) {
+        return append(profile, markerRole, markerText, newHash, null);
+    }
+
+    /**
+     * As above, and — when {@code newImageLocator} is given — also repoints the reference's DISPLAY image at the
+     * newly adopted picture.
+     *
+     * <p><strong>Hashes accumulate; the display tracks current.</strong> {@code dHashes} is a list, so every version
+     * of the banner stays matchable and older posts keep matching. {@code imageLocator} is singular and is what a
+     * human actually looks at — the admin's reference thumbnail and the per-weekday marker preview shipped to
+     * clients — so it should show what the owner is posting TODAY. Leaving it pointing at the superseded picture
+     * meant an operator adopted the new banner and then went on being shown the old one, which is precisely the
+     * confusion the re-vet prompt exists to remove.</p>
+     *
+     * <p>The reference's {@code source} is stamped {@link #SOURCE_CLIENT_DRIFT} at the same time. That is not
+     * decoration: {@link MarkerImageEnricher} re-derives {@code imageLocator} from the corpus representative for the
+     * reference's shortcode on every save, and would otherwise overwrite this locator straight back to the old
+     * picture on the way out. The source says "this picture came from a client's live capture, not the corpus",
+     * and the enricher leaves it alone.</p>
+     */
+    static VettedProfile append(VettedProfile profile, String markerRole, String markerText, String newHash,
+                                String newImageLocator) {
         if (profile == null || newHash == null || newHash.isBlank() || markerRole == null || markerRole.isBlank()) {
             return profile;
         }
         VettedProfile.DetectorArtifacts detector = profile.detector() == null ? null
                 : new VettedProfile.DetectorArtifacts(profile.detector().style(),
-                        appendToAll(profile.detector().references(), markerRole, markerText, newHash));
+                        appendToAll(profile.detector().references(), markerRole, markerText, newHash,
+                                newImageLocator));
 
         WeeklyScheduleDefinition weekly = profile.weeklySchedule() == null
                 || profile.weeklySchedule().days() == null ? profile.weeklySchedule()
@@ -79,14 +110,16 @@ final class VettedProfileHashAdopter {
                                         d.singleMarkerTime(), d.likesUntilTime(), d.likesUntilDayOffset(),
                                         d.tagRemoveEarliestTime(), d.tagRemoveEarliestDayOffset(),
                                         d.maxTaggedPosts(), d.style(),
-                                        appendToAll(d.references(), markerRole, markerText, newHash)))
+                                        appendToAll(d.references(), markerRole, markerText, newHash,
+                                                newImageLocator)))
                         .toList());
 
         return new VettedProfile(profile.definition(), detector, profile.description(), weekly);
     }
 
     private static List<VettedProfile.TypedMarkerReference> appendToAll(
-            List<VettedProfile.TypedMarkerReference> refs, String markerRole, String markerText, String newHash) {
+            List<VettedProfile.TypedMarkerReference> refs, String markerRole, String markerText, String newHash,
+            String newImageLocator) {
         if (refs == null) {
             return null;
         }
@@ -94,14 +127,28 @@ final class VettedProfileHashAdopter {
             if (r == null || !markerRole.equalsIgnoreCase(r.markerType()) || !textMatches(markerText, r.ocrText())) {
                 return r;
             }
-            List<String> hashes = r.dHashes() == null ? List.of() : r.dHashes();
-            if (hashes.contains(newHash)) {
+            List<String> stored = r.dHashes() == null ? List.of() : r.dHashes();
+            // Adopting also CLEANS. A reference can be both corrupt and drifted — glow is exactly that — and
+            // appending to a list that still holds a non-hash would produce a profile the ingest boundary refuses
+            // (400), so the button would fail on the one group that needs it most. A value that is not a hash is
+            // not evidence of anything, so it is dropped rather than carried alongside the new picture.
+            List<String> hashes = stored.stream().filter(VettedProfileHashAdopter::wellFormed).toList();
+            boolean known = hashes.contains(newHash);
+            boolean cleaned = hashes.size() != stored.size();
+            boolean repointing = newImageLocator != null && !newImageLocator.isBlank()
+                    && !newImageLocator.equals(r.imageLocator());
+            if (known && !repointing && !cleaned) {
                 return r; // already known — adopting twice must not accumulate duplicates
             }
             List<String> grown = new ArrayList<>(hashes);
-            grown.add(newHash);
+            if (!known) {
+                grown.add(newHash);
+            }
+            // The display follows the newest picture; the hash list keeps every version. `imageUrl` is dropped
+            // with it — it names the SUPERSEDED image, and a stale URL beats no URL only if you never look at it.
             return new VettedProfile.TypedMarkerReference(r.markerType(), List.copyOf(grown), r.ocrText(),
-                    r.matchThreshold(), r.source(), r.shortcode(), r.imageUrl(), r.imageLocator());
+                    r.matchThreshold(), repointing ? SOURCE_CLIENT_DRIFT : r.source(), r.shortcode(),
+                    repointing ? null : r.imageUrl(), repointing ? newImageLocator : r.imageLocator());
         }).toList();
     }
 
@@ -110,6 +157,11 @@ final class VettedProfileHashAdopter {
      * fallback); otherwise the comparison ignores case and surrounding whitespace, because the text travels through
      * OCR on the client and an exact-bytes match would be brittle for no benefit.
      */
+    /** Same test the ingest boundary applies — exactly 64 binary digits. */
+    private static boolean wellFormed(String hash) {
+        return hash != null && hash.matches("[01]{64}");
+    }
+
     private static boolean textMatches(String wanted, String referenceText) {
         if (wanted == null || wanted.isBlank()) {
             return true;

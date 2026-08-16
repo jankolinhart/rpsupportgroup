@@ -266,6 +266,7 @@ public class InternalGroupController {
     @GetMapping("/{igAccount}/drift")
     public List<DriftObservationResponse> markerReferenceDrifts(@PathVariable String igAccount) {
         return service.markerReferenceDrifts(igAccount).stream().map(DriftObservationResponse::of).toList();
+        // NOTE: the `of(ReferenceDriftView)` overload — each row carries the picture its remedy will use.
     }
 
     /**
