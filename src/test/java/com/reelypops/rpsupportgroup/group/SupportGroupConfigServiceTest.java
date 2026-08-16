@@ -32,8 +32,9 @@ class SupportGroupConfigServiceTest {
     private final VettedProfileVersionRepository versions = mock(VettedProfileVersionRepository.class);
     private final DriftObservationRepository driftObservations = mock(DriftObservationRepository.class);
     private final MarkerImageEnricher markerImageEnricher = mock(MarkerImageEnricher.class);
+    private final MarkerImageStore markerImageStore = mock(MarkerImageStore.class);
     private final SupportGroupConfigService service =
-            new SupportGroupConfigService(configs, versions, driftObservations, markerImageEnricher);
+            new SupportGroupConfigService(configs, versions, driftObservations, markerImageEnricher, markerImageStore);
 
     @Test
     void activeChangeNoteIsEmptyWhenThereIsNoActiveSnapshot() {

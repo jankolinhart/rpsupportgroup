@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import com.jayway.jsonpath.JsonPath;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -1004,6 +1005,68 @@ class InternalGroupControllerTest {
     void acknowledgeForAnUnknownConfigIsNotFound() throws Exception {
         mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift/acknowledge", "drift-ack-none").header(KEY_HEADER, KEY))
                 .andExpect(status().isNotFound());
+    }
+
+    // --- MEASURED banner drift → one-click adoption of the newer picture (16/08/2026) ---
+
+    @Test
+    void adoptingADriftedBannerADDS_thePictureToTheVettedProfile() throws Exception {
+        createConfig("drift-adopt");
+        String old = "1010101010101010101010101010101010101010101010101010101010101010";
+        String body = "{\"definition\":{\"type\":\"TWO_MARKER\",\"timezone\":\"Europe/Paris\",\"markerOwners\":[\"glow\"],"
+                + "\"startMarkerTime\":\"20:31\",\"endMarkerTime\":\"20:31\",\"endMarkerDayOffset\":0,\"openWeekdays\":[0]},"
+                + "\"description\":\"Glow.\","
+                + "\"weeklySchedule\":{\"days\":[{\"weekday\":0,\"open\":true,\"type\":\"TWO_MARKER\","
+                + "\"startMarkerTime\":\"20:31\",\"endMarkerTime\":\"20:31\",\"endMarkerDayOffset\":0,\"style\":\"TEXT_OVERLAY\","
+                + "\"references\":[{\"markerType\":\"start\",\"dHashes\":[\"" + old + "\"],"
+                + "\"ocrText\":\"GB AGENCY START Sonntag\",\"matchThreshold\":4}]}]}}";
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/vetted-profile", "drift-adopt")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+
+        // The client reports MEASURED drift and delivers the picture the owner is posting NOW (directive B1: the
+        // cloud never fetches from Instagram, so this is the only way that picture can arrive).
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-adopt").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"MARKER_IMAGE_DRIFT\",\"reporterDeviceId\":\"dev-1\",\"markerRole\":\"start\","
+                                + "\"imageDistance\":15,\"imageThreshold\":10,\"evidencePostId\":\"DcEj0SRu\","
+                                + "\"evidenceImage\":\"" + pngBase64() + "\"}"))
+                .andExpect(status().isAccepted());
+
+        // The admin sees the measurement AND a locator to fetch the picture with.
+        String obsId = JsonPath.read(mockMvc.perform(
+                        get("/supportgroup/v1/internal/groups/{ig}/drift", "drift-adopt").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].kind").value("MARKER_IMAGE_DRIFT"))
+                .andExpect(jsonPath("$[0].imageDistance").value(15))
+                .andExpect(jsonPath("$[0].imageThreshold").value(10))
+                .andExpect(jsonPath("$[0].evidencePostId").value("DcEj0SRu"))
+                .andExpect(jsonPath("$[0].evidenceImageLocator").isNotEmpty())
+                .andReturn().getResponse().getContentAsString(), "$[0].id");
+
+        // One click: ADD the new picture. The old hash STAYS — it is what lets the client's calibration see that
+        // the two roles are close and tighten its own threshold floor.
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift/{id}/adopt-image", "drift-adopt", obsId)
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-adopt").header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes.length()").value(2))
+                .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes[0]").value(old));
+    }
+
+    /** A real, decodable PNG as base64 — ImageDHash refuses anything it cannot decode, so a stub will not do. */
+    private static String pngBase64() throws Exception {
+        java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(16, 16,
+                java.awt.image.BufferedImage.TYPE_INT_RGB);
+        for (int y = 0; y < 16; y++) {
+            for (int x = 0; x < 16; x++) {
+                img.setRGB(x, y, (x * 16) << 16 | (y * 16) << 8);
+            }
+        }
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(img, "png", out);
+        return java.util.Base64.getEncoder().encodeToString(out.toByteArray());
     }
 
     private static final String KEY_HEADER = "X-Internal-Api-Key";

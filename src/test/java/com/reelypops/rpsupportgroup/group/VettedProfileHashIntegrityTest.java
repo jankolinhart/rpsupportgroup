@@ -37,8 +37,9 @@ class VettedProfileHashIntegrityTest {
     private final VettedProfileVersionRepository versions = mock(VettedProfileVersionRepository.class);
     private final DriftObservationRepository drifts = mock(DriftObservationRepository.class);
     private final MarkerImageEnricher enricher = mock(MarkerImageEnricher.class);
+    private final MarkerImageStore markerImageStore = mock(MarkerImageStore.class);
     private final SupportGroupConfigService service =
-            new SupportGroupConfigService(configs, versions, drifts, enricher);
+            new SupportGroupConfigService(configs, versions, drifts, enricher, markerImageStore);
 
     private SupportGroupConfig existingGroup() {
         SupportGroupConfig c = SupportGroupConfig.createRequested("glowbloggeragency");

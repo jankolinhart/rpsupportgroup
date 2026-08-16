@@ -54,6 +54,28 @@ public class DriftObservation {
     @Column(name = "persistence_count")
     private Integer persistenceCount;
 
+    /**
+     * The MEASURED drift (16/08/2026) — nullable, because a MARKER_DISAGREE / NEW_OWNER row has no measurement.
+     * {@code imageDistance} is the Hamming distance from the confirmed marker's picture to the reference that NAMES
+     * it, and {@code imageThreshold} that reference's own tolerance. {@code evidenceImageLocator} points at the
+     * picture the owner is actually posting, uploaded by the CLIENT (directive B1 — no cloud service ever contacts
+     * Instagram), which is what makes a re-vet possible without a full duty scrape.
+     */
+    @Column(name = "marker_role", length = 20)
+    private String markerRole;
+
+    @Column(name = "image_distance")
+    private Integer imageDistance;
+
+    @Column(name = "image_threshold")
+    private Integer imageThreshold;
+
+    @Column(name = "evidence_post_id", length = 64)
+    private String evidencePostId;
+
+    @Column(name = "evidence_image_locator", length = 128)
+    private String evidenceImageLocator;
+
     @Column(name = "occurrence_count", nullable = false)
     private long occurrenceCount;
 
@@ -104,6 +126,30 @@ public class DriftObservation {
         this.resolved = false;
         this.lastSeenAt = now;
     }
+
+    /** Attach / refresh the MEASURED drift and the picture behind it. */
+    void measure(String markerRole, Integer imageDistance, Integer imageThreshold, String evidencePostId,
+                 String evidenceImageLocator) {
+        this.markerRole = markerRole;
+        this.imageDistance = imageDistance;
+        this.imageThreshold = imageThreshold;
+        this.evidencePostId = evidencePostId;
+        // Only replace the picture when a new one actually arrived: a report that could not carry the image must
+        // not erase the evidence an earlier one delivered.
+        if (evidenceImageLocator != null) {
+            this.evidenceImageLocator = evidenceImageLocator;
+        }
+    }
+
+    public String getMarkerRole() { return markerRole; }
+
+    public Integer getImageDistance() { return imageDistance; }
+
+    public Integer getImageThreshold() { return imageThreshold; }
+
+    public String getEvidencePostId() { return evidencePostId; }
+
+    public String getEvidenceImageLocator() { return evidenceImageLocator; }
 
     /** Mark this observation resolved (a re-vet cleared the derived marker-disagree flag). */
     void resolve() {
