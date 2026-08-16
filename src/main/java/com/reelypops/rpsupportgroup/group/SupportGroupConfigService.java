@@ -414,6 +414,20 @@ public class SupportGroupConfigService {
                     "nominatedOwnerHandle is required for a NEW_OWNER drift");
         }
         SupportGroupConfig c = require(igAccount);
+
+        // A CORRUPT-reference report is checkable against the truth we hold — so check it, rather than taking a
+        // client's word.
+        //
+        // A client reports against the profile snapshot it last pulled, and adopts a new version only on its next
+        // poll. So every repair has a window in which a client still running on the old snapshot re-reports the
+        // fault we just fixed — and `observeAgain` would re-open the resolved observation, putting the group back
+        // into "needs re-vet" over something that no longer exists. Worse, there is then no way out: Repair finds
+        // nothing malformed and answers 409. Observed live on `glowbloggeragency` (16/08/2026), one minute after
+        // a successful repair.
+        if (kind == DriftKind.MARKER_REFERENCE_CORRUPT && !referenceIsActuallyCorrupt(c, markerRole, markerText)) {
+            resolveStaleCorruptionReports(c, markerRole, markerText);
+            return null;
+        }
         String handle = kind == DriftKind.NEW_OWNER ? nominatedOwnerHandle : null;
         Instant now = Instant.now();
         Optional<DriftObservation> existing = handle == null
@@ -653,6 +667,48 @@ public class SupportGroupConfigService {
                 latest.getDisagreePass(), maxPersistence, List.of(), firstSeen, lastSeen);
     }
 
+    /**
+     * Does the STORED profile still carry a malformed hash on the reference this report names?
+     *
+     * <p>Unknown references and a profile-less config answer {@code true} — we only contradict a client when we can
+     * positively see that the fault is gone, never when we simply cannot find what it is talking about.</p>
+     */
+    private boolean referenceIsActuallyCorrupt(SupportGroupConfig c, String markerRole, String markerText) {
+        VettedProfile profile = c.getVettedProfile();
+        if (profile == null) {
+            return true;
+        }
+        List<VettedProfile.TypedMarkerReference> named = matchingReferences(profile,
+                markerRole, markerText).toList();
+        if (named.isEmpty()) {
+            return true;
+        }
+        return named.stream().anyMatch(r -> r.dHashes() == null || r.dHashes().stream()
+                .anyMatch(h -> h == null || !WELL_FORMED_DHASH.matcher(h).matches()));
+    }
+
+    /** Close any open corruption observation for a reference that is demonstrably fine now. */
+    private void resolveStaleCorruptionReports(SupportGroupConfig c, String markerRole, String markerText) {
+        List<DriftObservation> open = driftObservations.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(
+                c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT).stream()
+                .filter(o -> sameReference(o, markerRole, markerText))
+                .toList();
+        if (!open.isEmpty()) {
+            open.forEach(DriftObservation::resolve);
+            driftObservations.saveAll(open);
+        }
+    }
+
+    private static boolean sameReference(DriftObservation o, String markerRole, String markerText) {
+        return blankOrEquals(o.getMarkerRole(), markerRole) && blankOrEquals(o.getMarkerText(), markerText);
+    }
+
+    private static boolean blankOrEquals(String a, String b) {
+        String x = a == null ? "" : a.trim();
+        String y = b == null ? "" : b.trim();
+        return x.isEmpty() || y.isEmpty() || x.equalsIgnoreCase(y);
+    }
+
     /** The two kinds that describe the HEALTH of a marker reference, as opposed to who owns a marker. */
     private static final List<DriftKind> REFERENCE_HEALTH_KINDS =
             List.of(DriftKind.MARKER_IMAGE_DRIFT, DriftKind.MARKER_REFERENCE_CORRUPT);
@@ -763,12 +819,17 @@ public class SupportGroupConfigService {
     /** The references a drift NAMES — by role, and by text where the client reported one. */
     private static Stream<VettedProfile.TypedMarkerReference> matchingReferences(VettedProfile profile,
                                                                                 DriftObservation o) {
+        return matchingReferences(profile, o.getMarkerRole(), o.getMarkerText());
+    }
+
+    private static Stream<VettedProfile.TypedMarkerReference> matchingReferences(VettedProfile profile,
+                                                                                String markerRole, String markerText) {
         return allReferences(profile)
                 .filter(java.util.Objects::nonNull)
-                .filter(r -> o.getMarkerRole() == null || o.getMarkerRole().isBlank()
-                        || o.getMarkerRole().equalsIgnoreCase(r.markerType()))
-                .filter(r -> o.getMarkerText() == null || o.getMarkerText().isBlank()
-                        || o.getMarkerText().trim().equalsIgnoreCase(
+                .filter(r -> markerRole == null || markerRole.isBlank()
+                        || markerRole.equalsIgnoreCase(r.markerType()))
+                .filter(r -> markerText == null || markerText.isBlank()
+                        || markerText.trim().equalsIgnoreCase(
                                 r.ocrText() == null ? "" : r.ocrText().trim()));
     }
 
