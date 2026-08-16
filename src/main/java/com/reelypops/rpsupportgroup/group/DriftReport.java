@@ -19,6 +19,16 @@ public record DriftReport(
         Integer disagreePass,
         Integer persistenceCount,
         String markerRole,
+        /**
+         * The OCR text of the reference the measurement was taken against — which reference, not just which role.
+         *
+         * <p>Load-bearing for adoption: a per-weekday group carries several banners for one role
+         * (`glowbloggeragency` has a generic weekday START and a distinct "START Sonntag"), so role alone would
+         * spread Sunday's picture across every weekday's START reference.</p>
+         */
+        String markerText,
+        /** For {@link DriftKind#MARKER_REFERENCE_CORRUPT}: the malformed value and why it is malformed. */
+        String detail,
         Integer imageDistance,
         Integer imageThreshold,
         String evidencePostId,

@@ -21,6 +21,10 @@ public interface DriftObservationRepository extends JpaRepository<DriftObservati
     /** Unresolved observations of a kind for one config, newest-seen first — powers the derivation + nominations view. */
     List<DriftObservation> findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(UUID configId, DriftKind kind);
 
+    /** Unresolved observations of several kinds for one config, newest-seen first — the marker-reference health view. */
+    List<DriftObservation> findByConfigIdAndKindInAndResolvedFalseOrderByLastSeenAtDesc(
+            UUID configId, Collection<DriftKind> kinds);
+
     /** Unresolved observations of a kind across many configs — powers the batch re-vet derivation for the admin list. */
     List<DriftObservation> findByConfigIdInAndKindAndResolvedFalse(Collection<UUID> configIds, DriftKind kind);
 

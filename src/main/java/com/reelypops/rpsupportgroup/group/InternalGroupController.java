@@ -219,8 +219,8 @@ public class InternalGroupController {
     public void reportDrift(@PathVariable String igAccount, @Valid @RequestBody DriftReport req) {
         service.recordDrift(igAccount, req.kind(), req.reporterDeviceId(), req.reporterUserId(),
                 req.nominatedOwnerHandle(), req.agreePass(), req.disagreePass(), req.persistenceCount(),
-                req.markerRole(), req.imageDistance(), req.imageThreshold(), req.evidencePostId(),
-                req.evidenceImage());
+                req.markerRole(), req.markerText(), req.detail(), req.imageDistance(), req.imageThreshold(),
+                req.evidencePostId(), req.evidenceImage());
     }
 
     /**
@@ -255,15 +255,35 @@ public class InternalGroupController {
     }
 
     /**
-     * Admin: a config's open MEASURED banner-drift observations, newest-seen first.
+     * Admin: a config's open marker-REFERENCE observations, newest-seen first — measured banner drift and corrupt
+     * references together, because both are answers to "is this profile's picture of the marker still right?".
      *
-     * <p>Each carries how far the picture has moved, the reference it belongs to, and {@code evidenceImageLocator} —
-     * fetch the picture itself at {@code GET /marker-images/{locator}}. This is what lets the admin surface say
-     * "here is what the owner is posting now" rather than merely "something drifted".</p>
+     * <p>A MEASURED drift carries how far the picture has moved, the reference it belongs to, and
+     * {@code evidenceImageLocator} — fetch the picture itself at {@code GET /marker-images/{locator}}. That is what
+     * lets the admin surface say "here is what the owner is posting now" rather than merely "something drifted".
+     * A CORRUPT reference carries {@code detail}: the malformed value and why it is malformed.</p>
      */
     @GetMapping("/{igAccount}/drift")
-    public List<DriftObservationResponse> markerImageDrifts(@PathVariable String igAccount) {
-        return service.markerImageDrifts(igAccount).stream().map(DriftObservationResponse::of).toList();
+    public List<DriftObservationResponse> markerReferenceDrifts(@PathVariable String igAccount) {
+        return service.markerReferenceDrifts(igAccount).stream().map(DriftObservationResponse::of).toList();
+    }
+
+    /**
+     * Admin "repair this reference" — recompute malformed dHashes from each reference's OWN stored picture.
+     *
+     * <p>The remedy for a CORRUPT reference, and deliberately different from adopt-image's: nothing is captured from
+     * Instagram and no re-vet is needed, because the picture the reference was vetted from is already stored. Note
+     * that a group carrying a malformed hash cannot be saved through the Vetting Portal at all — ingest validation
+     * refuses it — so this is the only way back for a profile stored before that guard.</p>
+     *
+     * <p>409 when there is nothing to repair, or when the pictures needed are no longer stored (the response names
+     * which references, so "nothing happened" is never silent).</p>
+     */
+    @PostMapping("/{igAccount}/vetted-profile/repair-hashes")
+    public GroupResponse repairMalformedReferenceHashes(@PathVariable String igAccount) {
+        SupportGroupConfig c = service.repairMalformedReferenceHashes(igAccount);
+        SupportGroupConfigService.RevetStatus s = service.revetStatus(c);
+        return GroupResponse.of(c, service.activeChangeNote(c), s.needsRevet(), s.reasons());
     }
 
     /** Admin: a config's open new-owner nominations (M5 review-candidate surface), newest-seen first. */

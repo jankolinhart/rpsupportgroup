@@ -33,7 +33,7 @@ public class DriftObservation {
     private UUID configId;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "kind", nullable = false, updatable = false, length = 20)
+    @Column(name = "kind", nullable = false, updatable = false, length = 40)
     private DriftKind kind;
 
     @Column(name = "reporter_device_id", nullable = false, updatable = false, length = 128)
@@ -75,6 +75,18 @@ public class DriftObservation {
 
     @Column(name = "evidence_image_locator", length = 128)
     private String evidenceImageLocator;
+
+    /**
+     * The OCR text of the reference this drift was measured against — the only thing that distinguishes two
+     * references sharing a role. A per-weekday group carries several banners per role, so adoption without it could
+     * only match by role and would teach every weekday the one day's picture.
+     */
+    @Column(name = "marker_text", length = 512)
+    private String markerText;
+
+    /** For {@link DriftKind#MARKER_REFERENCE_CORRUPT}: the malformed value and why it is malformed. */
+    @Column(name = "detail", length = 1024)
+    private String detail;
 
     @Column(name = "occurrence_count", nullable = false)
     private long occurrenceCount;
@@ -130,10 +142,18 @@ public class DriftObservation {
     /** Attach / refresh the MEASURED drift and the picture behind it. */
     void measure(String markerRole, Integer imageDistance, Integer imageThreshold, String evidencePostId,
                  String evidenceImageLocator) {
+        measure(markerRole, null, imageDistance, imageThreshold, evidencePostId, evidenceImageLocator, null);
+    }
+
+    /** As above, naming the exact reference ({@code markerText}) and, for a corrupt reference, the fault. */
+    void measure(String markerRole, String markerText, Integer imageDistance, Integer imageThreshold,
+                 String evidencePostId, String evidenceImageLocator, String detail) {
         this.markerRole = markerRole;
+        this.markerText = markerText;
         this.imageDistance = imageDistance;
         this.imageThreshold = imageThreshold;
         this.evidencePostId = evidencePostId;
+        this.detail = detail;
         // Only replace the picture when a new one actually arrived: a report that could not carry the image must
         // not erase the evidence an earlier one delivered.
         if (evidenceImageLocator != null) {
@@ -142,6 +162,10 @@ public class DriftObservation {
     }
 
     public String getMarkerRole() { return markerRole; }
+
+    public String getMarkerText() { return markerText; }
+
+    public String getDetail() { return detail; }
 
     public Integer getImageDistance() { return imageDistance; }
 
