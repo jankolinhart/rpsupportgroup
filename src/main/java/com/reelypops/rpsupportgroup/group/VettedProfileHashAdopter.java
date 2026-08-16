@@ -67,8 +67,8 @@ final class VettedProfileHashAdopter {
      * administrator clicking the button again, or two clients reporting the same drift, must not accumulate
      * duplicates.</p>
      *
-     * <p>A blank role touches nothing: without knowing which reference the picture belongs to, adding it anywhere
-     * would be a guess, and a wrong hash on a reference is worse than a missing one.</p>
+     * <p>A reference is identifiable by ROLE, by TEXT, or by both — but at least one is required. With neither,
+     * adding the picture anywhere would be a guess, and a wrong hash on a reference is worse than a missing one.</p>
      */
     static VettedProfile append(VettedProfile profile, String markerRole, String markerText, String newHash) {
         return append(profile, markerRole, markerText, newHash, null);
@@ -93,7 +93,13 @@ final class VettedProfileHashAdopter {
      */
     static VettedProfile append(VettedProfile profile, String markerRole, String markerText, String newHash,
                                 String newImageLocator) {
-        if (profile == null || newHash == null || newHash.isBlank() || markerRole == null || markerRole.isBlank()) {
+        boolean haveRole = markerRole != null && !markerRole.isBlank();
+        boolean haveText = markerText != null && !markerText.isBlank();
+        // A reference is identifiable by its ROLE, its TEXT, or both. Requiring the role made a missing one a
+        // SILENT no-op — and that is exactly what happened live on 16/08: a field-name mismatch upstream delivered
+        // a null role, adoption matched nothing, and a repair appeared to succeed while the live banner it was
+        // meant to add was quietly dropped. Text alone identifies a reference precisely, so it is enough.
+        if (profile == null || newHash == null || newHash.isBlank() || (!haveRole && !haveText)) {
             return profile;
         }
         VettedProfile.DetectorArtifacts detector = profile.detector() == null ? null
@@ -124,7 +130,7 @@ final class VettedProfileHashAdopter {
             return null;
         }
         return refs.stream().map(r -> {
-            if (r == null || !markerRole.equalsIgnoreCase(r.markerType()) || !textMatches(markerText, r.ocrText())) {
+            if (r == null || !roleMatches(markerRole, r.markerType()) || !textMatches(markerText, r.ocrText())) {
                 return r;
             }
             List<String> stored = r.dHashes() == null ? List.of() : r.dHashes();
@@ -160,6 +166,11 @@ final class VettedProfileHashAdopter {
     /** Same test the ingest boundary applies — exactly 64 binary digits. */
     private static boolean wellFormed(String hash) {
         return hash != null && hash.matches("[01]{64}");
+    }
+
+    /** A blank wanted-role matches everything — the TEXT is then carrying the identification on its own. */
+    private static boolean roleMatches(String wanted, String referenceRole) {
+        return wanted == null || wanted.isBlank() || wanted.equalsIgnoreCase(referenceRole);
     }
 
     private static boolean textMatches(String wanted, String referenceText) {
