@@ -18,6 +18,10 @@ public record DriftObservationResponse(
         Instant firstSeenAt,
         Instant lastSeenAt,
         String markerRole,
+        /** Which reference, not just which role — the admin prompt names the banner the picture belongs to. */
+        String markerText,
+        /** For a MARKER_REFERENCE_CORRUPT observation: the malformed value and why it is malformed. */
+        String detail,
         Integer imageDistance,
         Integer imageThreshold,
         String evidencePostId,
@@ -28,7 +32,7 @@ public record DriftObservationResponse(
         return new DriftObservationResponse(o.getId(), o.getKind(), o.getReporterDeviceId(), o.getReporterUserId(),
                 o.getNominatedOwnerHandle(), o.getAgreePass(), o.getDisagreePass(), o.getPersistenceCount(),
                 o.getOccurrenceCount(), o.isResolved(), o.getFirstSeenAt(), o.getLastSeenAt(),
-                o.getMarkerRole(), o.getImageDistance(), o.getImageThreshold(), o.getEvidencePostId(),
-                o.getEvidenceImageLocator());
+                o.getMarkerRole(), o.getMarkerText(), o.getDetail(), o.getImageDistance(), o.getImageThreshold(),
+                o.getEvidencePostId(), o.getEvidenceImageLocator());
     }
 }

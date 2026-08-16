@@ -131,6 +131,58 @@ class VettedProfileHashAdopterTest {
     }
 
     @Test
+    void REGRESSION_theTEXT_picksTheONE_referenceThePictureBelongsTo() {
+        // `glowbloggeragency` carries TWO start banners: a generic weekday one and a distinct Sunday handoff one,
+        // 30 bits apart. Matching on ROLE alone would teach Monday to match Sunday's banner — a false-positive
+        // generator, and a widening of exactly the separation the client's calibration depends on.
+        VettedProfile out = VettedProfileHashAdopter.append(
+                profile(null, List.of(ref("start", "G B AGENCY START", OLD),
+                        ref("start", "GB AGENCY START Sonntag", OLD))),
+                "start", "GB AGENCY START Sonntag", NEW);
+
+        List<VettedProfile.TypedMarkerReference> refs = out.weeklySchedule().days().get(0).references();
+        assertThat(refs.get(0).dHashes()).containsExactly(OLD);       // the weekday banner did NOT change
+        assertThat(refs.get(1).dHashes()).containsExactly(OLD, NEW);  // Sunday's did
+    }
+
+    @Test
+    void textMatchingIgnoresCaseAndSurroundingWhitespace() {
+        // The text travels through OCR on the client; an exact-bytes match would be brittle for no benefit.
+        VettedProfile out = VettedProfileHashAdopter.append(
+                profile(null, List.of(ref("start", "  GB AGENCY START Sonntag  ", OLD))),
+                "start", "gb agency start sonntag", NEW);
+
+        assertThat(out.weeklySchedule().days().get(0).references().get(0).dHashes()).containsExactly(OLD, NEW);
+    }
+
+    @Test
+    void aBlankTextFallsBackToRoleOnlyMatching() {
+        // A client that cannot report the text still gets the old behaviour rather than nothing at all.
+        VettedProfile out = VettedProfileHashAdopter.append(
+                profile(null, List.of(ref("start", "A", OLD), ref("start", "B", OLD))), "start", "  ", NEW);
+
+        List<VettedProfile.TypedMarkerReference> refs = out.weeklySchedule().days().get(0).references();
+        assertThat(refs.get(0).dHashes()).containsExactly(OLD, NEW);
+        assertThat(refs.get(1).dHashes()).containsExactly(OLD, NEW);
+    }
+
+    @Test
+    void aNamedTextThatMatchesNoReferenceChangesNothing() {
+        VettedProfile out = VettedProfileHashAdopter.append(
+                profile(null, List.of(ref("start", "START Sonntag", OLD))), "start", "SOMETHING ELSE", NEW);
+
+        assertThat(out.weeklySchedule().days().get(0).references().get(0).dHashes()).containsExactly(OLD);
+    }
+
+    @Test
+    void aNamedTextNeverMatchesAReferenceThatHasNoTextOfItsOwn() {
+        VettedProfile out = VettedProfileHashAdopter.append(
+                profile(null, List.of(ref("start", null, OLD))), "start", "START Sonntag", NEW);
+
+        assertThat(out.weeklySchedule().days().get(0).references().get(0).dHashes()).containsExactly(OLD);
+    }
+
+    @Test
     void aReferenceWithNullHashListGainsTheNewOne() {
         VettedProfile.TypedMarkerReference nullHashes =
                 new VettedProfile.TypedMarkerReference("start", null, "START", 4, "detected", "SC", null, null);

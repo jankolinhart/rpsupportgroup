@@ -43,6 +43,12 @@ class InternalGroupControllerTest {
     @Autowired
     SupportGroupConfigService configService;
 
+    @Autowired
+    SupportGroupConfigRepository configRepository;
+
+    @Autowired
+    MarkerImageStore markerImageStore;
+
     private void createConfig(String ig) throws Exception {
         String body = "{\"igAccount\":\"" + ig + "\",\"definition\":{\"type\":\"CONTINUOUS\",\"timezone\":\"UTC\"}}";
         mockMvc.perform(post("/supportgroup/v1/groups")
@@ -1053,6 +1059,80 @@ class InternalGroupControllerTest {
         mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-adopt").header(KEY_HEADER, KEY))
                 .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes.length()").value(2))
                 .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes[0]").value(old));
+    }
+
+    // --- CORRUPT reference → one-click repair from the reference's own stored picture (16/08/2026) ---
+
+    @Test
+    void REPAIRING_recomputesACorruptHashFromTheReferencesOwnStoredPicture() throws Exception {
+        createConfig("ref-repair");
+        String locator = markerImageStore.capture(java.util.Base64.getDecoder().decode(pngBase64())).orElseThrow();
+        String shortcode = "DbyhP29uyF5nHF-_saO60D-eic5SEtq5Qw3IAs0"; // the real corrupt value from the live record
+
+        // Saved past the API on purpose: ingest validation now REFUSES a profile like this, so a group carrying one
+        // was stored before that guard — and cannot be fixed through the Vetting Portal, because every Save 400s.
+        // This is exactly the state `glowbloggeragency` is in.
+        SupportGroupConfig c = configRepository.findByIgAccount("ref-repair").orElseThrow();
+        GroupDefinition def = new GroupDefinition(SgType.TWO_MARKER, "Europe/Paris", java.util.List.of("glow"),
+                null, null, "20:31", "20:31", 0, null, null, null, null, null, null);
+        VettedProfile.TypedMarkerReference corrupt = new VettedProfile.TypedMarkerReference("start",
+                java.util.List.of(shortcode), "GB AGENCY START Sonntag", 4, "detected", shortcode, null, locator);
+        DayDefinition sunday = new DayDefinition(0, true, SgType.TWO_MARKER, "20:31", "20:31", 0, -1, null,
+                "23:59", 0, "10:30", 1, 1, MarkerStyle.TEXT_OVERLAY, java.util.List.of(corrupt));
+        c.saveVettedProfile(new VettedProfile(def, null, "Glow.", new WeeklyScheduleDefinition(
+                java.util.List.of(sunday))), 1L);
+        configRepository.save(c);
+
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vetted-profile/repair-hashes", "ref-repair")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "ref-repair").header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes.length()").value(1))
+                .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes[0]")
+                        .value(Matchers.matchesPattern("[01]{64}")));   // the shortcode is gone
+    }
+
+    @Test
+    void repairingAProfileWithNothingWrongIsAConflict_notASilentNoOp() throws Exception {
+        createConfig("ref-repair-clean");
+        String good = "1010101010101010101010101010101010101010101010101010101010101010";
+        String body = "{\"definition\":{\"type\":\"TWO_MARKER\",\"timezone\":\"Europe/Paris\",\"markerOwners\":[\"glow\"],"
+                + "\"startMarkerTime\":\"20:31\",\"endMarkerTime\":\"20:31\",\"endMarkerDayOffset\":0,\"openWeekdays\":[0]},"
+                + "\"description\":\"Glow.\","
+                + "\"weeklySchedule\":{\"days\":[{\"weekday\":0,\"open\":true,\"type\":\"TWO_MARKER\","
+                + "\"startMarkerTime\":\"20:31\",\"endMarkerTime\":\"20:31\",\"endMarkerDayOffset\":0,\"style\":\"TEXT_OVERLAY\","
+                + "\"references\":[{\"markerType\":\"start\",\"dHashes\":[\"" + good + "\"],"
+                + "\"ocrText\":\"START\",\"matchThreshold\":4}]}]}}";
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/vetted-profile", "ref-repair-clean")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vetted-profile/repair-hashes", "ref-repair-clean")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void aCorruptReferenceIsReportableByTheClientAndSurfacesAsAReVetReason() throws Exception {
+        createConfig("ref-corrupt-report");
+
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "ref-corrupt-report")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"MARKER_REFERENCE_CORRUPT\",\"reporterDeviceId\":\"dev-1\","
+                                + "\"markerRole\":\"start\",\"markerText\":\"GB AGENCY START Sonntag\","
+                                + "\"detail\":\"value=DbyhP29u… looks like an Instagram post shortcode\"}"))
+                .andExpect(status().isAccepted());
+
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/drift", "ref-corrupt-report").header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$[0].kind").value("MARKER_REFERENCE_CORRUPT"))
+                .andExpect(jsonPath("$[0].markerText").value("GB AGENCY START Sonntag"))
+                .andExpect(jsonPath("$[0].detail").value(Matchers.containsString("shortcode")));
+
+        // The notification level: it must reach the needs-re-vet surface, not merely be stored.
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "ref-corrupt-report").header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.needsRevet").value(true))
+                .andExpect(jsonPath("$.revetReasons[0].kind").value("MARKER_REFERENCE_CORRUPT"));
     }
 
     /** A real, decodable PNG as base64 — ImageDHash refuses anything it cannot decode, so a stub will not do. */

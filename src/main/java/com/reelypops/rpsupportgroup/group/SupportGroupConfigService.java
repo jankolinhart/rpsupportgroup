@@ -382,7 +382,18 @@ public class SupportGroupConfigService {
                                         String nominatedOwnerHandle, Integer agreePass, Integer disagreePass,
                                         Integer persistenceCount) {
         return recordDrift(igAccount, kind, reporterDeviceId, reporterUserId, nominatedOwnerHandle, agreePass,
-                disagreePass, persistenceCount, null, null, null, null, null);
+                disagreePass, persistenceCount, null, null, null, null, null, null, null);
+    }
+
+    /** Compatibility overload for callers with a measurement but no reference text / fault detail. */
+    @Transactional
+    public DriftObservation recordDrift(String igAccount, DriftKind kind, String reporterDeviceId, UUID reporterUserId,
+                                        String nominatedOwnerHandle, Integer agreePass, Integer disagreePass,
+                                        Integer persistenceCount, String markerRole, Integer imageDistance,
+                                        Integer imageThreshold, String evidencePostId, byte[] evidenceImage) {
+        return recordDrift(igAccount, kind, reporterDeviceId, reporterUserId, nominatedOwnerHandle, agreePass,
+                disagreePass, persistenceCount, markerRole, null, null, imageDistance, imageThreshold,
+                evidencePostId, evidenceImage);
     }
 
     /**
@@ -395,8 +406,9 @@ public class SupportGroupConfigService {
     @Transactional
     public DriftObservation recordDrift(String igAccount, DriftKind kind, String reporterDeviceId, UUID reporterUserId,
                                         String nominatedOwnerHandle, Integer agreePass, Integer disagreePass,
-                                        Integer persistenceCount, String markerRole, Integer imageDistance,
-                                        Integer imageThreshold, String evidencePostId, byte[] evidenceImage) {
+                                        Integer persistenceCount, String markerRole, String markerText, String detail,
+                                        Integer imageDistance, Integer imageThreshold, String evidencePostId,
+                                        byte[] evidenceImage) {
         if (kind == DriftKind.NEW_OWNER && (nominatedOwnerHandle == null || nominatedOwnerHandle.isBlank())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "nominatedOwnerHandle is required for a NEW_OWNER drift");
@@ -421,7 +433,7 @@ public class SupportGroupConfigService {
         String locator = evidenceImage == null || evidenceImage.length == 0
                 ? null
                 : markerImageStore.capture(evidenceImage).orElse(null);
-        obs.measure(markerRole, imageDistance, imageThreshold, evidencePostId, locator);
+        obs.measure(markerRole, markerText, imageDistance, imageThreshold, evidencePostId, locator, detail);
         return driftObservations.save(obs);
     }
 
@@ -466,12 +478,61 @@ public class SupportGroupConfigService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT,
                         "the drift's picture is no longer stored"));
         String newHash = ImageDHash.hash(image);
-        VettedProfile updated = VettedProfileHashAdopter.append(profile, obs.getMarkerRole(), newHash);
+        VettedProfile updated = VettedProfileHashAdopter.append(
+                profile, obs.getMarkerRole(), obs.getMarkerText(), newHash);
         applyVettedProfile(igAccount, c, updated);
         SupportGroupConfig saved = configs.save(c);
         obs.resolve();
         driftObservations.save(obs);
         return saved;
+    }
+
+    /**
+     * Admin "repair this reference" — recompute a malformed dHash from the reference's OWN stored picture.
+     *
+     * <p><strong>This needs nothing from Instagram.</strong> A corrupt reference is a data fault, not a stale one:
+     * the picture it was vetted from is already held against its {@code imageLocator}, so the hash that should have
+     * been stored is recomputable in place. That is what makes this a one-click repair rather than a re-vet, and it
+     * is why the remedy differs from {@link #adoptDriftedMarkerImage}'s.</p>
+     *
+     * <p><strong>The malformed value is REMOVED, not kept.</strong> Everywhere else in this loop the rule is
+     * "append, never replace", because an older picture is still a real picture. A value that is not a hash is not
+     * evidence of anything — it matches nothing, contradicts nothing, and silently distorts the client's threshold
+     * calibration — so it is dropped. A reference whose picture is missing is left exactly as it is and reported,
+     * rather than being quietly emptied.</p>
+     *
+     * <p>Resolves the config's open {@link DriftKind#MARKER_REFERENCE_CORRUPT} observations. 409 when nothing could
+     * be repaired, naming what stood in the way — a silent no-op would read as success.</p>
+     */
+    @Transactional
+    public SupportGroupConfig repairMalformedReferenceHashes(String igAccount) {
+        SupportGroupConfig c = require(igAccount);
+        VettedProfile profile = c.getVettedProfile();
+        if (profile == null) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, igAccount + " has no vetted profile to repair");
+        }
+        List<String> unrepairable = new ArrayList<>();
+        VettedProfile repaired = VettedProfileHashRepairer.repair(profile, this::hashOfStoredImage, unrepairable);
+        if (repaired == profile) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, unrepairable.isEmpty()
+                    ? igAccount + ": every marker reference already carries a well-formed hash — nothing to repair"
+                    : igAccount + ": nothing could be repaired. " + String.join("; ", unrepairable));
+        }
+        applyVettedProfile(igAccount, c, repaired);
+        SupportGroupConfig saved = configs.save(c);
+        List<DriftObservation> open = driftObservations.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(
+                c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT);
+        open.forEach(DriftObservation::resolve);
+        driftObservations.saveAll(open);
+        return saved;
+    }
+
+    /** The dHash of a reference's own stored picture, or empty when it has no locator / the picture is gone. */
+    private Optional<String> hashOfStoredImage(String imageLocator) {
+        if (imageLocator == null || imageLocator.isBlank()) {
+            return Optional.empty();
+        }
+        return markerImageStore.find(imageLocator).map(MarkerImage::getImage).map(ImageDHash::hash);
     }
 
     @Transactional
@@ -516,19 +577,38 @@ public class SupportGroupConfigService {
 
     /**
      * Aggregate a config's open drift observations into a re-vet status ({@code none} when there are none): one
-     * {@link RevetReason} per kind present (marker-disagree before new-owner), so the admin can see both at once.
+     * {@link RevetReason} per kind present, so the admin can see every reason at once.
+     *
+     * <p><strong>Order is severity, not chronology.</strong> A CORRUPT reference comes first: it is a data fault that
+     * makes a reference permanently unmatchable, and it is silent — no scan will ever complain again. A MEASURED
+     * image drift comes next: it is actionable in one click and it is what the demotion tally can no longer see.</p>
+     *
+     * <p>⚠️ Every kind must appear in this list. A kind omitted here is stored, listed by the drift endpoint, and
+     * still <em>invisible</em> on the needs-re-vet surface — which is exactly how MARKER_IMAGE_DRIFT shipped in #66:
+     * the loop's notification level was silent because this stream named only the two original kinds.</p>
      */
     private RevetStatus revetStatusOf(List<DriftObservation> open) {
         if (open.isEmpty()) {
             return RevetStatus.none();
         }
         Map<DriftKind, List<DriftObservation>> byKind = open.stream().collect(Collectors.groupingBy(DriftObservation::getKind));
-        List<RevetReason> reasons = Stream.of(DriftKind.MARKER_DISAGREE, DriftKind.NEW_OWNER)
+        List<RevetReason> reasons = Stream.of(DriftKind.values())
+                .sorted(Comparator.comparingInt(SupportGroupConfigService::severityOf))
                 .map(byKind::get)
                 .filter(l -> l != null && !l.isEmpty())
                 .map(SupportGroupConfigService::reasonOf)
                 .toList();
         return new RevetStatus(true, reasons);
+    }
+
+    /** Display severity of a drift kind — lower sorts first on the admin surface. */
+    private static int severityOf(DriftKind kind) {
+        return switch (kind) {
+            case MARKER_REFERENCE_CORRUPT -> 0; // a permanently unmatchable reference, and silent
+            case MARKER_IMAGE_DRIFT -> 1;       // real, measured, one click to fix
+            case MARKER_DISAGREE -> 2;
+            case NEW_OWNER -> 3;
+        };
     }
 
     /** Aggregate one kind's open observations into its {@link RevetReason}. */
@@ -551,16 +631,24 @@ public class SupportGroupConfigService {
                 latest.getDisagreePass(), maxPersistence, List.of(), firstSeen, lastSeen);
     }
 
+    /** The two kinds that describe the HEALTH of a marker reference, as opposed to who owns a marker. */
+    private static final List<DriftKind> REFERENCE_HEALTH_KINDS =
+            List.of(DriftKind.MARKER_IMAGE_DRIFT, DriftKind.MARKER_REFERENCE_CORRUPT);
+
     /**
-     * Admin: a config's open MEASURED banner-drift observations, newest-seen first — the surface behind the
-     * "this banner changed, adopt the new picture" prompt. Each carries the distance, the reference it belongs to
-     * and a locator for the picture the owner is actually posting.
+     * Admin: a config's open marker-REFERENCE observations, newest-seen first — the surface behind the
+     * "this banner changed, adopt the new picture" and "this reference is corrupt, repair it" prompts.
+     *
+     * <p>A MEASURED drift carries the distance, the reference it belongs to and a locator for the picture the owner
+     * is actually posting; a CORRUPT reference carries the malformed value and why it is malformed. New-owner
+     * nominations are deliberately NOT included — they are a question about people, have their own review surface
+     * ({@link #newOwnerNominations}), and would only appear twice here.</p>
      */
     @Transactional(readOnly = true)
-    public List<DriftObservation> markerImageDrifts(String igAccount) {
+    public List<DriftObservation> markerReferenceDrifts(String igAccount) {
         SupportGroupConfig c = require(igAccount);
-        return driftObservations.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(
-                c.getId(), DriftKind.MARKER_IMAGE_DRIFT);
+        return driftObservations.findByConfigIdAndKindInAndResolvedFalseOrderByLastSeenAtDesc(
+                c.getId(), REFERENCE_HEALTH_KINDS);
     }
 
     /** A config's open new-owner nominations, newest-seen first (M5 admin review-candidate surface). */
