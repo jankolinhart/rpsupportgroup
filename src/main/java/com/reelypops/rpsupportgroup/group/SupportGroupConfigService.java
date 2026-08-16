@@ -515,15 +515,35 @@ public class SupportGroupConfigService {
         }
         List<String> unrepairable = new ArrayList<>();
         VettedProfile repaired = VettedProfileHashRepairer.repair(profile, this::hashOfStoredImage, unrepairable);
-        if (repaired == profile) {
+        List<DriftObservation> open = driftObservations.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(
+                c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT);
+
+        // ONE decisive click. Repairing the field and adopting the live banner are the same operator intent —
+        // "make this reference right" — so they happen together rather than as two buttons whose ordering the
+        // administrator has to reason about.
+        //
+        // The live picture is only ADDED when it differs from the repaired one. Identical pictures need no second
+        // entry (the adopter dedups anyway); a DIFFERENT one is a genuinely different rendition of the same
+        // banner, and carrying both is what widens what can be recognised — measured on glow as a threshold floor
+        // dropping 10 → 8 once both were present.
+        VettedProfile withLive = repaired == null ? null : repaired;
+        for (DriftObservation o : open) {
+            // A live banner is a BONUS, never a precondition: a picture that was never delivered, or has since
+            // been reclaimed, must not stop the field itself being repaired.
+            String liveHash = hashOfStoredImage(o.getEvidenceImageLocator()).orElse(null);
+            if (liveHash != null && withLive != null) {
+                withLive = VettedProfileHashAdopter.append(withLive, o.getMarkerRole(), o.getMarkerText(), liveHash,
+                        o.getEvidenceImageLocator());
+            }
+        }
+
+        if (withLive == profile) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, unrepairable.isEmpty()
                     ? igAccount + ": every marker reference already carries a well-formed hash — nothing to repair"
                     : igAccount + ": nothing could be repaired. " + String.join("; ", unrepairable));
         }
-        applyVettedProfile(igAccount, c, repaired);
+        applyVettedProfile(igAccount, c, withLive);
         SupportGroupConfig saved = configs.save(c);
-        List<DriftObservation> open = driftObservations.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(
-                c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT);
         open.forEach(DriftObservation::resolve);
         driftObservations.saveAll(open);
         return saved;
@@ -653,8 +673,10 @@ public class SupportGroupConfigService {
                 c.getId(), REFERENCE_HEALTH_KINDS);
         return open.stream().map(o -> {
             String referenceLocator = referencePictureFor(c, o);
-            return new ReferenceDriftView(o, referenceLocator, hashOfStoredImage(referenceLocator).orElse(null),
-                    hashOfStoredImage(o.getEvidenceImageLocator()).orElse(null), storedValueFor(c, o));
+            String referenceHash = hashOfStoredImage(referenceLocator).orElse(null);
+            String liveHash = hashOfStoredImage(o.getEvidenceImageLocator()).orElse(null);
+            return new ReferenceDriftView(o, referenceLocator, referenceHash, liveHash,
+                    storedValueFor(c, o), hamming(referenceHash, liveHash));
         }).toList();
     }
 
@@ -677,7 +699,30 @@ public class SupportGroupConfigService {
             /** The hash the CLIENT's live banner produces — exactly what adopting it would write. */
             String evidenceImageHash,
             /** What the reference stores TODAY. For a corrupt reference this is the value that is not a hash. */
-            String storedValue) {
+            String storedValue,
+            /**
+             * How far the live banner sits from the vetted picture, in bits — {@code null} when either is absent.
+             *
+             * <p>Turns "should I also add the live picture?" from a judgement into a fact an administrator can
+             * read: <strong>0</strong> means the two pictures are the same and adding buys nothing;
+             * anything higher means the live banner is a genuinely different rendition and carrying both widens
+             * what can be recognised.</p>
+             */
+            Integer liveDistance) {
+    }
+
+    /** Hamming distance between two equal-length dHash strings, or {@code null} when either is missing. */
+    private static Integer hamming(String a, String b) {
+        if (a == null || b == null || a.length() != b.length()) {
+            return null;
+        }
+        int d = 0;
+        for (int i = 0; i < a.length(); i++) {
+            if (a.charAt(i) != b.charAt(i)) {
+                d++;
+            }
+        }
+        return d;
     }
 
     /**
