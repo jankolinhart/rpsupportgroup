@@ -1,5 +1,6 @@
 package com.reelypops.rpsupportgroup.group;
 
+import com.reelypops.rpsupportgroup.vetting.ImageDHash;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
@@ -35,14 +36,17 @@ public class SupportGroupConfigService {
     private final VettedProfileVersionRepository versions;
     private final DriftObservationRepository driftObservations;
     private final MarkerImageEnricher markerImageEnricher;
+    private final MarkerImageStore markerImageStore;
 
     public SupportGroupConfigService(SupportGroupConfigRepository configs, VettedProfileVersionRepository versions,
                                      DriftObservationRepository driftObservations,
-                                     MarkerImageEnricher markerImageEnricher) {
+                                     MarkerImageEnricher markerImageEnricher,
+                                     MarkerImageStore markerImageStore) {
         this.configs = configs;
         this.versions = versions;
         this.driftObservations = driftObservations;
         this.markerImageEnricher = markerImageEnricher;
+        this.markerImageStore = markerImageStore;
     }
 
     /**
@@ -377,6 +381,22 @@ public class SupportGroupConfigService {
     public DriftObservation recordDrift(String igAccount, DriftKind kind, String reporterDeviceId, UUID reporterUserId,
                                         String nominatedOwnerHandle, Integer agreePass, Integer disagreePass,
                                         Integer persistenceCount) {
+        return recordDrift(igAccount, kind, reporterDeviceId, reporterUserId, nominatedOwnerHandle, agreePass,
+                disagreePass, persistenceCount, null, null, null, null, null);
+    }
+
+    /**
+     * As above, carrying the MEASURED drift and the picture the marker was actually posted with.
+     *
+     * <p>The picture is stored content-addressed via {@link MarkerImageStore}, the same store the vetted profile's
+     * display images use, so the admin UI can fetch it by locator through the existing endpoint. It arrives from the
+     * CLIENT and only from the client — directive B1: no cloud service ever contacts Instagram.</p>
+     */
+    @Transactional
+    public DriftObservation recordDrift(String igAccount, DriftKind kind, String reporterDeviceId, UUID reporterUserId,
+                                        String nominatedOwnerHandle, Integer agreePass, Integer disagreePass,
+                                        Integer persistenceCount, String markerRole, Integer imageDistance,
+                                        Integer imageThreshold, String evidencePostId, byte[] evidenceImage) {
         if (kind == DriftKind.NEW_OWNER && (nominatedOwnerHandle == null || nominatedOwnerHandle.isBlank())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "nominatedOwnerHandle is required for a NEW_OWNER drift");
@@ -396,6 +416,12 @@ public class SupportGroupConfigService {
                 })
                 .orElseGet(() -> DriftObservation.first(c.getId(), kind, reporterDeviceId, reporterUserId, handle,
                         agreePass, disagreePass, persistenceCount, now));
+        // Best-effort capture: a picture that cannot be stored must not reject the report. The measurement is the
+        // signal; the picture is what makes it actionable in one click.
+        String locator = evidenceImage == null || evidenceImage.length == 0
+                ? null
+                : markerImageStore.capture(evidenceImage).orElse(null);
+        obs.measure(markerRole, imageDistance, imageThreshold, evidencePostId, locator);
         return driftObservations.save(obs);
     }
 
@@ -405,6 +431,49 @@ public class SupportGroupConfigService {
      * mutation + no ETag bump (the config is not re-shipped to clients) — a fresh drift re-raises the flag. Idempotent:
      * a config with no open observations is a no-op. Returns the (unchanged) config.
      */
+    /**
+     * Adopt the picture a drifted marker is ACTUALLY being posted with: hash the delivered image and <strong>ADD</strong>
+     * that hash to the reference the drift names. Resolves the observation.
+     *
+     * <p><strong>It appends; it never replaces.</strong> {@code dHashes} is a list precisely so a reference can hold
+     * every version of its banner. Keeping the old hash keeps older posts matching, and — measured on
+     * `glowbloggeragency` (16/08/2026) — it also feeds the client's threshold calibration the evidence it was
+     * missing: with BOTH pictures present the calibration can see that Sunday's START and the ENDE banner are only 9
+     * bits apart and tightens its floor from 10 to 8 by itself. Replacing would have kept the floor at 10 and left
+     * the misread possible.</p>
+     *
+     * <p>The reference is matched by ROLE and, where the drift names one, by the OCR text — a per-weekday group
+     * carries several different banners for one role, and adopting Sunday's picture into Monday's reference would
+     * be worse than doing nothing.</p>
+     */
+    @Transactional
+    public SupportGroupConfig adoptDriftedMarkerImage(String igAccount, UUID observationId) {
+        SupportGroupConfig c = require(igAccount);
+        DriftObservation obs = driftObservations.findById(observationId)
+                .filter(o -> o.getConfigId().equals(c.getId()))
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "no such drift observation for " + igAccount));
+        if (obs.getEvidenceImageLocator() == null) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "this drift carries no picture, so there is nothing to adopt");
+        }
+        VettedProfile profile = c.getVettedProfile();
+        if (profile == null) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, igAccount + " has no vetted profile to add to");
+        }
+        byte[] image = markerImageStore.find(obs.getEvidenceImageLocator())
+                .map(MarkerImage::getImage)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT,
+                        "the drift's picture is no longer stored"));
+        String newHash = ImageDHash.hash(image);
+        VettedProfile updated = VettedProfileHashAdopter.append(profile, obs.getMarkerRole(), newHash);
+        applyVettedProfile(igAccount, c, updated);
+        SupportGroupConfig saved = configs.save(c);
+        obs.resolve();
+        driftObservations.save(obs);
+        return saved;
+    }
+
     @Transactional
     public SupportGroupConfig acknowledgeRevet(String igAccount) {
         SupportGroupConfig c = require(igAccount);
@@ -480,6 +549,18 @@ public class SupportGroupConfigService {
                 .max(Integer::compareTo).orElse(null);
         return new RevetReason(kind, distinctReporters, totalOccurrences, latest.getAgreePass(),
                 latest.getDisagreePass(), maxPersistence, List.of(), firstSeen, lastSeen);
+    }
+
+    /**
+     * Admin: a config's open MEASURED banner-drift observations, newest-seen first — the surface behind the
+     * "this banner changed, adopt the new picture" prompt. Each carries the distance, the reference it belongs to
+     * and a locator for the picture the owner is actually posting.
+     */
+    @Transactional(readOnly = true)
+    public List<DriftObservation> markerImageDrifts(String igAccount) {
+        SupportGroupConfig c = require(igAccount);
+        return driftObservations.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(
+                c.getId(), DriftKind.MARKER_IMAGE_DRIFT);
     }
 
     /** A config's open new-owner nominations, newest-seen first (M5 admin review-candidate surface). */

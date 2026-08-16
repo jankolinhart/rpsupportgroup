@@ -17,5 +17,18 @@ public record DriftReport(
         String nominatedOwnerHandle,
         Integer agreePass,
         Integer disagreePass,
-        Integer persistenceCount) {
+        Integer persistenceCount,
+        String markerRole,
+        Integer imageDistance,
+        Integer imageThreshold,
+        String evidencePostId,
+        /**
+         * The picture the marker was ACTUALLY posted with, captured by the client and sent as base64.
+         *
+         * <p>Directive B1: no cloud service ever contacts Instagram, so this is the only route by which an
+         * administrator can see what the owner is posting today — and therefore the only way to re-vet a drifted
+         * banner without a full duty scrape. Optional: the measurement still stands without it, the administrator
+         * simply has nothing to look at.</p>
+         */
+        byte[] evidenceImage) {
 }

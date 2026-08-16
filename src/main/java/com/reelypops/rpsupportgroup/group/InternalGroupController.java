@@ -218,7 +218,28 @@ public class InternalGroupController {
     @ResponseStatus(HttpStatus.ACCEPTED)
     public void reportDrift(@PathVariable String igAccount, @Valid @RequestBody DriftReport req) {
         service.recordDrift(igAccount, req.kind(), req.reporterDeviceId(), req.reporterUserId(),
-                req.nominatedOwnerHandle(), req.agreePass(), req.disagreePass(), req.persistenceCount());
+                req.nominatedOwnerHandle(), req.agreePass(), req.disagreePass(), req.persistenceCount(),
+                req.markerRole(), req.imageDistance(), req.imageThreshold(), req.evidencePostId(),
+                req.evidenceImage());
+    }
+
+    /**
+     * Admin "add this picture to the vetted profile" — the one-click remedy for MEASURED banner drift.
+     *
+     * <p>Hashes the picture the client delivered and <strong>ADDS</strong> that hash to the reference the drift
+     * names, then resolves the observation. It never replaces what is there: {@code dHashes} is a list precisely so
+     * a reference can hold every version of its banner, older posts keep matching, and — measured on
+     * `glowbloggeragency` — carrying both pictures lets the client's threshold calibration see that the two roles
+     * are close and tighten its own floor. Replacing would have left that floor wide.</p>
+     *
+     * <p>409 when the drift carries no picture or the picture is no longer stored; 404 when the observation does not
+     * belong to this group.</p>
+     */
+    @PostMapping("/{igAccount}/drift/{observationId}/adopt-image")
+    public GroupResponse adoptDriftedMarkerImage(@PathVariable String igAccount, @PathVariable UUID observationId) {
+        SupportGroupConfig c = service.adoptDriftedMarkerImage(igAccount, observationId);
+        SupportGroupConfigService.RevetStatus s = service.revetStatus(c);
+        return GroupResponse.of(c, service.activeChangeNote(c), s.needsRevet(), s.reasons());
     }
 
     /**
@@ -231,6 +252,18 @@ public class InternalGroupController {
         SupportGroupConfig c = service.acknowledgeRevet(igAccount);
         SupportGroupConfigService.RevetStatus s = service.revetStatus(c);
         return GroupResponse.of(c, service.activeChangeNote(c), s.needsRevet(), s.reasons());
+    }
+
+    /**
+     * Admin: a config's open MEASURED banner-drift observations, newest-seen first.
+     *
+     * <p>Each carries how far the picture has moved, the reference it belongs to, and {@code evidenceImageLocator} —
+     * fetch the picture itself at {@code GET /marker-images/{locator}}. This is what lets the admin surface say
+     * "here is what the owner is posting now" rather than merely "something drifted".</p>
+     */
+    @GetMapping("/{igAccount}/drift")
+    public List<DriftObservationResponse> markerImageDrifts(@PathVariable String igAccount) {
+        return service.markerImageDrifts(igAccount).stream().map(DriftObservationResponse::of).toList();
     }
 
     /** Admin: a config's open new-owner nominations (M5 review-candidate surface), newest-seen first. */
