@@ -9,6 +9,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -17,6 +18,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -211,6 +213,7 @@ public class SupportGroupConfigService {
      * history append + the config write commit together in the caller's transaction.
      */
     private void applyVettedProfile(String igAccount, SupportGroupConfig c, VettedProfile profile) {
+        rejectMalformedReferenceHashes(igAccount, profile);
         VettedProfile enriched = markerImageEnricher.enrich(igAccount, profile);
         long next = nextSnapshotVersion(c.getId());
         VettedProfile before = c.getVettedProfile();
@@ -221,6 +224,71 @@ public class SupportGroupConfigService {
         List<VettedProfileVersion.ChangeNoteEntry> changeNote =
                 before == null ? List.of() : VettedProfileDiff.diff(before, applied);
         versions.save(VettedProfileVersion.snapshot(c.getId(), next, applied, changeNote));
+    }
+
+    /**
+     * A usable perceptual hash: EXACTLY 64 binary digits, the length the client's {@code dhash.gradientHash}
+     * produces and the only thing its matcher can compare.
+     */
+    private static final Pattern WELL_FORMED_DHASH = Pattern.compile("^[01]{64}$");
+
+    /**
+     * Refuse a vetted profile carrying a reference hash that is not a hash. THE PRODUCER BOUNDARY — nothing
+     * malformed may enter the authoritative record, whatever wrote it.
+     *
+     * <p><strong>Why this exists.</strong> On 15/08/2026 `glowbloggeragency`'s Sunday START reference was stored
+     * with a 39-character Instagram post SHORTCODE where its dHash belongs — byte-identical to the record's own
+     * {@code shortcode} field, written by a portal fallback that substituted the post id when an advisory marker
+     * could not be tied to an image cluster. Every comparison site in the client skips a hash whose length
+     * differs from the candidate's, so the reference became INVISIBLE: it could not match, could not contradict,
+     * and did not take part in the threshold calibration that sets the profile's width. It went unnoticed until a
+     * misread marker cost a full day of likes.</p>
+     *
+     * <p>The portal itself no longer produces one (rpadminfrontend #95), so this is the backstop for anything that
+     * reaches the API another way. It fails LOUDLY and names the offending value: a corrupt hash must never enter
+     * a vetted profile, and it must never sit in one unnoticed. An EMPTY hash list is perfectly legal — a
+     * text-only reference is honest and matchable by OCR; only a value pretending to be a hash is rejected.</p>
+     */
+    private void rejectMalformedReferenceHashes(String igAccount, VettedProfile profile) {
+        if (profile == null) {
+            return;
+        }
+        List<String> faults = new ArrayList<>();
+        Stream.concat(
+                        profile.detector() == null || profile.detector().references() == null
+                                ? Stream.<VettedProfile.TypedMarkerReference>empty()
+                                : profile.detector().references().stream(),
+                        profile.weeklySchedule() == null || profile.weeklySchedule().days() == null
+                                ? Stream.<VettedProfile.TypedMarkerReference>empty()
+                                : profile.weeklySchedule().days().stream()
+                                        .filter(d -> d != null && d.references() != null)
+                                        .flatMap(d -> d.references().stream()))
+                .filter(r -> r != null && r.dHashes() != null)
+                .forEach(r -> r.dHashes().stream()
+                        .filter(h -> h == null || !WELL_FORMED_DHASH.matcher(h).matches())
+                        .forEach(h -> faults.add(describeMalformedHash(r, h))));
+        if (!faults.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    igAccount + ": a marker reference carries something that is not a perceptual hash — "
+                            + "it would be silently unmatchable. " + String.join("; ", faults));
+        }
+    }
+
+    /** Name the fault in terms an administrator can act on, rather than as a length assertion. */
+    private static String describeMalformedHash(VettedProfile.TypedMarkerReference ref, String hash) {
+        String where = (ref.markerType() == null ? "?" : ref.markerType())
+                + (ref.ocrText() == null || ref.ocrText().isBlank() ? "" : " \"" + ref.ocrText() + "\"");
+        if (hash == null) {
+            return where + ": null";
+        }
+        // The one that has actually happened: a post identifier written into the hash field.
+        if (hash.equals(ref.shortcode())) {
+            return where + ": the post shortcode (" + hash + ") was stored as the hash";
+        }
+        if (hash.matches("[A-Za-z0-9_-]{11,44}") && !hash.matches("[01]+")) {
+            return where + ": '" + hash + "' looks like an Instagram post shortcode, not a hash";
+        }
+        return where + ": '" + hash + "' is not 64 binary digits";
     }
 
     private long nextSnapshotVersion(UUID configId) {

@@ -484,7 +484,7 @@ class InternalGroupControllerTest {
             "{\"definition\":{\"type\":\"TWO_MARKER\",\"timezone\":\"Europe/Berlin\",\"markerOwners\":[\"ras.circle\"],"
                     + "\"startMarkerTime\":\"08:00\",\"endMarkerTime\":\"20:00\",\"openWeekdays\":[1,2,3,4,5]},"
                     + "\"detector\":{\"style\":\"FLAT_BANNER\",\"references\":[{\"markerType\":\"start\","
-                    + "\"dHashes\":[\"0000\"],\"matchThreshold\":4}]},\"description\":\"Dailyblogger group.\"}";
+                    + "\"dHashes\":[\"1010101010101010101010101010101010101010101010101010101010101010\"],\"matchThreshold\":4}]},\"description\":\"Dailyblogger group.\"}";
 
     @Test
     void saveVettedProfileProjectsToDefinitionWithoutVetting() throws Exception {
@@ -597,7 +597,7 @@ class InternalGroupControllerTest {
             "{\"definition\":{\"type\":\"TWO_MARKER\",\"timezone\":\"Europe/Berlin\",\"markerOwners\":[\"ras.circle\"],"
                     + "\"startMarkerTime\":\"09:00\",\"endMarkerTime\":\"20:00\",\"openWeekdays\":[1,2,3,4,5]},"
                     + "\"detector\":{\"style\":\"FLAT_BANNER\",\"references\":[{\"markerType\":\"start\","
-                    + "\"dHashes\":[\"0000\"],\"matchThreshold\":6}]},\"description\":\"Updated blogger group.\"}";
+                    + "\"dHashes\":[\"1010101010101010101010101010101010101010101010101010101010101010\"],\"matchThreshold\":6}]},\"description\":\"Updated blogger group.\"}";
 
     @Test
     void firstSaveOpensVersionOneWithEmptyChangeNote() throws Exception {
@@ -740,11 +740,11 @@ class InternalGroupControllerTest {
         // Save a vetted profile carrying a per-weekday schedule — a Monday CROSS_DAY round (end marker a day later).
         String body = "{\"definition\":{\"type\":\"TWO_MARKER\",\"timezone\":\"Europe/Berlin\",\"markerOwners\":[\"ras.circle\"],"
                 + "\"startMarkerTime\":\"20:00\",\"endMarkerTime\":\"02:00\",\"endMarkerDayOffset\":1,\"openWeekdays\":[1]},"
-                + "\"detector\":{\"style\":\"FLAT_BANNER\",\"references\":[{\"markerType\":\"start\",\"dHashes\":[\"0000\"],\"matchThreshold\":4}]},"
+                + "\"detector\":{\"style\":\"FLAT_BANNER\",\"references\":[{\"markerType\":\"start\",\"dHashes\":[\"1010101010101010101010101010101010101010101010101010101010101010\"],\"matchThreshold\":4}]},"
                 + "\"description\":\"Nightly group.\","
                 + "\"weeklySchedule\":{\"days\":[{\"weekday\":1,\"open\":true,\"type\":\"TWO_MARKER\","
                 + "\"startMarkerTime\":\"20:00\",\"endMarkerTime\":\"02:00\",\"endMarkerDayOffset\":1,\"style\":\"FLAT_BANNER\","
-                + "\"references\":[{\"markerType\":\"start\",\"dHashes\":[\"0000\"],\"ocrText\":\"START\",\"matchThreshold\":4}]}]}}";
+                + "\"references\":[{\"markerType\":\"start\",\"dHashes\":[\"1010101010101010101010101010101010101010101010101010101010101010\"],\"ocrText\":\"START\",\"matchThreshold\":4}]}]}}";
         mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/vetted-profile", "m5-weekly")
                         .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk());

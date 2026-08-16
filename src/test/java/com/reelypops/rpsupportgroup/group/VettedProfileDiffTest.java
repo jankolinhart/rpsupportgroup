@@ -20,14 +20,14 @@ class VettedProfileDiffTest {
     private static final String BEFORE = """
             {"definition":{"type":"TWO_MARKER","timezone":"Europe/Berlin","markerOwners":["ras.circle"],
             "startMarkerTime":"08:00","endMarkerTime":"20:00","openWeekdays":[1,2,3,4,5]},
-            "detector":{"style":"FLAT_BANNER","references":[{"markerType":"start","dHashes":["0000"],
+            "detector":{"style":"FLAT_BANNER","references":[{"markerType":"start","dHashes":["1010101010101010101010101010101010101010101010101010101010101010"],
             "ocrText":"START","matchThreshold":4}]},"description":"Old blurb."}""";
 
     // vs BEFORE: description + dHash + ocrText + threshold changed; a marker owner ADDED; two open days REMOVED.
     private static final String AFTER = """
             {"definition":{"type":"TWO_MARKER","timezone":"Europe/Berlin","markerOwners":["ras.circle","two.circle"],
             "startMarkerTime":"08:00","endMarkerTime":"20:00","openWeekdays":[1,2,3]},
-            "detector":{"style":"FLAT_BANNER","references":[{"markerType":"start","dHashes":["1111"],
+            "detector":{"style":"FLAT_BANNER","references":[{"markerType":"start","dHashes":["1100110011001100110011001100110011001100110011001100110011001100"],
             "ocrText":"BEGIN","matchThreshold":6}]},"description":"New blurb."}""";
 
     private static VettedProfile profile(String json) throws Exception {
@@ -40,7 +40,7 @@ class VettedProfileDiffTest {
 
         assertThat(diff).contains(
                 new ChangeNoteEntry("description", "Old blurb.", "New blurb."),                    // leaf changed
-                new ChangeNoteEntry("detector.references[0].dHashes[0]", "0000", "1111"),           // array-leaf changed
+                new ChangeNoteEntry("detector.references[0].dHashes[0]", "1010101010101010101010101010101010101010101010101010101010101010", "1100110011001100110011001100110011001100110011001100110011001100"),           // array-leaf changed
                 new ChangeNoteEntry("detector.references[0].ocrText", "START", "BEGIN"),            // nested leaf changed
                 new ChangeNoteEntry("detector.references[0].matchThreshold", "4", "6"),             // nested number changed
                 new ChangeNoteEntry("definition.markerOwners[1]", null, "two.circle"),              // added (from == null)
