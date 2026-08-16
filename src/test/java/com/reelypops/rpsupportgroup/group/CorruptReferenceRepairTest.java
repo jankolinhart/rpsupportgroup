@@ -279,11 +279,51 @@ class CorruptReferenceRepairTest {
 
     @Test
     void refusesWhenEveryReferenceIsAlreadyWellFormed() {
-        groupWith(ref("start", "START", LOCATOR, GOOD));
+        SupportGroupConfig c = groupWith(ref("start", "START", LOCATOR, GOOD));
+        when(drifts.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(
+                c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT)).thenReturn(List.of());
 
         assertThatThrownBy(() -> service.repairMalformedReferenceHashes("glowbloggeragency"))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("nothing to repair");
+    }
+
+    @Test
+    void REGRESSION_repairCLEARS_anObservationThatOutlivedItsFault() {
+        // An observation can outlive the fault: a client on a stale snapshot re-opens a resolved one, then adopts
+        // the fix and never reports it again — so the ingest guard, which only fires on a report, never runs. The
+        // group was left stuck with Repair answering 409 and Acknowledge covering only marker-disagree. Live on
+        // `glowbloggeragency` (16/08/2026). The button now clears what it can instead of refusing.
+        SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, GOOD)); // already fine
+        java.time.Instant now = java.time.Instant.now();
+        DriftObservation stuck = DriftObservation.first(c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT, "dev-1",
+                null, null, null, null, 1, now);
+        stuck.measure("start", "GB AGENCY START Sonntag", null, null, null, null, "looks like a shortcode");
+        when(drifts.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(
+                c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT)).thenReturn(List.of(stuck));
+        when(drifts.saveAll(any())).thenAnswer(i -> i.getArgument(0));
+
+        SupportGroupConfig out = service.repairMalformedReferenceHashes("glowbloggeragency");
+
+        assertThat(stuck.isResolved()).isTrue();
+        assertThat(out).isNotNull();
+    }
+
+    @Test
+    void repairStillREFUSES_whenTheObservationDescribesARealFault() {
+        // Only observations the profile CONTRADICTS are cleared — a genuine one must not be swept away.
+        SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", null, SHORTCODE));
+        java.time.Instant now = java.time.Instant.now();
+        DriftObservation real = DriftObservation.first(c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT, "dev-1",
+                null, null, null, null, 1, now);
+        real.measure("start", "GB AGENCY START Sonntag", null, null, null, null, "looks like a shortcode");
+        when(drifts.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(
+                c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT)).thenReturn(List.of(real));
+
+        assertThatThrownBy(() -> service.repairMalformedReferenceHashes("glowbloggeragency"))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("nothing could be repaired");
+        assertThat(real.isResolved()).isFalse();
     }
 
     @Test

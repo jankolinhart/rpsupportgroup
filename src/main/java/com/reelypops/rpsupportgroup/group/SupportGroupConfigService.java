@@ -552,6 +552,20 @@ public class SupportGroupConfigService {
         }
 
         if (withLive == profile) {
+            // Nothing to repair — but that is not necessarily nothing to DO. An observation can outlive the fault
+            // it describes: a client reporting against a snapshot it had not yet re-pulled re-opens a resolved
+            // one, and then nothing ever closes it, because the client has since adopted the fix and will never
+            // report it again. The ingest guard cannot help — it only fires on a report that never comes.
+            //
+            // So the button clears what it can instead of refusing. Observed live on `glowbloggeragency`
+            // (16/08/2026): repaired, re-opened a minute later by a stale report, and then stuck with Repair
+            // answering 409 and Acknowledge covering only marker-disagree.
+            List<DriftObservation> stale = openCorruptionObservationsNowFine(c);
+            if (!stale.isEmpty()) {
+                stale.forEach(DriftObservation::resolve);
+                driftObservations.saveAll(stale);
+                return c;
+            }
             throw new ResponseStatusException(HttpStatus.CONFLICT, unrepairable.isEmpty()
                     ? igAccount + ": every marker reference already carries a well-formed hash — nothing to repair"
                     : igAccount + ": nothing could be repaired. " + String.join("; ", unrepairable));
@@ -561,6 +575,14 @@ public class SupportGroupConfigService {
         open.forEach(DriftObservation::resolve);
         driftObservations.saveAll(open);
         return saved;
+    }
+
+    /** Open corruption observations whose named reference demonstrably carries a well-formed hash today. */
+    private List<DriftObservation> openCorruptionObservationsNowFine(SupportGroupConfig c) {
+        return driftObservations.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(
+                        c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT).stream()
+                .filter(o -> !referenceIsActuallyCorrupt(c, o.getMarkerRole(), o.getMarkerText()))
+                .toList();
     }
 
     /** The dHash of a reference's own stored picture, or empty when it has no locator / the picture is gone. */
