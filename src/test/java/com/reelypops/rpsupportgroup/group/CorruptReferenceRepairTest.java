@@ -60,6 +60,23 @@ class CorruptReferenceRepairTest {
         }
     }
 
+    /** A DIFFERENT decodable PNG — so its dHash genuinely differs from {@link #png()}. */
+    private static byte[] differentPng() {
+        try {
+            BufferedImage img = new BufferedImage(16, 16, BufferedImage.TYPE_INT_RGB);
+            for (int y = 0; y < 16; y++) {
+                for (int x = 0; x < 16; x++) {
+                    img.setRGB(x, y, ((15 - x) * 16) << 8 | (y * 16));
+                }
+            }
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            ImageIO.write(img, "png", out);
+            return out.toByteArray();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
     private static VettedProfile.TypedMarkerReference ref(String type, String text, String locator, String... hashes) {
         return new VettedProfile.TypedMarkerReference(type, List.of(hashes), text, 4, "detected", SHORTCODE,
                 null, locator);
@@ -102,6 +119,104 @@ class CorruptReferenceRepairTest {
 
         List<String> hashes = out.getVettedProfile().weeklySchedule().days().get(0).references().get(0).dHashes();
         assertThat(hashes).singleElement().asString().matches("[01]{64}"); // the shortcode is GONE
+        assertThat(open.isResolved()).isTrue();
+    }
+
+    @Test
+    void REPAIR_alsoAdoptsTheLIVE_bannerWhenItDIFFERS_fromTheVettedPicture() {
+        // One decisive click: repairing the field and adopting the live banner are the same operator intent —
+        // "make this reference right" — so they happen together rather than as two buttons whose ordering has to
+        // be reasoned about. Both pictures end up carried, which is what widens what can be recognised.
+        SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
+        DriftObservation open = openCorruptDrift(c);
+        open.measure("start", "GB AGENCY START Sonntag", null, null, "DcEj0SRu", "live-loc", "shortcode");
+        MarkerImage vetted = mock(MarkerImage.class);
+        when(vetted.getImage()).thenReturn(png());
+        when(imageStore.find(LOCATOR)).thenReturn(Optional.of(vetted));
+        MarkerImage live = mock(MarkerImage.class);
+        when(live.getImage()).thenReturn(differentPng());
+        when(imageStore.find("live-loc")).thenReturn(Optional.of(live));
+
+        SupportGroupConfig out = service.repairMalformedReferenceHashes("glowbloggeragency");
+
+        List<String> hashes = out.getVettedProfile().weeklySchedule().days().get(0).references().get(0).dHashes();
+        assertThat(hashes).hasSize(2);                       // repaired + the live banner
+        assertThat(hashes).allMatch(h -> h.matches("[01]{64}"));
+        assertThat(hashes).doesNotContain(SHORTCODE);        // the junk is gone
+        assertThat(open.isResolved()).isTrue();
+    }
+
+    @Test
+    void repairDoesNotDUPLICATE_whenTheLiveBannerIsTheSamePicture() {
+        // Identical pictures need no second entry — the decision the operator would otherwise have to make.
+        SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
+        DriftObservation open = openCorruptDrift(c);
+        open.measure("start", "GB AGENCY START Sonntag", null, null, "DcEj0SRu", "live-loc", "shortcode");
+        MarkerImage same = mock(MarkerImage.class);
+        when(same.getImage()).thenReturn(png());
+        when(imageStore.find(LOCATOR)).thenReturn(Optional.of(same));
+        when(imageStore.find("live-loc")).thenReturn(Optional.of(same));
+
+        SupportGroupConfig out = service.repairMalformedReferenceHashes("glowbloggeragency");
+
+        assertThat(out.getVettedProfile().weeklySchedule().days().get(0).references().get(0).dHashes()).hasSize(1);
+    }
+
+    @Test
+    void theDISTANCE_betweenTheTwoPicturesIsReported_soTheDecisionIsReadable() {
+        SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
+        java.time.Instant now = java.time.Instant.now();
+        DriftObservation corrupt = DriftObservation.first(c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT, "d", null,
+                null, null, null, 1, now);
+        corrupt.measure("start", "GB AGENCY START Sonntag", null, null, "DcEj0SRu", "live-loc", "shortcode");
+        when(drifts.findByConfigIdAndKindInAndResolvedFalseOrderByLastSeenAtDesc(any(), any()))
+                .thenReturn(List.of(corrupt));
+        MarkerImage vetted = mock(MarkerImage.class);
+        when(vetted.getImage()).thenReturn(png());
+        when(imageStore.find(LOCATOR)).thenReturn(Optional.of(vetted));
+        MarkerImage live = mock(MarkerImage.class);
+        when(live.getImage()).thenReturn(differentPng());
+        when(imageStore.find("live-loc")).thenReturn(Optional.of(live));
+
+        var v = service.markerReferenceDrifts("glowbloggeragency").get(0);
+
+        assertThat(v.liveDistance()).isNotNull().isGreaterThan(0); // "adding this widens what can be recognised"
+        assertThat(DriftObservationResponse.of(v).liveDistance()).isEqualTo(v.liveDistance());
+    }
+
+    @Test
+    void theDistanceIsNullWhenThereIsNoLiveBannerToCompare() {
+        SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
+        java.time.Instant now = java.time.Instant.now();
+        DriftObservation corrupt = DriftObservation.first(c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT, "d", null,
+                null, null, null, 1, now);
+        corrupt.measure("start", "GB AGENCY START Sonntag", null, null, null, null, "shortcode");
+        when(drifts.findByConfigIdAndKindInAndResolvedFalseOrderByLastSeenAtDesc(any(), any()))
+                .thenReturn(List.of(corrupt));
+        MarkerImage vetted = mock(MarkerImage.class);
+        when(vetted.getImage()).thenReturn(png());
+        when(imageStore.find(LOCATOR)).thenReturn(Optional.of(vetted));
+
+        assertThat(service.markerReferenceDrifts("glowbloggeragency").get(0).liveDistance()).isNull();
+    }
+
+    @Test
+    void repairStillSucceedsWhenTheLiveBannerHasBeenRECLAIMED() {
+        // The observation names a picture that is no longer in the store (retention, a cleared cache). The repair
+        // must still fix the hash from the vetted picture rather than failing because the bonus is unavailable —
+        // the live banner improves the outcome, it is not a precondition for it.
+        SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
+        DriftObservation open = openCorruptDrift(c);
+        open.measure("start", "GB AGENCY START Sonntag", null, null, "DcEj0SRu", "gone-loc", "shortcode");
+        MarkerImage vetted = mock(MarkerImage.class);
+        when(vetted.getImage()).thenReturn(png());
+        when(imageStore.find(LOCATOR)).thenReturn(Optional.of(vetted));
+        when(imageStore.find("gone-loc")).thenReturn(Optional.empty());
+
+        SupportGroupConfig out = service.repairMalformedReferenceHashes("glowbloggeragency");
+
+        List<String> hashes = out.getVettedProfile().weeklySchedule().days().get(0).references().get(0).dHashes();
+        assertThat(hashes).singleElement().asString().matches("[01]{64}");
         assertThat(open.isResolved()).isTrue();
     }
 

@@ -44,24 +44,26 @@ public record DriftObservationResponse(
          * <p>For a corrupt reference this is the value that is not a hash. Printed next to the two real hashes,
          * the fault needs no explaining: 39 characters of base64url beside two rows of 64 binary digits.</p>
          */
-        String storedValue) {
+        String storedValue,
+        /** Bits between the live banner and the vetted picture — 0 means adding the live one buys nothing. */
+        Integer liveDistance) {
 
     static DriftObservationResponse of(SupportGroupConfigService.ReferenceDriftView v) {
         return of(v.observation(), v.referenceImageLocator(), v.referenceImageHash(), v.evidenceImageHash(),
-                v.storedValue());
+                v.storedValue(), v.liveDistance());
     }
 
     static DriftObservationResponse of(DriftObservation o) {
-        return of(o, null, null, null, null);
+        return of(o, null, null, null, null, null);
     }
 
     static DriftObservationResponse of(DriftObservation o, String referenceImageLocator, String referenceImageHash,
-                                       String evidenceImageHash, String storedValue) {
+                                       String evidenceImageHash, String storedValue, Integer liveDistance) {
         return new DriftObservationResponse(o.getId(), o.getKind(), o.getReporterDeviceId(), o.getReporterUserId(),
                 o.getNominatedOwnerHandle(), o.getAgreePass(), o.getDisagreePass(), o.getPersistenceCount(),
                 o.getOccurrenceCount(), o.isResolved(), o.getFirstSeenAt(), o.getLastSeenAt(),
                 o.getMarkerRole(), o.getMarkerText(), o.getDetail(), o.getImageDistance(), o.getImageThreshold(),
                 o.getEvidencePostId(), o.getEvidenceImageLocator(), referenceImageLocator, referenceImageHash,
-                evidenceImageHash, storedValue);
+                evidenceImageHash, storedValue, liveDistance);
     }
 }
