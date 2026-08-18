@@ -1,6 +1,5 @@
 package com.reelypops.rpsupportgroup.group;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Function;
@@ -28,11 +27,12 @@ import java.util.regex.Pattern;
  * <p><strong>No Instagram access is involved</strong> (directive B1). The fingerprint already exists: a deep scrape
  * streamed one for this very post, and clients deliver one with every live picture they report.</p>
  *
- * <p><strong>Replace, don't append — the one place in this loop where that is right.</strong> Adoption appends,
- * because an older picture is still a real picture and keeping both feeds the client's calibration. A malformed
- * value is not evidence of anything: it matches nothing, contradicts nothing, and distorts calibration precisely by
- * being unmeasurable. So it is dropped, and a well-formed hash recomputed from the picture takes its place. Any
- * well-formed hashes already on the reference are kept, in their original order.</p>
+ * <p><strong>Replace, and replace EVERYTHING.</strong> The malformed value is dropped — it matches nothing,
+ * contradicts nothing, and distorts calibration precisely by being unmeasurable — and so are any well-formed
+ * hashes sitting beside it. A reference carries the client's newest fingerprint and nothing else: a second,
+ * near-identical fingerprint of the same banner measurably degrades the client's threshold calibration, which
+ * reads a reference's tolerance from how far apart the roles sit. Observed on `glowbloggeragency` (18/08/2026)
+ * and reverted by hand before this code caught up.</p>
  *
  * <p>Pure and side-effect free: returns a new profile, or the SAME instance when there was nothing to repair, so the
  * caller can tell "repaired" from "no-op" by identity.</p>
@@ -100,6 +100,12 @@ final class VettedProfileHashRepairer {
         if (good.size() == r.dHashes().size()) {
             return r; // nothing malformed on this reference
         }
+        // ⚠️ ONE PICTURE, THE NEWEST — the same rule adoption follows (18/08/2026). Keeping the surviving
+        // well-formed hashes alongside the repaired one would leave the reference carrying two near-identical
+        // fingerprints of the same banner, and that measurably degrades the client's threshold calibration:
+        // calibration reads a tolerance from how far apart the roles sit, so a second rendition compresses that
+        // separation and forces a tighter floor. Observed on `glowbloggeragency` and reverted by hand.
+        
         Optional<String> fromClient = clientHashOf.apply(r);
         if (fromClient.isEmpty()) {
             // Leave it exactly as it is, and SAY SO. An emptied reference would look repaired while still matching
@@ -110,12 +116,8 @@ final class VettedProfileHashRepairer {
                     + " — this reference needs a re-vet");
             return r;
         }
-        List<String> repaired = new ArrayList<>(good);
-        if (!repaired.contains(fromClient.get())) {
-            repaired.add(fromClient.get());
-        }
         changed[0] = true;
-        return new VettedProfile.TypedMarkerReference(r.markerType(), List.copyOf(repaired), r.ocrText(),
+        return new VettedProfile.TypedMarkerReference(r.markerType(), List.of(fromClient.get()), r.ocrText(),
                 r.matchThreshold(), r.source(), r.shortcode(), r.imageUrl(), r.imageLocator());
     }
 

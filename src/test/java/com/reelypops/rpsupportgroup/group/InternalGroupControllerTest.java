@@ -2,6 +2,8 @@ package com.reelypops.rpsupportgroup.group;
 
 import com.reelypops.rpsupportgroup.TestcontainersConfiguration;
 import org.hamcrest.Matchers;
+
+import static org.hamcrest.Matchers.not;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -1016,7 +1018,7 @@ class InternalGroupControllerTest {
     // --- MEASURED banner drift → one-click adoption of the newer picture (16/08/2026) ---
 
     @Test
-    void adoptingADriftedBannerADDS_thePictureToTheVettedProfile() throws Exception {
+    void adoptingADriftedBannerREPLACES_thePictureInTheVettedProfile() throws Exception {
         createConfig("drift-adopt");
         String old = "1010101010101010101010101010101010101010101010101010101010101010";
         String body = "{\"definition\":{\"type\":\"TWO_MARKER\",\"timezone\":\"Europe/Paris\",\"markerOwners\":[\"glow\"],"
@@ -1055,16 +1057,17 @@ class InternalGroupControllerTest {
                 .andExpect(jsonPath("$[0].evidenceImageLocator").isNotEmpty())
                 .andReturn().getResponse().getContentAsString(), "$[0].id");
 
-        // One click: ADD the new picture. The old hash STAYS — it is what lets the client's calibration see that
-        // the two roles are close and tighten its own threshold floor.
+        // One click: TAKE the new picture. The old hash goes — carrying both degrades the client's threshold
+        // calibration, which reads a reference's tolerance from how far apart the roles sit, so two renditions of
+        // one banner compress that separation. Observed live on `glowbloggeragency` (18/08/2026).
         mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift/{id}/adopt-image", "drift-adopt", obsId)
                         .header(KEY_HEADER, KEY))
                 .andExpect(status().isOk());
 
         mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-adopt").header(KEY_HEADER, KEY))
-                .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes.length()").value(2))
-                .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes[0]").value(old))
-                .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes[1]").value(CLIENT_HASH));
+                .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes.length()").value(1))
+                .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes[0]").value(CLIENT_HASH))
+                .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes[0]").value(not(old)));
     }
 
     @Test

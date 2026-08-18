@@ -69,13 +69,17 @@ class VettedProfileHashRepairerTest {
     }
 
     @Test
-    void wellFormedHashesAlreadyPresentAreKept_inOrder() {
+    void wellFormedHashesSittingBesideTheMalformedOneAreDROPPED_too() {
         VettedProfile out = VettedProfileHashRepairer.repair(
                 profile(null, List.of(ref("start", "START", LOCATOR, GOOD, SHORTCODE))),
                 VettedProfileHashRepairerTest::clientHash, unrepairable);
 
+        // ⚠️ ONE picture, the newest — the same rule adoption follows. Keeping GOOD alongside would leave the
+        // reference carrying two near-identical fingerprints of one banner, and that degrades the client's
+        // threshold calibration: it reads a reference's tolerance from how far apart the roles sit, so a second
+        // rendition compresses that separation and forces a tighter floor.
         assertThat(out.weeklySchedule().days().get(0).references().get(0).dHashes())
-                .containsExactly(GOOD, FROM_CLIENT);
+                .containsExactly(FROM_CLIENT);
     }
 
     @Test

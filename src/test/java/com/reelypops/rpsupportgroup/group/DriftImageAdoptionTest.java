@@ -126,7 +126,7 @@ class DriftImageAdoptionTest {
     }
 
     @Test
-    void ADOPTING_addsTheNewHashWithoutRemovingTheOld() {
+    void ADOPTING_REPLACES_theOldHashWithTheClientsNewest() {
         SupportGroupConfig c = vettedGroup();
         DriftObservation o = measuredDrift(c, LOCATOR);
         MarkerImage stored = mock(MarkerImage.class);
@@ -137,9 +137,11 @@ class DriftImageAdoptionTest {
 
         VettedProfile.TypedMarkerReference ref =
                 out.getVettedProfile().weeklySchedule().days().get(0).references().get(0);
-        assertThat(ref.dHashes()).hasSize(2);
-        assertThat(ref.dHashes().get(0)).isEqualTo("1010".repeat(16)); // the old picture is KEPT
-        assertThat(ref.dHashes().get(1)).isEqualTo(CLIENT_HASH);       // the client's value, verbatim
+        // ⚠️ ONE picture, the newest. Carrying the superseded fingerprint alongside it degrades the client's
+        // threshold calibration — calibration reads a reference's tolerance from how far apart the roles sit, and
+        // two renditions of one banner compress that separation. Observed on `glowbloggeragency` and reverted by
+        // hand before this code caught up. The accepted cost: a post still carrying the old banner stops matching.
+        assertThat(ref.dHashes()).containsExactly(CLIENT_HASH);
         // The DISPLAY follows the newest picture — and survives MarkerImageEnricher, which re-derives the locator
         // from the corpus on every save and would otherwise put the superseded image straight back.
         assertThat(ref.imageLocator()).isEqualTo(LOCATOR);
