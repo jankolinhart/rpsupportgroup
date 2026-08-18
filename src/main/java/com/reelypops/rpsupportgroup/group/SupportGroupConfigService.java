@@ -1,6 +1,6 @@
 package com.reelypops.rpsupportgroup.group;
 
-import com.reelypops.rpsupportgroup.vetting.ImageDHash;
+import com.reelypops.rpsupportgroup.corpus.MarkerCorpusService;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
@@ -37,16 +37,22 @@ public class SupportGroupConfigService {
     private final DriftObservationRepository driftObservations;
     private final MarkerImageEnricher markerImageEnricher;
     private final MarkerImageStore markerImageStore;
+    private final ClientMarkerImageRepository clientMarkerImages;
+    private final MarkerCorpusService corpus;
 
     public SupportGroupConfigService(SupportGroupConfigRepository configs, VettedProfileVersionRepository versions,
                                      DriftObservationRepository driftObservations,
                                      MarkerImageEnricher markerImageEnricher,
-                                     MarkerImageStore markerImageStore) {
+                                     MarkerImageStore markerImageStore,
+                                     ClientMarkerImageRepository clientMarkerImages,
+                                     MarkerCorpusService corpus) {
         this.configs = configs;
         this.versions = versions;
         this.driftObservations = driftObservations;
         this.markerImageEnricher = markerImageEnricher;
         this.markerImageStore = markerImageStore;
+        this.clientMarkerImages = clientMarkerImages;
+        this.corpus = corpus;
     }
 
     /**
@@ -409,6 +415,25 @@ public class SupportGroupConfigService {
                                         Integer persistenceCount, String markerRole, String markerText, String detail,
                                         Integer imageDistance, Integer imageThreshold, String evidencePostId,
                                         byte[] evidenceImage) {
+        return recordDrift(igAccount, kind, reporterDeviceId, reporterUserId, nominatedOwnerHandle, agreePass,
+                disagreePass, persistenceCount, markerRole, markerText, detail, imageDistance, imageThreshold,
+                evidencePostId, evidenceImage, null);
+    }
+
+    /**
+     * As above, carrying THE CLIENT'S OWN fingerprint of the delivered picture.
+     *
+     * <p>Stored verbatim and never recomputed: our {@code ImageDHash} lands 15–34 bits away for identical bytes
+     * (measured 16/08/2026) while clients match at 4–10, so a hash produced here looks healthy and can never
+     * match. The picture and its fingerprint are also filed in the durable {@link ClientMarkerImage} catalogue, so
+     * an operator can choose this exact rendition at a later vetting without ordering a duty scrape.</p>
+     */
+    @Transactional
+    public DriftObservation recordDrift(String igAccount, DriftKind kind, String reporterDeviceId, UUID reporterUserId,
+                                        String nominatedOwnerHandle, Integer agreePass, Integer disagreePass,
+                                        Integer persistenceCount, String markerRole, String markerText, String detail,
+                                        Integer imageDistance, Integer imageThreshold, String evidencePostId,
+                                        byte[] evidenceImage, String evidenceImageHash) {
         if (kind == DriftKind.NEW_OWNER && (nominatedOwnerHandle == null || nominatedOwnerHandle.isBlank())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "nominatedOwnerHandle is required for a NEW_OWNER drift");
@@ -447,7 +472,11 @@ public class SupportGroupConfigService {
         String locator = evidenceImage == null || evidenceImage.length == 0
                 ? null
                 : markerImageStore.capture(evidenceImage).orElse(null);
-        obs.measure(markerRole, markerText, imageDistance, imageThreshold, evidencePostId, locator, detail);
+        obs.measure(markerRole, markerText, imageDistance, imageThreshold, evidencePostId, locator, detail,
+                evidenceImageHash);
+        // File it durably. Observations are a work queue and get pruned; the picture is evidence with a long life,
+        // and B1 means nothing can go and fetch it again.
+        rememberClientMarkerImage(c.getId(), evidenceImageHash, locator, markerRole, markerText, evidencePostId, now);
         return driftObservations.save(obs);
     }
 
@@ -487,11 +516,21 @@ public class SupportGroupConfigService {
         if (profile == null) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, igAccount + " has no vetted profile to add to");
         }
-        byte[] image = markerImageStore.find(obs.getEvidenceImageLocator())
-                .map(MarkerImage::getImage)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT,
-                        "the drift's picture is no longer stored"));
-        String newHash = ImageDHash.hash(image);
+        // ⚠️ THE CLIENT'S HASH, NEVER OURS. Measured 16/08/2026: ImageDHash lands 15–34 bits from the client's
+        // fingerprint for identical bytes — as far apart as unrelated images — while clients match live posts at a
+        // 4–10 bit tolerance. A hash computed here would be written into the authoritative profile looking
+        // perfectly healthy and would never match anything. Cross-PLATFORM agreement is proven (0 bits on
+        // ubuntu/windows/macos with real Instagram images); crossing IMPLEMENTATIONS is what breaks.
+        String newHash = obs.getEvidenceImageHash();
+        if (newHash == null || !WELL_FORMED_DHASH.matcher(newHash).matches()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "this drift carries no client-computed hash for its picture, and this service must not compute "
+                    + "one — its fingerprint would not match what clients produce. A newer client reports it; "
+                    + "adopt once one has.");
+        }
+        if (markerImageStore.find(obs.getEvidenceImageLocator()).isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "the drift's picture is no longer stored");
+        }
         // Repoints the DISPLAY image too: the hash list keeps every version, but what a human looks at should be
         // what the owner is posting today.
         VettedProfile updated = VettedProfileHashAdopter.append(
@@ -528,7 +567,9 @@ public class SupportGroupConfigService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, igAccount + " has no vetted profile to repair");
         }
         List<String> unrepairable = new ArrayList<>();
-        VettedProfile repaired = VettedProfileHashRepairer.repair(profile, this::hashOfStoredImage, unrepairable);
+        // Read the doomed values BEFORE the repair drops them — afterwards there is nothing left to name.
+        List<String> corruptValues = malformedHashesOf(profile);
+        VettedProfile repaired = VettedProfileHashRepairer.repair(profile, r -> clientHashFor(igAccount, c, r), unrepairable);
         List<DriftObservation> open = driftObservations.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(
                 c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT);
 
@@ -543,9 +584,13 @@ public class SupportGroupConfigService {
         VettedProfile withLive = repaired == null ? null : repaired;
         for (DriftObservation o : open) {
             // A live banner is a BONUS, never a precondition: a picture that was never delivered, or has since
-            // been reclaimed, must not stop the field itself being repaired.
-            String liveHash = hashOfStoredImage(o.getEvidenceImageLocator()).orElse(null);
-            if (liveHash != null && withLive != null) {
+            // been reclaimed, must not stop the field itself being repaired. Its fingerprint is the CLIENT's — an
+            // older observation predating the client that sends one carries no hash, and the picture is then
+            // simply not adopted, because we have no fingerprint anyone could match it by.
+            String liveHash = wellFormedClientHash(o.getEvidenceImageHash()).orElse(null);
+            boolean pictureStillHeld = o.getEvidenceImageLocator() != null
+                    && markerImageStore.find(o.getEvidenceImageLocator()).isPresent();
+            if (liveHash != null && withLive != null && pictureStillHeld) {
                 withLive = VettedProfileHashAdopter.append(withLive, o.getMarkerRole(), o.getMarkerText(), liveHash,
                         o.getEvidenceImageLocator());
             }
@@ -572,9 +617,26 @@ public class SupportGroupConfigService {
         }
         applyVettedProfile(igAccount, c, withLive);
         SupportGroupConfig saved = configs.save(c);
+        // ⚠️ BURN THE SOURCE, not just the symptom. The corrupt value was picked in the Vetting Portal from a
+        // corpus tile, and repairing the profile leaves that tile sitting there, clickable, ready to write the
+        // same value back on the next re-vet. Flagging it is the difference between fixing this occurrence and
+        // fixing the fault. (User's requirement, 18/08/2026: it "never can be clicked and added to the vetted
+        // profile again".)
+        corruptValues.forEach(v -> corpus.burn(igAccount, v,
+                "picked as a marker reference and found to be no fingerprint at all — repaired " + Instant.now()));
         open.forEach(DriftObservation::resolve);
         driftObservations.saveAll(open);
         return saved;
+    }
+
+    /** Every value a profile stores where a fingerprint belongs but which is not one. */
+    private static List<String> malformedHashesOf(VettedProfile profile) {
+        return allReferences(profile)
+                .filter(r -> r != null && r.dHashes() != null)
+                .flatMap(r -> r.dHashes().stream())
+                .filter(h -> h != null && !h.isBlank() && !WELL_FORMED_DHASH.matcher(h).matches())
+                .distinct()
+                .toList();
     }
 
     /** Open corruption observations whose named reference demonstrably carries a well-formed hash today. */
@@ -585,12 +647,49 @@ public class SupportGroupConfigService {
                 .toList();
     }
 
-    /** The dHash of a reference's own stored picture, or empty when it has no locator / the picture is gone. */
-    private Optional<String> hashOfStoredImage(String imageLocator) {
-        if (imageLocator == null || imageLocator.isBlank()) {
-            return Optional.empty();
+    /**
+     * A fingerprint a CLIENT computed for a reference's picture — never one computed here.
+     *
+     * <p>Two sources, in order of directness:</p>
+     * <ol>
+     *   <li>the deep-scrape corpus, keyed by the reference's own {@code shortcode}. This is the exact repair for
+     *       the fault that created this path: the corrupt value written into `glowbloggeragency` WAS the
+     *       shortcode, so the post is named by the damage itself, and a client already streamed a fingerprint for
+     *       it;</li>
+     *   <li>a live picture a client delivered with an open corruption report, matched on role and text.</li>
+     * </ol>
+     *
+     * <p>Empty means empty. There is no third fallback that mints one locally — that is the bug, not the
+     * backstop.</p>
+     */
+    private Optional<String> clientHashFor(String igAccount, SupportGroupConfig c,
+                                           VettedProfile.TypedMarkerReference r) {
+        Optional<String> fromCorpus = corpus.clientHashForPost(igAccount, r.shortcode())
+                .flatMap(SupportGroupConfigService::wellFormedClientHash);
+        if (fromCorpus.isPresent()) {
+            return fromCorpus;
         }
-        return markerImageStore.find(imageLocator).map(MarkerImage::getImage).map(ImageDHash::hash);
+        return driftObservations
+                .findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(c.getId(),
+                        DriftKind.MARKER_REFERENCE_CORRUPT).stream()
+                .filter(o -> describes(o, r))
+                .map(DriftObservation::getEvidenceImageHash)
+                .flatMap(h -> wellFormedClientHash(h).stream())
+                .findFirst();
+    }
+
+    /** Whether a report is about this very reference — by role AND text, never role alone (glow has two STARTs). */
+    private static boolean describes(DriftObservation o, VettedProfile.TypedMarkerReference r) {
+        boolean sameRole = o.getMarkerRole() == null || r.markerType() == null
+                || o.getMarkerRole().equalsIgnoreCase(r.markerType());
+        boolean sameText = o.getMarkerText() == null || r.ocrText() == null
+                || o.getMarkerText().trim().equalsIgnoreCase(r.ocrText().trim());
+        return sameRole && sameText;
+    }
+
+    /** A client's value is taken verbatim or not at all — but it still has to BE a fingerprint. */
+    private static Optional<String> wellFormedClientHash(String hash) {
+        return hash != null && WELL_FORMED_DHASH.matcher(hash).matches() ? Optional.of(hash) : Optional.empty();
     }
 
     @Transactional
@@ -731,6 +830,34 @@ public class SupportGroupConfigService {
         return x.isEmpty() || y.isEmpty() || x.equalsIgnoreCase(y);
     }
 
+    /**
+     * File a client-delivered picture in the durable catalogue, keyed by ITS OWN hash.
+     *
+     * <p>Requires both the picture and the client's fingerprint: a picture with no usable hash cannot be offered
+     * as a reference (that is the fault this whole line of work exists to prevent), so it is not catalogued. Seen
+     * again, the row is refreshed rather than duplicated — one banner, however many scans observe it.</p>
+     */
+    private void rememberClientMarkerImage(UUID configId, String dHash, String locator, String markerRole,
+                                           String markerText, String evidencePostId, Instant now) {
+        if (dHash == null || !WELL_FORMED_DHASH.matcher(dHash).matches() || locator == null || locator.isBlank()) {
+            return;
+        }
+        clientMarkerImages.findByConfigIdAndDHash(configId, dHash)
+                .map(existing -> {
+                    existing.seenAgain(markerRole, markerText, evidencePostId, now);
+                    return existing;
+                })
+                .or(() -> Optional.of(ClientMarkerImage.first(configId, dHash, locator, markerRole, markerText,
+                        evidencePostId, now)))
+                .ifPresent(clientMarkerImages::save);
+    }
+
+    /** Every marker picture clients have delivered for this group — the later-vetting picker, newest first. */
+    @Transactional(readOnly = true)
+    public List<ClientMarkerImage> clientMarkerImages(String igAccount) {
+        return clientMarkerImages.findByConfigIdOrderByLastSeenAtDesc(require(igAccount).getId());
+    }
+
     /** The two kinds that describe the HEALTH of a marker reference, as opposed to who owns a marker. */
     private static final List<DriftKind> REFERENCE_HEALTH_KINDS =
             List.of(DriftKind.MARKER_IMAGE_DRIFT, DriftKind.MARKER_REFERENCE_CORRUPT);
@@ -751,8 +878,12 @@ public class SupportGroupConfigService {
                 c.getId(), REFERENCE_HEALTH_KINDS);
         return open.stream().map(o -> {
             String referenceLocator = referencePictureFor(c, o);
-            String referenceHash = hashOfStoredImage(referenceLocator).orElse(null);
-            String liveHash = hashOfStoredImage(o.getEvidenceImageLocator()).orElse(null);
+            // ⚠️ BOTH SIDES MUST BE IN THE CLIENT'S DIALECT or the distance between them is meaningless. Until
+            // 18/08/2026 both were hashed here with ImageDHash: self-consistent, and 15–34 bits away from what
+            // every client measures for the same pictures — so the figure an administrator read while deciding
+            // "is this a different banner or the same one?" was not the figure their clients would ever see.
+            String referenceHash = clientHashForReferenceOf(c, o).orElse(null);
+            String liveHash = wellFormedClientHash(o.getEvidenceImageHash()).orElse(null);
             return new ReferenceDriftView(o, referenceLocator, referenceHash, liveHash,
                     storedValueFor(c, o), hamming(referenceHash, liveHash));
         }).toList();
@@ -787,6 +918,24 @@ public class SupportGroupConfigService {
              * what can be recognised.</p>
              */
             Integer liveDistance) {
+    }
+
+    /**
+     * The client-computed fingerprint of the reference an observation names — the value a repair would write.
+     *
+     * <p>Read from the vetted profile itself when it already holds a well-formed one (every hash cut from a deep
+     * scrape is the client's), and otherwise from the corpus by the reference's post. Never hashed here.</p>
+     */
+    private Optional<String> clientHashForReferenceOf(SupportGroupConfig c, DriftObservation o) {
+        if (c.getVettedProfile() == null) {
+            return Optional.empty();
+        }
+        return matchingReferences(c.getVettedProfile(), o.getMarkerRole(), o.getMarkerText())
+                .flatMap(r -> Stream.concat(
+                        r.dHashes() == null ? Stream.<String>empty() : r.dHashes().stream(),
+                        corpus.clientHashForPost(c.getIgAccount(), r.shortcode()).stream()))
+                .flatMap(h -> wellFormedClientHash(h).stream())
+                .findFirst();
     }
 
     /** Hamming distance between two equal-length dHash strings, or {@code null} when either is missing. */

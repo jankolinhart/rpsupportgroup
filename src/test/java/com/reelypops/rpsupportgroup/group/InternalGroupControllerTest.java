@@ -1036,6 +1036,11 @@ class InternalGroupControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"kind\":\"MARKER_IMAGE_DRIFT\",\"reporterDeviceId\":\"dev-1\",\"markerRole\":\"start\","
                                 + "\"imageDistance\":15,\"imageThreshold\":10,\"evidencePostId\":\"DcEj0SRu\","
+                                // ⚠️ The CLIENT's fingerprint of the delivered picture, and the ONLY one adoptable.
+                                // Hashing these same bytes in the cloud lands 15–34 bits away while clients match
+                                // at 4–10, so an adopted reference minted here is unmatchable by every client that
+                                // receives it — a silent failure that reports success.
+                                + "\"evidenceImageHash\":\"" + CLIENT_HASH + "\","
                                 + "\"evidenceImage\":\"" + pngBase64() + "\"}"))
                 .andExpect(status().isAccepted());
 
@@ -1058,13 +1063,71 @@ class InternalGroupControllerTest {
 
         mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-adopt").header(KEY_HEADER, KEY))
                 .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes.length()").value(2))
-                .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes[0]").value(old));
+                .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes[0]").value(old))
+                .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes[1]").value(CLIENT_HASH));
     }
 
-    // --- CORRUPT reference → one-click repair from the reference's own stored picture (16/08/2026) ---
+    @Test
+    void clientDeliveredPicturesAreFILED_DURABLY_andSurviveTheDriftReportThatCarriedThem() throws Exception {
+        // Directive B1: no cloud service ever contacts Instagram, so a picture a client sends is the ONLY copy
+        // there will ever be. Drift observations are a work queue — resolved, then pruned — and if the picture went
+        // with them, a later re-vet would need a whole duty scrape to see a banner the system had already been
+        // shown. So it is filed the moment it arrives, with the client's own fingerprint attached.
+        createConfig("client-catalogue");
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "client-catalogue").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"MARKER_IMAGE_DRIFT\",\"reporterDeviceId\":\"dev-1\","
+                                + "\"markerRole\":\"start\",\"markerText\":\"GB AGENCY START Sonntag\","
+                                + "\"imageDistance\":15,\"imageThreshold\":10,\"evidencePostId\":\"DcEj0SRu\","
+                                + "\"evidenceImageHash\":\"" + CLIENT_HASH + "\","
+                                + "\"evidenceImage\":\"" + pngBase64() + "\"}"))
+                .andExpect(status().isAccepted());
+
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/client-marker-images", "client-catalogue")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].dHash").value(CLIENT_HASH))
+                .andExpect(jsonPath("$[0].markerRole").value("start"))
+                .andExpect(jsonPath("$[0].markerText").value("GB AGENCY START Sonntag"))
+                .andExpect(jsonPath("$[0].evidencePostId").value("DcEj0SRu"))
+                .andExpect(jsonPath("$[0].imageLocator").isNotEmpty())
+                .andExpect(jsonPath("$[0].timesSeen").value(1));
+    }
 
     @Test
-    void REPAIRING_recomputesACorruptHashFromTheReferencesOwnStoredPicture() throws Exception {
+    void theSAME_pictureReportedRepeatedlyIsONE_candidate_counted() throws Exception {
+        // A client re-asserts an unresolved drift every 60 s until the cloud acknowledges it. Fifty reports of one
+        // banner is one banner an operator can pick, not fifty identical tiles — but how routine it is matters, so
+        // the count is kept.
+        createConfig("client-dedup");
+        String body = "{\"kind\":\"MARKER_IMAGE_DRIFT\",\"reporterDeviceId\":\"dev-1\",\"markerRole\":\"start\","
+                + "\"markerText\":\"GB AGENCY START Sonntag\","
+                + "\"imageDistance\":15,\"imageThreshold\":10,\"evidencePostId\":\"DcEj0SRu\","
+                + "\"evidenceImageHash\":\"" + CLIENT_HASH + "\",\"evidenceImage\":\"" + pngBase64() + "\"}";
+        for (int i = 0; i < 3; i++) {
+            mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "client-dedup").header(KEY_HEADER, KEY)
+                            .contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isAccepted());
+        }
+
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/client-marker-images", "client-dedup")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].timesSeen").value(3))
+                // The LATEST sighting describes it — a banner's role and text can be re-read on any pass, and the
+                // most recent reading is the one an operator should be choosing from.
+                .andExpect(jsonPath("$[0].markerText").value("GB AGENCY START Sonntag"));
+    }
+
+    /** A fingerprint a CLIENT computed — the only dialect any repair or adoption may write. */
+    private static final String CLIENT_HASH = "1100".repeat(16);
+
+    // --- CORRUPT reference → one-click repair by COPYING the client's fingerprint for that post (18/08/2026) ---
+
+    @Test
+    void REPAIRING_copiesTheClientsFingerprintForTheReferencesOwnPost() throws Exception {
         createConfig("ref-repair");
         String locator = markerImageStore.capture(java.util.Base64.getDecoder().decode(pngBase64())).orElseThrow();
         String shortcode = "DbyhP29uyF5nHF-_saO60D-eic5SEtq5Qw3IAs0"; // the real corrupt value from the live record
@@ -1083,14 +1146,32 @@ class InternalGroupControllerTest {
                 java.util.List.of(sunday))), 1L);
         configRepository.save(c);
 
+        // ⚠️ WHERE THE REPAIR'S VALUE COMES FROM. The corrupt value IS the reference's own post shortcode — the
+        // damage names the post it belongs to — and a deep scrape has already streamed a CLIENT-computed
+        // fingerprint for exactly that post. So the repair is a copy, not a computation. Recomputing it here (what
+        // this endpoint did until 18/08/2026) produces a hash 15–34 bits from what clients measure: well-formed,
+        // plausible, shipped to everyone, and matched by no one.
+        String snapshotId = JsonPath.read(mockMvc.perform(
+                        post("/supportgroup/v1/internal/corpus/groups/{ig}/snapshots", "ref-repair")
+                                .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"source\":\"DUTY\",\"capturedByAccount\":\"scraper\"}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString(), "$.id");
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", snapshotId)
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"items\":[{\"shortcode\":\"" + shortcode + "\",\"authorUsername\":\"glow\","
+                                + "\"dHash\":\"" + CLIENT_HASH + "\",\"ordinal\":0}]}"))
+                .andExpect(status().isOk());
+
         mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/vetted-profile/repair-hashes", "ref-repair")
                         .header(KEY_HEADER, KEY))
                 .andExpect(status().isOk());
 
         mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "ref-repair").header(KEY_HEADER, KEY))
                 .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes.length()").value(1))
-                .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes[0]")
-                        .value(Matchers.matchesPattern("[01]{64}")));   // the shortcode is gone
+                // The client's value VERBATIM — not merely something hash-shaped. Asserting only the shape is what
+                // let a wrong-dialect hash pass for a repair for a whole day.
+                .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes[0]").value(CLIENT_HASH));
     }
 
     @Test

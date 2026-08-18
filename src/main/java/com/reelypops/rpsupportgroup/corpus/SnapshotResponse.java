@@ -12,10 +12,12 @@ public record SnapshotResponse(
         int itemCount,
         String capturedByAccount,
         Instant createdAt,
-        Instant sealedAt) {
+        Instant sealedAt,
+        /** Why this pass was voided whole — {@code null} unless {@code status} is {@code REJECTED}. */
+        String rejectedReason) {
 
     public static SnapshotResponse of(MarkerCorpusSnapshot s) {
         return new SnapshotResponse(s.getId(), s.getIgAccount(), s.getSource(), s.getStatus(), s.getItemCount(),
-                s.getCapturedByAccount(), s.getCreatedAt(), s.getSealedAt());
+                s.getCapturedByAccount(), s.getCreatedAt(), s.getSealedAt(), s.getRejectedReason());
     }
 }

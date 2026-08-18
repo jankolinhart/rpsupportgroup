@@ -13,8 +13,11 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -66,6 +69,14 @@ class InternalCorpusControllerTest {
         return JsonPath.read(r.getResponse().getContentAsString(), "$.id");
     }
 
+    /**
+     * ⚠️ Real fingerprints — 64 binary digits. They used to be {@code "hash-a"} / {@code "h"}, which is the shape
+     * the ingest guard now rejects, and that is the point: a fixture that cannot fail a check cannot defend it.
+     * Non-hash-shaped corpus fixtures hid this whole class of fault for weeks.
+     */
+    private static final String HASH_A = "1010".repeat(16);
+    private static final String HASH_B = "1100".repeat(16);
+
     private String appendBody(String shortcode, String author, String dHash, int ordinal) {
         return "{\"items\":[{\"shortcode\":\"" + shortcode + "\",\"authorUsername\":\"" + author
                 + "\",\"dHash\":\"" + dHash + "\",\"postedAt\":\"2026-07-20T10:15:30Z\",\"ordinal\":" + ordinal + "}]}";
@@ -108,12 +119,12 @@ class InternalCorpusControllerTest {
         String id = openSnapshot("corp-append", "DUTY");
         mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", id)
                         .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
-                        .content(appendBody("AAA", "owner1", "hash-a", 0)))
+                        .content(appendBody("AAA", "owner1", HASH_A, 0)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.itemCount").value(1));
         mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", id)
                         .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
-                        .content(appendBody("BBB", "member1", "hash-b", 1)))
+                        .content(appendBody("BBB", "member1", HASH_B, 1)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.itemCount").value(2));
         mockMvc.perform(get("/supportgroup/v1/internal/corpus/snapshots/{id}", id).header(KEY_HEADER, KEY))
@@ -126,10 +137,95 @@ class InternalCorpusControllerTest {
     }
 
     @Test
+    void REGRESSION_aMalformedFingerprintVOIDS_theWholeSnapshot_notJustItsOwnRow() throws Exception {
+        // The user's call, 16/08/2026: "I'd rather retry the entire snapshot than risk image hash corruption sent
+        // to the cloud by a single client that affects all clients after." A deep scrape builds the corpus that
+        // vetted references are cut from, and those references are matched by EVERY other client — so one bad row
+        // is not a bad row, it is a reference nothing can ever match, and the failure is silent.
+        String id = openSnapshot("corp-poison", "DUTY");
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", id)
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
+                        .content(appendBody("AAA", "owner1", HASH_A, 0)))
+                .andExpect(status().isOk());
+
+        // A post SHORTCODE where the fingerprint belongs — byte-identical to the real corruption found in
+        // `glowbloggeragency` on 15/08/2026, which type-checked everywhere because both are String.
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", id)
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
+                        .content(appendBody("BBB", "member1", "DbyhP29uyF5nHF-_saO60D-eic5SEtq5Qw3IAs0", 1)))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(get("/supportgroup/v1/internal/corpus/snapshots/{id}", id).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                // Voided WHOLE — the earlier, perfectly good row is condemned with it.
+                .andExpect(jsonPath("$.snapshot.status").value("REJECTED"))
+                .andExpect(jsonPath("$.snapshot.rejectedReason").value(Matchers.containsString("malformed dHash")))
+                // ...and the offending row is kept, flagged, so the fault can be READ rather than merely re-run into.
+                .andExpect(jsonPath("$.items[1].unusable").value(true))
+                .andExpect(jsonPath("$.items[1].unusableReason")
+                        .value(Matchers.containsString("not 64 binary digits")));
+
+        // A voided pass cannot be sealed back into usefulness.
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/seal", id).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REJECTED"));
+    }
+
+    @Test
+    void BURNING_makesAPostUnselectableForever_andIsIdempotent() throws Exception {
+        // The remedy for the fault that started all this: a corrupt value reached a vetted profile because an
+        // operator PICKED it from a corpus tile. Repairing the profile without burning the tile fixes the
+        // occurrence and leaves the fault; the same click reproduces it at the next re-vet.
+        String id = openSnapshot("corp-burn", "DUTY");
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", id)
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
+                        .content(appendBody("AAA", "owner1", HASH_A, 0)))
+                .andExpect(status().isOk());
+
+        assertThat(corpusService.burn("corp-burn", HASH_A, "picked and found to be no fingerprint")).isEqualTo(1);
+        // Already burned — burning again is a no-op, so a repeated repair does not keep rewriting rows.
+        assertThat(corpusService.burn("corp-burn", HASH_A, "again")).isZero();
+
+        mockMvc.perform(get("/supportgroup/v1/internal/corpus/snapshots/{id}", id).header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.items[0].unusable").value(true))
+                .andExpect(jsonPath("$.items[0].unusableReason")
+                        .value(Matchers.containsString("no fingerprint")));
+
+        // ...and it is no longer offered as the client-computed fingerprint for that post.
+        assertThat(corpusService.clientHashForPost("corp-burn", "AAA")).isEmpty();
+    }
+
+    @Test
+    void burningNeedsBothAGroupAndAValue() {
+        // Guards, not ceremony: a null value would match every row whose hash is null and burn the lot.
+        assertThat(corpusService.burn(null, HASH_A, "r")).isZero();
+        assertThat(corpusService.burn("corp-burn", null, "r")).isZero();
+        assertThat(corpusService.burn("corp-burn", "  ", "r")).isZero();
+    }
+
+    @Test
+    void aNULL_fingerprintIsNamedInTheRejection_notPrintedAsAnEmptyGap() throws Exception {
+        // @NotBlank stops this at the HTTP boundary, so it can only arrive from another service calling in — and
+        // when it does, the reason has to READ. "null" is a diagnosis; an empty gap in a sentence is a puzzle.
+        //
+        // The row itself cannot be filed as evidence the way a malformed-but-present hash can: {@code d_hash} is
+        // NOT NULL. So the rejection reason carries the description, and the snapshot is still voided whole.
+        String id = openSnapshot("corp-nullhash", "DUTY");
+        UUID snapshotId = UUID.fromString(id);
+        assertThatThrownBy(() -> corpusService.append(snapshotId,
+                List.of(new CorpusItemPayload("AAA", "owner1", null, Instant.now(), 0))))
+                .hasMessageContaining("malformed dHash")
+                .hasMessageContaining("null");
+
+        mockMvc.perform(get("/supportgroup/v1/internal/corpus/snapshots/{id}", id).header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.snapshot.status").value("REJECTED"));
+    }
+
+    @Test
     void appendToUnknownSnapshotIsNotFound() throws Exception {
         mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", UUID.randomUUID())
                         .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
-                        .content(appendBody("X", "a", "h", 0)))
+                        .content(appendBody("X", "a", HASH_A, 0)))
                 .andExpect(status().isNotFound());
     }
 
@@ -156,7 +252,7 @@ class InternalCorpusControllerTest {
         String id = openSnapshot("corp-seal", "ADMIN");
         mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", id)
                         .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
-                        .content(appendBody("AAA", "owner1", "hash-a", 0)))
+                        .content(appendBody("AAA", "owner1", HASH_A, 0)))
                 .andExpect(status().isOk());
         mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/seal", id).header(KEY_HEADER, KEY))
                 .andExpect(status().isOk())
@@ -164,7 +260,7 @@ class InternalCorpusControllerTest {
                 .andExpect(jsonPath("$.sealedAt").exists());
         mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", id)
                         .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
-                        .content(appendBody("BBB", "member1", "hash-b", 1)))
+                        .content(appendBody("BBB", "member1", HASH_B, 1)))
                 .andExpect(status().isConflict());
     }
 
@@ -213,7 +309,7 @@ class InternalCorpusControllerTest {
         String id = openSnapshot("corp-rep", "REQUEST");
         mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", id)
                         .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
-                        .content(appendBody("AAA", "owner1", "hash-a", 0)))
+                        .content(appendBody("AAA", "owner1", HASH_A, 0)))
                 .andExpect(status().isOk());
         byte[] png = {1, 2, 3, 4, 5};
         mockMvc.perform(put("/supportgroup/v1/internal/corpus/snapshots/{id}/representatives/{sc}", id, "AAA")
@@ -323,7 +419,7 @@ class InternalCorpusControllerTest {
         // a swept (terminal) snapshot rejects further appends
         mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", id)
                         .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
-                        .content(appendBody("X", "a", "h", 0)))
+                        .content(appendBody("X", "a", HASH_A, 0)))
                 .andExpect(status().isConflict());
     }
 

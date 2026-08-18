@@ -1,5 +1,6 @@
 package com.reelypops.rpsupportgroup.group;
 
+import com.reelypops.rpsupportgroup.corpus.MarkerCorpusService;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -18,30 +19,44 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
  * The CORRUPT-reference half of the re-vet loop: the client discovers it, the cloud raises it as a re-vet reason,
- * and one click repairs it from the reference's own stored picture.
+ * and one click repairs it by COPYING a fingerprint a client computed.
  *
  * <p>Separate from {@link DriftImageAdoptionTest} because the fault and the remedy are different in kind. Drift is a
  * stale-but-real picture, remedied by ADDING the newer one. A corrupt reference holds a value that is not a hash at
- * all — it matches nothing, contradicts nothing, and silently distorts the client's threshold calibration — and the
- * remedy needs nothing new: the picture is already stored, so the hash is recomputable in place.</p>
+ * all — it matches nothing, contradicts nothing, and silently distorts the client's threshold calibration.</p>
+ *
+ * <p><strong>⚠️ The repair used to recompute the hash in the cloud (fixed 18/08/2026).</strong> That was a second
+ * silent fault on top of the first: this service's Java hasher and the client's sharp/libvips one land 15–34 bits
+ * apart on identical bytes, and clients accept a match at 4–10 — so the repaired reference was well-formed,
+ * plausible, shipped to every client, and unmatchable by all of them. Note where the fingerprint comes from here:
+ * the reference's corrupt value IS its own post shortcode, so the deep-scrape corpus already holds a
+ * client-computed hash for exactly that post. The damage names its own repair.</p>
  */
 class CorruptReferenceRepairTest {
 
     private static final String SHORTCODE = "DbyhP29uyF5nHF-_saO60D-eic5SEtq5Qw3IAs0";
     private static final String GOOD = "1010".repeat(16);
     private static final String LOCATOR = "27d823d2";
+    /** What a CLIENT computed for the reference's own post, streamed during a deep scrape. */
+    private static final String CORPUS_HASH = "1100".repeat(16);
+    /** What a CLIENT computed for the live banner it delivered with its report. */
+    private static final String LIVE_HASH = "1111000011110000".repeat(4);
 
     private final SupportGroupConfigRepository configs = mock(SupportGroupConfigRepository.class);
     private final VettedProfileVersionRepository versions = mock(VettedProfileVersionRepository.class);
     private final DriftObservationRepository drifts = mock(DriftObservationRepository.class);
     private final MarkerImageEnricher enricher = mock(MarkerImageEnricher.class);
     private final MarkerImageStore imageStore = mock(MarkerImageStore.class);
+    private final ClientMarkerImageRepository clientImages = mock(ClientMarkerImageRepository.class);
+    private final MarkerCorpusService corpusService = mock(MarkerCorpusService.class);
     private final SupportGroupConfigService service =
-            new SupportGroupConfigService(configs, versions, drifts, enricher, imageStore);
+            new SupportGroupConfigService(configs, versions, drifts, enricher, imageStore, clientImages, corpusService);
 
     /** A real decodable PNG — ImageDHash rejects anything it cannot decode. */
     private static byte[] png() {
@@ -95,6 +110,9 @@ class CorruptReferenceRepairTest {
         when(configs.save(any())).thenAnswer(i -> i.getArgument(0));
         when(versions.findByConfigIdOrderBySnapshotVersionDesc(any())).thenReturn(List.of());
         when(enricher.enrich(anyString(), any())).thenAnswer(i -> i.getArgument(1));
+        // The corpus holds a client-computed fingerprint for the reference's post — the repair copies it.
+        when(corpusService.clientHashForPost("glowbloggeragency", SHORTCODE))
+                .thenReturn(Optional.of(CORPUS_HASH));
         return c;
     }
 
@@ -108,7 +126,7 @@ class CorruptReferenceRepairTest {
     }
 
     @Test
-    void REPAIRS_thePostShortcodeFromTheReferencesOwnStoredPicture_andClosesTheDrift() {
+    void REPAIRS_thePostShortcodeWithTheFingerprintAClientComputed_andClosesTheDrift() {
         SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
         DriftObservation open = openCorruptDrift(c);
         MarkerImage stored = mock(MarkerImage.class);
@@ -118,8 +136,27 @@ class CorruptReferenceRepairTest {
         SupportGroupConfig out = service.repairMalformedReferenceHashes("glowbloggeragency");
 
         List<String> hashes = out.getVettedProfile().weeklySchedule().days().get(0).references().get(0).dHashes();
-        assertThat(hashes).singleElement().asString().matches("[01]{64}"); // the shortcode is GONE
+        // The CLIENT's value, verbatim — not a well-formed one minted here, which would look identical to any
+        // assertion that only checks the shape and would match nothing in the field.
+        assertThat(hashes).containsExactly(CORPUS_HASH);
         assertThat(open.isResolved()).isTrue();
+    }
+
+    @Test
+    void REPAIR_alsoBURNS_theCorpusRowThatSuppliedTheCorruptValue() {
+        // Fixing the profile is only half of it. The corrupt value was PICKED, in the Vetting Portal, from a corpus
+        // tile — and repairing the profile leaves that tile sitting there, clickable, ready to write the same value
+        // straight back at the next re-vet. The user's requirement, 18/08/2026: it "never can be clicked and added
+        // to the vetted profile again".
+        SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
+        openCorruptDrift(c);
+        MarkerImage stored = mock(MarkerImage.class);
+        when(stored.getImage()).thenReturn(png());
+        when(imageStore.find(LOCATOR)).thenReturn(Optional.of(stored));
+
+        service.repairMalformedReferenceHashes("glowbloggeragency");
+
+        verify(corpusService).burn(eq("glowbloggeragency"), eq(SHORTCODE), anyString());
     }
 
     @Test
@@ -129,7 +166,8 @@ class CorruptReferenceRepairTest {
         // be reasoned about. Both pictures end up carried, which is what widens what can be recognised.
         SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
         DriftObservation open = openCorruptDrift(c);
-        open.measure("start", "GB AGENCY START Sonntag", null, null, "DcEj0SRu", "live-loc", "shortcode");
+        open.measure("start", "GB AGENCY START Sonntag", null, null, "DcEj0SRu", "live-loc", "shortcode",
+                LIVE_HASH);
         MarkerImage vetted = mock(MarkerImage.class);
         when(vetted.getImage()).thenReturn(png());
         when(imageStore.find(LOCATOR)).thenReturn(Optional.of(vetted));
@@ -140,18 +178,20 @@ class CorruptReferenceRepairTest {
         SupportGroupConfig out = service.repairMalformedReferenceHashes("glowbloggeragency");
 
         List<String> hashes = out.getVettedProfile().weeklySchedule().days().get(0).references().get(0).dHashes();
-        assertThat(hashes).hasSize(2);                       // repaired + the live banner
-        assertThat(hashes).allMatch(h -> h.matches("[01]{64}"));
-        assertThat(hashes).doesNotContain(SHORTCODE);        // the junk is gone
+        assertThat(hashes).containsExactly(CORPUS_HASH, LIVE_HASH); // repaired + the live banner, both the client's
+        assertThat(hashes).doesNotContain(SHORTCODE);               // the junk is gone
         assertThat(open.isResolved()).isTrue();
     }
 
     @Test
     void repairDoesNotDUPLICATE_whenTheLiveBannerIsTheSamePicture() {
         // Identical pictures need no second entry — the decision the operator would otherwise have to make.
+        // "Identical" is now decided by the fingerprint the CLIENT computed, not by re-hashing two byte arrays
+        // here: the same picture yields the same client hash, so equality is a comparison rather than a guess.
         SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
         DriftObservation open = openCorruptDrift(c);
-        open.measure("start", "GB AGENCY START Sonntag", null, null, "DcEj0SRu", "live-loc", "shortcode");
+        open.measure("start", "GB AGENCY START Sonntag", null, null, "DcEj0SRu", "live-loc", "shortcode",
+                CORPUS_HASH);
         MarkerImage same = mock(MarkerImage.class);
         when(same.getImage()).thenReturn(png());
         when(imageStore.find(LOCATOR)).thenReturn(Optional.of(same));
@@ -168,7 +208,8 @@ class CorruptReferenceRepairTest {
         java.time.Instant now = java.time.Instant.now();
         DriftObservation corrupt = DriftObservation.first(c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT, "d", null,
                 null, null, null, 1, now);
-        corrupt.measure("start", "GB AGENCY START Sonntag", null, null, "DcEj0SRu", "live-loc", "shortcode");
+        corrupt.measure("start", "GB AGENCY START Sonntag", null, null, "DcEj0SRu", "live-loc", "shortcode",
+                LIVE_HASH);
         when(drifts.findByConfigIdAndKindInAndResolvedFalseOrderByLastSeenAtDesc(any(), any()))
                 .thenReturn(List.of(corrupt));
         MarkerImage vetted = mock(MarkerImage.class);
@@ -207,7 +248,8 @@ class CorruptReferenceRepairTest {
         // the live banner improves the outcome, it is not a precondition for it.
         SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
         DriftObservation open = openCorruptDrift(c);
-        open.measure("start", "GB AGENCY START Sonntag", null, null, "DcEj0SRu", "gone-loc", "shortcode");
+        open.measure("start", "GB AGENCY START Sonntag", null, null, "DcEj0SRu", "gone-loc", "shortcode",
+                LIVE_HASH);
         MarkerImage vetted = mock(MarkerImage.class);
         when(vetted.getImage()).thenReturn(png());
         when(imageStore.find(LOCATOR)).thenReturn(Optional.of(vetted));
@@ -216,7 +258,7 @@ class CorruptReferenceRepairTest {
         SupportGroupConfig out = service.repairMalformedReferenceHashes("glowbloggeragency");
 
         List<String> hashes = out.getVettedProfile().weeklySchedule().days().get(0).references().get(0).dHashes();
-        assertThat(hashes).singleElement().asString().matches("[01]{64}");
+        assertThat(hashes).containsExactly(CORPUS_HASH);  // repaired; the live banner is a bonus, not a precondition
         assertThat(open.isResolved()).isTrue();
     }
 
@@ -317,6 +359,11 @@ class CorruptReferenceRepairTest {
         DriftObservation real = DriftObservation.first(c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT, "dev-1",
                 null, null, null, null, 1, now);
         real.measure("start", "GB AGENCY START Sonntag", null, null, null, null, "looks like a shortcode");
+        // ⚠️ Nothing on record from any client: the scrape pass that carried this post has been pruned, and no
+        // live picture was ever delivered. That is the ONLY condition under which repair now fails — and it must
+        // fail loudly, because the alternative (minting a hash here) succeeds loudly and matches nothing.
+        when(corpusService.clientHashForPost(anyString(), any())).thenReturn(Optional.empty());
+
         when(drifts.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(
                 c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT)).thenReturn(List.of(real));
 
@@ -327,10 +374,14 @@ class CorruptReferenceRepairTest {
     }
 
     @Test
-    void refusesAndNAMES_theReferenceWhenItsPictureIsNoLongerStored() {
+    void refusesAndNAMES_theReferenceWhenNoClientHasEverFingerprintedIt() {
         // "Nothing happened" must never be silent — the administrator has to learn that this one needs a re-vet.
         groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
         when(imageStore.find(LOCATOR)).thenReturn(Optional.empty());
+        // ⚠️ Nothing on record from any client: the scrape pass that carried this post has been pruned, and no
+        // live picture was ever delivered. That is the ONLY condition under which repair now fails — and it must
+        // fail loudly, because the alternative (minting a hash here) succeeds loudly and matches nothing.
+        when(corpusService.clientHashForPost(anyString(), any())).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.repairMalformedReferenceHashes("glowbloggeragency"))
                 .isInstanceOf(ResponseStatusException.class)
@@ -340,10 +391,15 @@ class CorruptReferenceRepairTest {
     }
 
     @Test
-    void refusesWhenTheReferenceHasNoStoredPictureToRecomputeFrom() {
-        // A reference vetted from an upload that was never retained, or hand-authored: there is no locator at all,
-        // so nothing can be recomputed and the image store must not even be consulted.
+    void refusesWhenNoClientFingerprintExistsForTheReferenceAtAll() {
+        // A reference vetted from an operator upload, or hand-authored: no client has ever seen this picture, so
+        // there is no fingerprint anyone could match it by, and the image store must not even be consulted —
+        // hashing the bytes here is precisely the move that produced an unmatchable "repair".
         groupWith(ref("start", "START Sonntag", null, SHORTCODE));
+        // ⚠️ Nothing on record from any client: the scrape pass that carried this post has been pruned, and no
+        // live picture was ever delivered. That is the ONLY condition under which repair now fails — and it must
+        // fail loudly, because the alternative (minting a hash here) succeeds loudly and matches nothing.
+        when(corpusService.clientHashForPost(anyString(), any())).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.repairMalformedReferenceHashes("glowbloggeragency"))
                 .isInstanceOf(ResponseStatusException.class)
@@ -469,7 +525,8 @@ class CorruptReferenceRepairTest {
         java.time.Instant now = java.time.Instant.now();
         DriftObservation corrupt = DriftObservation.first(c.getId(), DriftKind.MARKER_REFERENCE_CORRUPT, "d", null,
                 null, null, null, 1, now);
-        corrupt.measure("start", "GB AGENCY START Sonntag", null, null, "DcEj0SRu", "live-loc", "looks like a shortcode");
+        corrupt.measure("start", "GB AGENCY START Sonntag", null, null, "DcEj0SRu", "live-loc",
+                "looks like a shortcode", LIVE_HASH);
         when(drifts.findByConfigIdAndKindInAndResolvedFalseOrderByLastSeenAtDesc(any(), any()))
                 .thenReturn(List.of(corrupt));
         MarkerImage storedRef = mock(MarkerImage.class);
@@ -483,11 +540,14 @@ class CorruptReferenceRepairTest {
 
         assertThat(v.referenceImageLocator()).isEqualTo(LOCATOR);     // the vetted picture
         assertThat(v.observation().getEvidenceImageLocator()).isEqualTo("live-loc"); // the live banner
-        assertThat(v.referenceImageHash()).matches("[01]{64}");       // what a repair would write
-        assertThat(v.evidenceImageHash()).matches("[01]{64}");        // what adopting would write
+        // ⚠️ BOTH in the CLIENT's dialect. Hashing the two pictures here instead would give a self-consistent
+        // pair 15–34 bits from what every client measures — so the distance an administrator reads while deciding
+        // "same banner or a different one?" would be a number no client would ever produce.
+        assertThat(v.referenceImageHash()).isEqualTo(CORPUS_HASH);    // what a repair would write
+        assertThat(v.evidenceImageHash()).isEqualTo(LIVE_HASH);       // what adopting would write
         assertThat(v.storedValue()).isEqualTo(SHORTCODE);             // what is stored today — the fault itself
         assertThat(DriftObservationResponse.of(v).storedValue()).isEqualTo(SHORTCODE);
-        assertThat(DriftObservationResponse.of(v).evidenceImageHash()).matches("[01]{64}");
+        assertThat(DriftObservationResponse.of(v).evidenceImageHash()).isEqualTo(LIVE_HASH);
     }
 
     @Test

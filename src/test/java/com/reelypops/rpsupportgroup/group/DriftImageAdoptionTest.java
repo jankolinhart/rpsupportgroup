@@ -31,14 +31,23 @@ import static org.mockito.Mockito.when;
 class DriftImageAdoptionTest {
 
     private static final String LOCATOR = "abc123";
+    /**
+     * ⚠️ The fingerprint the CLIENT computed for the banner it delivered — the ONLY one that may be adopted.
+     * Hashing the same bytes here lands 15–34 bits away (measured 16/08/2026) while clients match at 4–10, so an
+     * adopted reference minted in the cloud is well-formed, plausible, and unmatchable by every client that gets it.
+     */
+    private static final String CLIENT_HASH = "1100".repeat(16);
+
 
     private final SupportGroupConfigRepository configs = mock(SupportGroupConfigRepository.class);
     private final VettedProfileVersionRepository versions = mock(VettedProfileVersionRepository.class);
     private final DriftObservationRepository drifts = mock(DriftObservationRepository.class);
     private final MarkerImageEnricher enricher = mock(MarkerImageEnricher.class);
     private final MarkerImageStore imageStore = mock(MarkerImageStore.class);
+    private final ClientMarkerImageRepository clientImages = mock(ClientMarkerImageRepository.class);
+    private final MarkerCorpusService corpusService = mock(MarkerCorpusService.class);
     private final SupportGroupConfigService service =
-            new SupportGroupConfigService(configs, versions, drifts, enricher, imageStore);
+            new SupportGroupConfigService(configs, versions, drifts, enricher, imageStore, clientImages, corpusService);
 
     /** A real decodable PNG — ImageDHash rejects anything it cannot decode, so a stub byte[] will not do. */
     private static byte[] png() {
@@ -76,7 +85,7 @@ class DriftImageAdoptionTest {
     private DriftObservation measuredDrift(SupportGroupConfig c, String locator) {
         DriftObservation o = DriftObservation.first(c.getId(), DriftKind.MARKER_IMAGE_DRIFT, "device-1", null, null,
                 null, null, 1, java.time.Instant.now());
-        o.measure("start", 15, 10, "DcEj0SRu", locator);
+        o.measure("start", 15, 10, "DcEj0SRu", locator, CLIENT_HASH);
         when(drifts.findById(any())).thenReturn(Optional.of(o));
         when(drifts.save(any())).thenAnswer(i -> i.getArgument(0));
         return o;
@@ -130,7 +139,7 @@ class DriftImageAdoptionTest {
                 out.getVettedProfile().weeklySchedule().days().get(0).references().get(0);
         assertThat(ref.dHashes()).hasSize(2);
         assertThat(ref.dHashes().get(0)).isEqualTo("1010".repeat(16)); // the old picture is KEPT
-        assertThat(ref.dHashes().get(1)).matches("[01]{64}");          // the newly adopted one
+        assertThat(ref.dHashes().get(1)).isEqualTo(CLIENT_HASH);       // the client's value, verbatim
         // The DISPLAY follows the newest picture — and survives MarkerImageEnricher, which re-derives the locator
         // from the corpus on every save and would otherwise put the superseded image straight back.
         assertThat(ref.imageLocator()).isEqualTo(LOCATOR);
@@ -151,7 +160,8 @@ class DriftImageAdoptionTest {
         MarkerCorpusService corpus = mock(MarkerCorpusService.class);
         when(corpus.list(anyString())).thenReturn(List.of());
         SupportGroupConfigService withEnricher = new SupportGroupConfigService(
-                configs, versions, drifts, new MarkerImageEnricher(corpus, imageStore), imageStore);
+                configs, versions, drifts, new MarkerImageEnricher(corpus, imageStore), imageStore,
+                clientImages, corpusService);
 
         SupportGroupConfig out = withEnricher.adoptDriftedMarkerImage("glowbloggeragency", UUID.randomUUID());
 
@@ -180,6 +190,30 @@ class DriftImageAdoptionTest {
         assertThatThrownBy(() -> service.adoptDriftedMarkerImage("glowbloggeragency", UUID.randomUUID()))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("no longer stored");
+    }
+
+    @Test
+    void REGRESSION_adoptingREFUSES_anObservationThatCarriesNoClientComputedHash() {
+        // An observation from a client that predates the client-hash contract. Before 18/08/2026 this path hashed
+        // the picture HERE and adopted the result — silently writing a reference in the wrong dialect that no
+        // client could ever match, while the admin surface reported a clean success. Refusing is the whole point:
+        // a newer client will report the same drift and carry a usable fingerprint with it.
+        SupportGroupConfig c = vettedGroup();
+        DriftObservation o = DriftObservation.first(c.getId(), DriftKind.MARKER_IMAGE_DRIFT, "device-1", null, null,
+                null, null, 1, java.time.Instant.now());
+        o.measure("start", 15, 10, "DcEj0SRu", LOCATOR);   // no hash — the old client contract
+        when(drifts.findById(any())).thenReturn(Optional.of(o));
+        MarkerImage stored = mock(MarkerImage.class);
+        when(stored.getImage()).thenReturn(png());
+        when(imageStore.find(LOCATOR)).thenReturn(Optional.of(stored));
+
+        assertThatThrownBy(() -> service.adoptDriftedMarkerImage("glowbloggeragency", UUID.randomUUID()))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("must not compute one");
+
+        // ...and nothing was written. A half-adopted profile is worse than a refusal.
+        assertThat(c.getVettedProfile().weeklySchedule().days().get(0).references().get(0).dHashes())
+                .containsExactly("1010".repeat(16));
     }
 
     @Test

@@ -11,6 +11,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
  * The P1 corpus store: opens append-only, snapshot-versioned deep-scrape passes for a group, accepts per-scroll item
@@ -24,16 +25,19 @@ public class MarkerCorpusService {
     private final MarkerCorpusSnapshotRepository snapshots;
     private final CorpusSnapshotItemRepository items;
     private final CorpusRepresentativeRepository representatives;
+    private final CorpusRejectionRecorder rejections;
     private final SupportGroupConfigRepository configs;
     private final int retention;
 
     public MarkerCorpusService(MarkerCorpusSnapshotRepository snapshots, CorpusSnapshotItemRepository items,
                                CorpusRepresentativeRepository representatives, SupportGroupConfigRepository configs,
+                               CorpusRejectionRecorder rejections,
                                @Value("${rp.corpus.retention:8}") int retention) {
         this.snapshots = snapshots;
         this.items = items;
         this.representatives = representatives;
         this.configs = configs;
+        this.rejections = rejections;
         this.retention = retention;
     }
 
@@ -53,12 +57,46 @@ public class MarkerCorpusService {
         if (snapshot.getStatus() != SnapshotStatus.OPEN) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "snapshot " + snapshotId + " is sealed");
         }
-        for (CorpusItemPayload p : payloads) {
-            items.save(CorpusSnapshotItem.of(snapshotId, p.shortcode(), p.authorUsername(), p.dHash(),
-                    p.postedAt(), p.ordinal()));
+        List<CorpusItemPayload> malformed = payloads.stream()
+                .filter(p -> p.dHash() == null || !WELL_FORMED_DHASH.matcher(p.dHash()).matches())
+                .toList();
+        List<CorpusSnapshotItem> batch = payloads.stream().map(p -> {
+            CorpusSnapshotItem item = CorpusSnapshotItem.of(snapshotId, p.shortcode(), p.authorUsername(), p.dHash(),
+                    p.postedAt(), p.ordinal());
+            if (malformed.contains(p)) {
+                item.markUnusable("fingerprint is not 64 binary digits: " + abbreviate(p.dHash()));
+            }
+            return item;
+        }).toList();
+        if (!malformed.isEmpty()) {
+            // ⚠️ VOID THE WHOLE PASS, do not salvage the good rows. This is the deepest producer boundary in the
+            // system: what lands here becomes the vetted references every OTHER client matches against, at a 4–10
+            // bit tolerance. One malformed fingerprint admitted here is a reference nothing can ever match, and it
+            // is invisible — it looks like a marker whose owner changed their picture. The items are still written,
+            // flagged unusable, so the failure can be diagnosed rather than merely re-run into.
+            CorpusItemPayload first = malformed.getFirst();
+            String reason = malformed.size() + " of " + payloads.size() + " item(s) carried a malformed dHash "
+                    + "(first: " + first.shortcode() + " = " + abbreviate(first.dHash()) + ")";
+            // Committed independently — the 400 below rolls THIS transaction back, and the record of the fault
+            // must not go with it.
+            rejections.voidSnapshot(snapshotId, batch, reason);
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "snapshot " + snapshotId + " rejected — " + reason + ". Re-run the whole pass; a partial "
+                    + "corpus is preferable to a reference no client can match.");
         }
+        items.saveAll(batch);
         snapshot.addItems(payloads.size());
         return snapshots.save(snapshot);
+    }
+
+    /** A fingerprint is 64 binary digits — anything else is not a dHash, whatever its type says. */
+    private static final Pattern WELL_FORMED_DHASH = Pattern.compile("^[01]{64}$");
+
+    private static String abbreviate(String value) {
+        if (value == null) {
+            return "null";
+        }
+        return value.length() <= 24 ? "'" + value + "'" : "'" + value.substring(0, 24) + "…' (" + value.length() + " chars)";
     }
 
     /** Seal a completed pass (idempotent, 404 if unknown) and prune the group to the retention window. */
@@ -92,6 +130,46 @@ public class MarkerCorpusService {
     @Transactional(readOnly = true)
     public Optional<CorpusRepresentative> getRepresentative(UUID snapshotId, String shortcode) {
         return representatives.findBySnapshotIdAndShortcode(snapshotId, shortcode);
+    }
+
+    /**
+     * The fingerprint a CLIENT computed for one of a group's posts, newest pass first — the only fingerprint that
+     * may ever be written into a vetted profile for it.
+     *
+     * <p>This is how a corrupt reference is repaired without hashing anything here. The value that landed in
+     * `glowbloggeragency`'s Sunday START was the reference's own post shortcode, so the post is known — and a deep
+     * scrape has already streamed a client-computed hash for that very post. Copying it is exact; recomputing it
+     * with this service's Java hasher lands 15–34 bits away and would never match.</p>
+     *
+     * <p>Empty when the pass has been pruned, was voided, or the item was burned — in which case the reference
+     * genuinely needs a re-vet, and saying so is better than inventing a hash.</p>
+     */
+    @Transactional(readOnly = true)
+    public Optional<String> clientHashForPost(String igAccount, String shortcode) {
+        if (igAccount == null || shortcode == null || shortcode.isBlank()) {
+            return Optional.empty();
+        }
+        return items.findUsableByGroupAndShortcode(igAccount, shortcode).stream()
+                .map(CorpusSnapshotItem::getDHash)
+                .filter(h -> h != null && WELL_FORMED_DHASH.matcher(h).matches())
+                .findFirst();
+    }
+
+    /**
+     * Burn every corpus row of a group that carries one exact fingerprint value, so it can never again be picked
+     * as a marker reference. Returns how many were burned.
+     */
+    @Transactional
+    public int burn(String igAccount, String dHash, String reason) {
+        if (igAccount == null || dHash == null || dHash.isBlank()) {
+            return 0;
+        }
+        List<CorpusSnapshotItem> doomed = items.findByGroupAndDHash(igAccount, dHash).stream()
+                .filter(i -> !i.isUnusable())
+                .toList();
+        doomed.forEach(i -> i.markUnusable(reason));
+        items.saveAll(doomed);
+        return doomed.size();
     }
 
     /** A group's snapshots, newest first (admin evidence list). */

@@ -51,6 +51,9 @@ public class MarkerCorpusSnapshot {
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
+    @Column(name = "rejected_reason", length = 512)
+    private String rejectedReason;
+
     @Column(name = "sealed_at")
     private Instant sealedAt;
 
@@ -86,5 +89,18 @@ public class MarkerCorpusSnapshot {
     public void interrupt() {
         this.status = SnapshotStatus.INTERRUPTED;
         this.sealedAt = Instant.now();
+    }
+
+    /**
+     * Void this pass permanently — nothing it streamed may ever be cut into a reference. Terminal: a rejected
+     * snapshot cannot be sealed, and {@link #isUsable()} answers false for every one of its items.
+     */
+    public void reject(String reason) {
+        this.status = SnapshotStatus.REJECTED;
+        this.rejectedReason = reason;
+    }
+
+    public String getRejectedReason() {
+        return rejectedReason;
     }
 }

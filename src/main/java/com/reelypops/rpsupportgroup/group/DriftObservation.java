@@ -88,6 +88,17 @@ public class DriftObservation {
     @Column(name = "detail", length = 1024)
     private String detail;
 
+    /**
+     * THE CLIENT'S OWN fingerprint of {@code evidenceImageLocator}'s picture — stored verbatim, never recomputed.
+     *
+     * <p>This service's {@code ImageDHash} lands 15–34 bits away for identical bytes (measured 16/08/2026), which
+     * is as far apart as unrelated images, while clients match at a 4–10 bit tolerance. A hash computed here would
+     * therefore look perfectly healthy and never match anything. Cross-PLATFORM agreement is proven (0 bits on
+     * ubuntu/windows/macos); crossing IMPLEMENTATIONS is what breaks.</p>
+     */
+    @Column(name = "evidence_image_hash", length = 64)
+    private String evidenceImageHash;
+
     @Column(name = "occurrence_count", nullable = false)
     private long occurrenceCount;
 
@@ -145,9 +156,23 @@ public class DriftObservation {
         measure(markerRole, null, imageDistance, imageThreshold, evidencePostId, evidenceImageLocator, null);
     }
 
+    /** As above, carrying the CLIENT's fingerprint of the delivered picture. */
+    void measure(String markerRole, Integer imageDistance, Integer imageThreshold, String evidencePostId,
+                 String evidenceImageLocator, String evidenceImageHash) {
+        measure(markerRole, null, imageDistance, imageThreshold, evidencePostId, evidenceImageLocator, null,
+                evidenceImageHash);
+    }
+
     /** As above, naming the exact reference ({@code markerText}) and, for a corrupt reference, the fault. */
     void measure(String markerRole, String markerText, Integer imageDistance, Integer imageThreshold,
                  String evidencePostId, String evidenceImageLocator, String detail) {
+        measure(markerRole, markerText, imageDistance, imageThreshold, evidencePostId, evidenceImageLocator, detail,
+                null);
+    }
+
+    /** As above, carrying the CLIENT's fingerprint of the delivered picture. */
+    void measure(String markerRole, String markerText, Integer imageDistance, Integer imageThreshold,
+                 String evidencePostId, String evidenceImageLocator, String detail, String evidenceImageHash) {
         this.markerRole = markerRole;
         this.markerText = markerText;
         this.imageDistance = imageDistance;
@@ -158,6 +183,7 @@ public class DriftObservation {
         // not erase the evidence an earlier one delivered.
         if (evidenceImageLocator != null) {
             this.evidenceImageLocator = evidenceImageLocator;
+            this.evidenceImageHash = evidenceImageHash; // the fingerprint belongs TO that picture — move together
         }
     }
 
@@ -174,6 +200,8 @@ public class DriftObservation {
     public String getEvidencePostId() { return evidencePostId; }
 
     public String getEvidenceImageLocator() { return evidenceImageLocator; }
+
+    public String getEvidenceImageHash() { return evidenceImageHash; }
 
     /** Mark this observation resolved (a re-vet cleared the derived marker-disagree flag). */
     void resolve() {

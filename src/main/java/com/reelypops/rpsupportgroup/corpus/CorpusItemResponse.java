@@ -8,10 +8,17 @@ public record CorpusItemResponse(
         String authorUsername,
         String dHash,
         Instant postedAt,
-        int ordinal) {
+        int ordinal,
+        /**
+         * ⚠️ Burned: this post may never be offered as a marker-reference candidate. The Vetting Portal must not
+         * let it be clicked — picking it writes a fingerprint into a vetted profile that no client can match, and
+         * nothing downstream would ever say so.
+         */
+        boolean unusable,
+        String unusableReason) {
 
     public static CorpusItemResponse of(CorpusSnapshotItem i) {
         return new CorpusItemResponse(i.getShortcode(), i.getAuthorUsername(), i.getDHash(), i.getPostedAt(),
-                i.getOrdinal());
+                i.getOrdinal(), i.isUnusable(), i.getUnusableReason());
     }
 }
