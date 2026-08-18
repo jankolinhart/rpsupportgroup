@@ -1127,7 +1127,7 @@ class InternalGroupControllerTest {
     // --- CORRUPT reference → one-click repair by COPYING the client's fingerprint for that post (18/08/2026) ---
 
     @Test
-    void REPAIRING_copiesTheClientsFingerprintForTheReferencesOwnPost() throws Exception {
+    void REPAIRING_fallsBackToTheCorpusWhenNoClientHasSentALivePicture() throws Exception {
         createConfig("ref-repair");
         String locator = markerImageStore.capture(java.util.Base64.getDecoder().decode(pngBase64())).orElseThrow();
         String shortcode = "DbyhP29uyF5nHF-_saO60D-eic5SEtq5Qw3IAs0"; // the real corrupt value from the live record
@@ -1146,11 +1146,16 @@ class InternalGroupControllerTest {
                 java.util.List.of(sunday))), 1L);
         configRepository.save(c);
 
-        // ⚠️ WHERE THE REPAIR'S VALUE COMES FROM. The corrupt value IS the reference's own post shortcode — the
-        // damage names the post it belongs to — and a deep scrape has already streamed a CLIENT-computed
-        // fingerprint for exactly that post. So the repair is a copy, not a computation. Recomputing it here (what
-        // this endpoint did until 18/08/2026) produces a hash 15–34 bits from what clients measure: well-formed,
-        // plausible, shipped to everyone, and matched by no one.
+        // ⚠️ THE FALLBACK PATH — no client has reported a live picture for this reference, so there is no
+        // image+fingerprint pair to adopt. Only then is the corpus consulted, and only because the corrupt value
+        // IS the reference's own post shortcode, so the damage happens to name a post a client once streamed a
+        // fingerprint for. That is coincidence, not design: snapshots are pruned, passes get voided, rows get
+        // burned, and the corpus row may even be a different RENDITION of the same banner (glow's full image and
+        // its thumbnail measure 15 bits apart, against a 4–10 bit match tolerance).
+        //
+        // What it is NOT is a computation. Hashing the picture here — what this endpoint did until 18/08/2026 —
+        // produces a value 15–34 bits from what clients measure: well-formed, plausible, shipped to everyone, and
+        // matched by no one.
         String snapshotId = JsonPath.read(mockMvc.perform(
                         post("/supportgroup/v1/internal/corpus/groups/{ig}/snapshots", "ref-repair")
                                 .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
@@ -1169,8 +1174,8 @@ class InternalGroupControllerTest {
 
         mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "ref-repair").header(KEY_HEADER, KEY))
                 .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes.length()").value(1))
-                // The client's value VERBATIM — not merely something hash-shaped. Asserting only the shape is what
-                // let a wrong-dialect hash pass for a repair for a whole day.
+                // A client-computed value VERBATIM — not merely something hash-shaped. Asserting only the shape is
+                // what let a wrong-dialect hash pass for a repair for a whole day.
                 .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes[0]").value(CLIENT_HASH));
     }
 

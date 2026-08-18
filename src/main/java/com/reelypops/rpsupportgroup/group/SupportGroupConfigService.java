@@ -648,34 +648,51 @@ public class SupportGroupConfigService {
     }
 
     /**
-     * A fingerprint a CLIENT computed for a reference's picture — never one computed here.
+     * A fingerprint a CLIENT computed for a reference — never one computed here.
      *
-     * <p>Two sources, in order of directness:</p>
+     * <p><strong>The live picture a client delivered comes FIRST, and that is the whole design.</strong> A client
+     * that reports a corrupt reference sends the banner the owner is posting <em>today</em> together with its own
+     * fingerprint of it. The two arrive as a matched pair, they describe the same bytes, and they describe what
+     * clients actually have to recognise now. Adopting them is what the loop exists for — and it makes the
+     * reference BETTER, not merely well-formed again, because the profile ends up carrying a current picture.</p>
+     *
      * <ol>
-     *   <li>the deep-scrape corpus, keyed by the reference's own {@code shortcode}. This is the exact repair for
-     *       the fault that created this path: the corrupt value written into `glowbloggeragency` WAS the
-     *       shortcode, so the post is named by the damage itself, and a client already streamed a fingerprint for
-     *       it;</li>
-     *   <li>a live picture a client delivered with an open corruption report, matched on role and text.</li>
+     *   <li><strong>the live picture a client delivered</strong> with an open corruption report, matched on role
+     *       and text;</li>
+     *   <li>the deep-scrape corpus, keyed by the reference's own {@code shortcode} — a <em>fallback only</em>.</li>
      * </ol>
      *
-     * <p>Empty means empty. There is no third fallback that mints one locally — that is the bug, not the
+     * <p>⚠️ <strong>Why the corpus is a fallback and not the default.</strong> Two reasons, and the second is
+     * measured:</p>
+     * <ul>
+     *   <li>it is <strong>coincidental</strong>. Nothing guarantees the corpus still holds the reference's post —
+     *       snapshots are pruned to a retention window, a pass may have been voided, the row may be burned. A
+     *       source that is usually absent is not a default.</li>
+     *   <li>it may describe a <strong>different rendition of the same picture</strong>. A corpus row is hashed
+     *       from what the client streamed off the tagged grid; a vetted reference's stored picture is often the
+     *       smaller marker rendition. Measured 16/08/2026 on glow's own Sunday START: the full post image
+     *       (1187×1304) and the thumbnail (233×256) of the SAME banner are <strong>15 bits apart</strong> — and
+     *       clients accept a match at 4–10. So a corpus hash can be perfectly valid, perfectly client-computed,
+     *       and still not describe the picture it is being attached to.</li>
+     * </ul>
+     *
+     * <p>Empty means empty. There is no third source that mints one locally — that is the bug, not the
      * backstop.</p>
      */
     private Optional<String> clientHashFor(String igAccount, SupportGroupConfig c,
                                            VettedProfile.TypedMarkerReference r) {
-        Optional<String> fromCorpus = corpus.clientHashForPost(igAccount, r.shortcode())
-                .flatMap(SupportGroupConfigService::wellFormedClientHash);
-        if (fromCorpus.isPresent()) {
-            return fromCorpus;
-        }
-        return driftObservations
+        Optional<String> fromLiveReport = driftObservations
                 .findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(c.getId(),
                         DriftKind.MARKER_REFERENCE_CORRUPT).stream()
                 .filter(o -> describes(o, r))
                 .map(DriftObservation::getEvidenceImageHash)
                 .flatMap(h -> wellFormedClientHash(h).stream())
                 .findFirst();
+        if (fromLiveReport.isPresent()) {
+            return fromLiveReport;
+        }
+        return corpus.clientHashForPost(igAccount, r.shortcode())
+                .flatMap(SupportGroupConfigService::wellFormedClientHash);
     }
 
     /** Whether a report is about this very reference — by role AND text, never role alone (glow has two STARTs). */
@@ -893,19 +910,23 @@ public class SupportGroupConfigService {
      * One open reference drift, paired with THE PICTURE THE REMEDY WILL USE — so the admin surface can show what is
      * about to be written rather than describing it.
      *
-     * <p>The two kinds take their picture from opposite places, which is the whole reason this is resolved here
-     * rather than guessed at the UI: a MEASURED drift adopts the banner the CLIENT captured
-     * ({@code evidenceImageLocator} on the observation), while a CORRUPT reference is repaired from the
-     * reference's OWN stored picture — nothing new arrives, the hash is simply recomputed from bytes already
-     * held. Showing the client's capture for a corrupt reference would promise something that will not happen.</p>
+     * <p>Both kinds now adopt the banner the CLIENT captured ({@code evidenceImageLocator} on the observation).
+     * That was not always true: a corrupt reference used to be repaired from its OWN stored picture, with nothing
+     * new arriving and the hash merely recomputed from bytes already held. Two things killed that design — the
+     * cloud cannot compute a fingerprint clients can match, and the client is already sending a current picture
+     * WITH its own fingerprint. Taking that pair makes the reference better rather than merely well-formed
+     * again.</p>
+     *
+     * <p>{@code referenceImageLocator} is therefore the BEFORE picture — what the profile holds today, shown so
+     * the operator can see what is being replaced, not what is being written.</p>
      */
     public record ReferenceDriftView(
             DriftObservation observation,
-            /** The reference's OWN stored picture — what a repair recomputes from. */
+            /** The reference's OWN stored picture — the BEFORE, i.e. what is being replaced. */
             String referenceImageLocator,
-            /** The hash that picture really produces — i.e. exactly what a repair would write. */
+            /** The client-computed fingerprint the profile currently holds for it, where one is known. */
             String referenceImageHash,
-            /** The hash the CLIENT's live banner produces — exactly what adopting it would write. */
+            /** The CLIENT's fingerprint of the live banner — exactly what the remedy will write. */
             String evidenceImageHash,
             /** What the reference stores TODAY. For a corrupt reference this is the value that is not a hash. */
             String storedValue,
@@ -921,10 +942,13 @@ public class SupportGroupConfigService {
     }
 
     /**
-     * The client-computed fingerprint of the reference an observation names — the value a repair would write.
+     * The client-computed fingerprint the profile currently holds for the reference an observation names — the
+     * BEFORE side of the comparison.
      *
      * <p>Read from the vetted profile itself when it already holds a well-formed one (every hash cut from a deep
-     * scrape is the client's), and otherwise from the corpus by the reference's post. Never hashed here.</p>
+     * scrape is the client's), and otherwise from the corpus by the reference's post. Never hashed here, and
+     * deliberately NOT the live report's hash: comparing the live banner against itself would always read 0 bits
+     * and tell the operator nothing.</p>
      */
     private Optional<String> clientHashForReferenceOf(SupportGroupConfig c, DriftObservation o) {
         if (c.getVettedProfile() == null) {

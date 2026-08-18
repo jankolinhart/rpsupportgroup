@@ -126,7 +126,10 @@ class CorruptReferenceRepairTest {
     }
 
     @Test
-    void REPAIRS_thePostShortcodeWithTheFingerprintAClientComputed_andClosesTheDrift() {
+    void FALLBACK_repairsFromTheCorpusWhenNoClientHasSentALivePicture_andClosesTheDrift() {
+        // The report carries no picture — an older client, or a capture that could not be retained. Only then is
+        // the corpus consulted, and only because the corrupt value IS the reference's own post shortcode, so the
+        // damage happens to name a post a client once streamed a fingerprint for. Coincidence, not design.
         SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
         DriftObservation open = openCorruptDrift(c);
         MarkerImage stored = mock(MarkerImage.class);
@@ -139,6 +142,38 @@ class CorruptReferenceRepairTest {
         // The CLIENT's value, verbatim — not a well-formed one minted here, which would look identical to any
         // assertion that only checks the shape and would match nothing in the field.
         assertThat(hashes).containsExactly(CORPUS_HASH);
+        assertThat(open.isResolved()).isTrue();
+    }
+
+    @Test
+    void REGRESSION_theClientsLIVE_pictureBEATS_theCorpusWhenBothAreAvailable() {
+        // ⚠️ THE ORDER IS THE POINT, and it was wrong first time round.
+        //
+        // The corpus describes the OLD post; the client's report describes what the marker looks like TODAY, and
+        // arrives as a matched image+fingerprint pair. Preferring the corpus would repair the reference to a
+        // picture nobody is posting any more — technically valid, and a wasted opportunity to make the profile
+        // current from data we were handed for free. There is also no guarantee a corpus row exists at all
+        // (snapshots are pruned, passes get voided, rows get burned), so it cannot be the default.
+        SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
+        DriftObservation open = openCorruptDrift(c);
+        open.measure("start", "GB AGENCY START Sonntag", null, null, "DcEj0SRu", "live-loc", "shortcode",
+                LIVE_HASH);
+        MarkerImage vetted = mock(MarkerImage.class);
+        when(vetted.getImage()).thenReturn(png());
+        when(imageStore.find(LOCATOR)).thenReturn(Optional.of(vetted));
+        MarkerImage live = mock(MarkerImage.class);
+        when(live.getImage()).thenReturn(differentPng());
+        when(imageStore.find("live-loc")).thenReturn(Optional.of(live));
+        // Both sources can answer. Only one may be used.
+        when(corpusService.clientHashForPost("glowbloggeragency", SHORTCODE))
+                .thenReturn(Optional.of(CORPUS_HASH));
+
+        SupportGroupConfig out = service.repairMalformedReferenceHashes("glowbloggeragency");
+
+        var ref = out.getVettedProfile().weeklySchedule().days().get(0).references().get(0);
+        assertThat(ref.dHashes()).containsExactly(LIVE_HASH);
+        assertThat(ref.dHashes()).doesNotContain(CORPUS_HASH);
+        assertThat(ref.imageLocator()).isEqualTo("live-loc");
         assertThat(open.isResolved()).isTrue();
     }
 
@@ -160,10 +195,15 @@ class CorruptReferenceRepairTest {
     }
 
     @Test
-    void REPAIR_alsoAdoptsTheLIVE_bannerWhenItDIFFERS_fromTheVettedPicture() {
-        // One decisive click: repairing the field and adopting the live banner are the same operator intent —
-        // "make this reference right" — so they happen together rather than as two buttons whose ordering has to
-        // be reasoned about. Both pictures end up carried, which is what widens what can be recognised.
+    void REPAIR_TAKES_theClientsLiveBanner_pictureAndHashTogether() {
+        // ⚠️ THE CLIENT'S LIVE PAIR IS THE REPAIR — not a bonus added on top of a corpus lookup.
+        //
+        // A client reporting a corrupt reference sends the banner the owner is posting TODAY together with its own
+        // fingerprint of it. The two describe the same bytes and describe what clients actually have to recognise
+        // now, so taking them makes the reference BETTER rather than merely well-formed again. The corpus is a
+        // fallback for when no client has sent one — it holds the OLD post, its presence is coincidence (snapshots
+        // are pruned), and its row may even be a different RENDITION of the same banner: measured 16/08/2026,
+        // glow's full post image and its thumbnail are 15 bits apart while clients match at 4–10.
         SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
         DriftObservation open = openCorruptDrift(c);
         open.measure("start", "GB AGENCY START Sonntag", null, null, "DcEj0SRu", "live-loc", "shortcode",
@@ -177,9 +217,13 @@ class CorruptReferenceRepairTest {
 
         SupportGroupConfig out = service.repairMalformedReferenceHashes("glowbloggeragency");
 
-        List<String> hashes = out.getVettedProfile().weeklySchedule().days().get(0).references().get(0).dHashes();
-        assertThat(hashes).containsExactly(CORPUS_HASH, LIVE_HASH); // repaired + the live banner, both the client's
-        assertThat(hashes).doesNotContain(SHORTCODE);               // the junk is gone
+        var ref = out.getVettedProfile().weeklySchedule().days().get(0).references().get(0);
+        assertThat(ref.dHashes()).containsExactly(LIVE_HASH);   // the client's live fingerprint, verbatim
+        assertThat(ref.dHashes()).doesNotContain(SHORTCODE);    // the junk is gone
+        assertThat(ref.dHashes()).doesNotContain(CORPUS_HASH);  // ...and the corpus was not consulted at all
+        // The PICTURE follows the hash. A reference whose fingerprint is the live banner's while its picture still
+        // shows the superseded one is how an operator ends up adopting a change and then being shown the old image.
+        assertThat(ref.imageLocator()).isEqualTo("live-loc");
         assertThat(open.isResolved()).isTrue();
     }
 
@@ -243,9 +287,10 @@ class CorruptReferenceRepairTest {
 
     @Test
     void repairStillSucceedsWhenTheLiveBannerHasBeenRECLAIMED() {
-        // The observation names a picture that is no longer in the store (retention, a cleared cache). The repair
-        // must still fix the hash from the vetted picture rather than failing because the bonus is unavailable —
-        // the live banner improves the outcome, it is not a precondition for it.
+        // The observation names a picture that is no longer in the store (retention, a cleared cache). Its HASH is
+        // still the client's fingerprint of what is being posted today, so it is still the right value to write —
+        // the fingerprint is what matching needs, the picture is only what a human looks at. The reference keeps
+        // its old display image rather than pointing at bytes we no longer hold.
         SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
         DriftObservation open = openCorruptDrift(c);
         open.measure("start", "GB AGENCY START Sonntag", null, null, "DcEj0SRu", "gone-loc", "shortcode",
@@ -257,8 +302,9 @@ class CorruptReferenceRepairTest {
 
         SupportGroupConfig out = service.repairMalformedReferenceHashes("glowbloggeragency");
 
-        List<String> hashes = out.getVettedProfile().weeklySchedule().days().get(0).references().get(0).dHashes();
-        assertThat(hashes).containsExactly(CORPUS_HASH);  // repaired; the live banner is a bonus, not a precondition
+        var ref = out.getVettedProfile().weeklySchedule().days().get(0).references().get(0);
+        assertThat(ref.dHashes()).containsExactly(LIVE_HASH);
+        assertThat(ref.imageLocator()).isEqualTo(LOCATOR);  // unchanged — we do not point at bytes we lost
         assertThat(open.isResolved()).isTrue();
     }
 
