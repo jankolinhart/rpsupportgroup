@@ -220,14 +220,32 @@ public class InternalGroupController {
         service.recordDrift(igAccount, req.kind(), req.reporterDeviceId(), req.reporterUserId(),
                 req.nominatedOwnerHandle(), req.agreePass(), req.disagreePass(), req.persistenceCount(),
                 req.markerRole(), req.markerText(), req.detail(), req.imageDistance(), req.imageThreshold(),
-                req.evidencePostId(), req.evidenceImage());
+                req.evidencePostId(), req.evidenceImage(), req.evidenceImageHash());
+    }
+
+    /**
+     * Every marker picture a CLIENT has ever delivered for this group, most recently seen first — the vetting
+     * picker's candidate list.
+     *
+     * <p>Outlives the drift reports that carried the pictures, on purpose. Directive B1 means no cloud service can
+     * re-fetch one, so a picture that arrives is the only copy there will ever be; and each carries the CLIENT's
+     * own fingerprint, which is the only dialect a client can match. An operator picking from here gets a
+     * reference that works; an operator uploading a picture gets one fingerprinted by this service, 15–34 bits
+     * from what every client computes.</p>
+     */
+    @GetMapping("/{igAccount}/client-marker-images")
+    public List<ClientMarkerImageResponse> clientMarkerImages(@PathVariable String igAccount) {
+        return ClientMarkerImageResponse.of(service.clientMarkerImages(igAccount));
     }
 
     /**
      * Admin "add this picture to the vetted profile" — the one-click remedy for MEASURED banner drift.
      *
-     * <p>Hashes the picture the client delivered and <strong>ADDS</strong> that hash to the reference the drift
-     * names, then resolves the observation. It never replaces what is there: {@code dHashes} is a list precisely so
+     * <p><strong>ADDS</strong> the fingerprint the CLIENT sent with the picture to the reference the drift names,
+     * then resolves the observation. It does not hash anything: this service's hasher lands 15–34 bits from the
+     * client's for identical bytes (measured 16/08/2026) while clients match at 4–10, so a hash minted here is
+     * well-formed, plausible, and unmatchable — a report of a picture that carries no fingerprint is refused
+     * instead, and a newer client will re-assert the drift with one. It never replaces what is there: {@code dHashes} is a list precisely so
      * a reference can hold every version of its banner, older posts keep matching, and — measured on
      * `glowbloggeragency` — carrying both pictures lets the client's threshold calibration see that the two roles
      * are close and tighten its own floor. Replacing would have left that floor wide.</p>

@@ -40,5 +40,12 @@ public record DriftReport(
          * banner without a full duty scrape. Optional: the measurement still stands without it, the administrator
          * simply has nothing to look at.</p>
          */
-        byte[] evidenceImage) {
+        byte[] evidenceImage,
+        /**
+         * THE CLIENT'S OWN fingerprint of {@code evidenceImage} — the only hash this service may store.
+         *
+         * <p>Our {@code ImageDHash} lands 15–34 bits away for identical bytes (measured 16/08/2026), and clients
+         * match at 4–10. A hash we computed would look healthy and never match. Store this verbatim.</p>
+         */
+        String evidenceImageHash) {
 }

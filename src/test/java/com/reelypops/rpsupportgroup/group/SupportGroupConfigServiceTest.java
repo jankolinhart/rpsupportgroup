@@ -2,6 +2,7 @@ package com.reelypops.rpsupportgroup.group;
 
 import com.reelypops.rpsupportgroup.group.SupportGroupConfigService.RevetStatus;
 import com.reelypops.rpsupportgroup.group.VettedProfileVersion.ChangeNoteEntry;
+import com.reelypops.rpsupportgroup.corpus.MarkerCorpusService;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -33,8 +34,10 @@ class SupportGroupConfigServiceTest {
     private final DriftObservationRepository driftObservations = mock(DriftObservationRepository.class);
     private final MarkerImageEnricher markerImageEnricher = mock(MarkerImageEnricher.class);
     private final MarkerImageStore markerImageStore = mock(MarkerImageStore.class);
+    private final ClientMarkerImageRepository clientImages = mock(ClientMarkerImageRepository.class);
+    private final MarkerCorpusService corpusService = mock(MarkerCorpusService.class);
     private final SupportGroupConfigService service =
-            new SupportGroupConfigService(configs, versions, driftObservations, markerImageEnricher, markerImageStore);
+            new SupportGroupConfigService(configs, versions, driftObservations, markerImageEnricher, markerImageStore, clientImages, corpusService);
 
     @Test
     void activeChangeNoteIsEmptyWhenThereIsNoActiveSnapshot() {

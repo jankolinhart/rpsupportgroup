@@ -44,6 +44,12 @@ public class CorpusSnapshotItem {
     @Column(name = "ordinal", nullable = false)
     private int ordinal;
 
+    @Column(name = "unusable", nullable = false)
+    private boolean unusable;
+
+    @Column(name = "unusable_reason", length = 512)
+    private String unusableReason;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -63,5 +69,24 @@ public class CorpusSnapshotItem {
     public static CorpusSnapshotItem of(UUID snapshotId, String shortcode, String authorUsername, String dHash,
                                         Instant postedAt, int ordinal) {
         return new CorpusSnapshotItem(snapshotId, shortcode, authorUsername, dHash, postedAt, ordinal);
+    }
+
+    /**
+     * Burn this item: it may never again be offered as a marker-reference candidate. Used when its fingerprint is
+     * not a fingerprint (a shortcode, a truncation, a hash from another implementation) — the row is kept as
+     * evidence of what a client actually streamed, but selecting it would write an unmatchable reference into a
+     * vetted profile, which is the fault this whole path exists to prevent.
+     */
+    public void markUnusable(String reason) {
+        this.unusable = true;
+        this.unusableReason = reason;
+    }
+
+    public boolean isUnusable() {
+        return unusable;
+    }
+
+    public String getUnusableReason() {
+        return unusableReason;
     }
 }

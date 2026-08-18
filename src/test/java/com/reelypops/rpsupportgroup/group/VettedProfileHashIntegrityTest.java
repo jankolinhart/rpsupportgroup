@@ -1,5 +1,6 @@
 package com.reelypops.rpsupportgroup.group;
 
+import com.reelypops.rpsupportgroup.corpus.MarkerCorpusService;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -38,8 +39,10 @@ class VettedProfileHashIntegrityTest {
     private final DriftObservationRepository drifts = mock(DriftObservationRepository.class);
     private final MarkerImageEnricher enricher = mock(MarkerImageEnricher.class);
     private final MarkerImageStore markerImageStore = mock(MarkerImageStore.class);
+    private final ClientMarkerImageRepository clientImages = mock(ClientMarkerImageRepository.class);
+    private final MarkerCorpusService corpusService = mock(MarkerCorpusService.class);
     private final SupportGroupConfigService service =
-            new SupportGroupConfigService(configs, versions, drifts, enricher, markerImageStore);
+            new SupportGroupConfigService(configs, versions, drifts, enricher, markerImageStore, clientImages, corpusService);
 
     private SupportGroupConfig existingGroup() {
         SupportGroupConfig c = SupportGroupConfig.createRequested("glowbloggeragency");

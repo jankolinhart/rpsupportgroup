@@ -1,6 +1,5 @@
 package com.reelypops.rpsupportgroup.group;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -63,9 +62,8 @@ final class VettedProfileHashAdopter {
      * <p>A blank text falls back to role-only matching, so a client that cannot report the text still gets the old
      * behaviour rather than nothing.</p>
      *
-     * <p>A reference that already holds the hash is left exactly as it is, so adopting twice is harmless — an
-     * administrator clicking the button again, or two clients reporting the same drift, must not accumulate
-     * duplicates.</p>
+     * <p>A reference that already holds exactly this hash is left as it is, so adopting twice is a no-op — an
+     * administrator clicking the button again, or two clients reporting the same drift, changes nothing.</p>
      *
      * <p>A reference is identifiable by ROLE, by TEXT, or by both — but at least one is required. With neither,
      * adding the picture anywhere would be a guess, and a wrong hash on a reference is worse than a missing one.</p>
@@ -78,12 +76,20 @@ final class VettedProfileHashAdopter {
      * As above, and — when {@code newImageLocator} is given — also repoints the reference's DISPLAY image at the
      * newly adopted picture.
      *
-     * <p><strong>Hashes accumulate; the display tracks current.</strong> {@code dHashes} is a list, so every version
-     * of the banner stays matchable and older posts keep matching. {@code imageLocator} is singular and is what a
-     * human actually looks at — the admin's reference thumbnail and the per-weekday marker preview shipped to
-     * clients — so it should show what the owner is posting TODAY. Leaving it pointing at the superseded picture
-     * meant an operator adopted the new banner and then went on being shown the old one, which is precisely the
-     * confusion the re-vet prompt exists to remove.</p>
+     * <p><strong>⚠️ ONE PICTURE, THE NEWEST. Adoption REPLACES; it does not accumulate.</strong> This reversed on
+     * 18/08/2026 and the reversal is the user's, from observation: carrying a second, near-identical fingerprint
+     * measurably <em>degrades</em> the client's threshold calibration. Calibration sets a reference's tolerance
+     * from how far apart the roles sit, so two renditions of the same banner compress that separation and force a
+     * tighter floor — on `glowbloggeragency` a duplicated START moved the signal enough to be visible immediately,
+     * and removing it restored it. More fingerprints is NOT more recall; past a point it is less.</p>
+     *
+     * <p><strong>Known trade-off, accepted:</strong> a post still carrying the superseded banner stops matching.
+     * That is the intended exchange — the marker that has to be recognised is the one being posted now.</p>
+     *
+     * <p>{@code imageLocator} follows the same picture, so the fingerprint and the image a human is shown always
+     * describe the same bytes. Leaving it on the superseded picture meant an operator adopted the new banner and
+     * then went on being shown the old one, which is precisely the confusion the re-vet prompt exists to
+     * remove.</p>
      *
      * <p>The reference's {@code source} is stamped {@link #SOURCE_CLIENT_DRIFT} at the same time. That is not
      * decoration: {@link MarkerImageEnricher} re-derives {@code imageLocator} from the corpus representative for the
@@ -134,25 +140,21 @@ final class VettedProfileHashAdopter {
                 return r;
             }
             List<String> stored = r.dHashes() == null ? List.of() : r.dHashes();
-            // Adopting also CLEANS. A reference can be both corrupt and drifted — glow is exactly that — and
-            // appending to a list that still holds a non-hash would produce a profile the ingest boundary refuses
-            // (400), so the button would fail on the one group that needs it most. A value that is not a hash is
-            // not evidence of anything, so it is dropped rather than carried alongside the new picture.
-            List<String> hashes = stored.stream().filter(VettedProfileHashAdopter::wellFormed).toList();
-            boolean known = hashes.contains(newHash);
-            boolean cleaned = hashes.size() != stored.size();
             boolean repointing = newImageLocator != null && !newImageLocator.isBlank()
                     && !newImageLocator.equals(r.imageLocator());
-            if (known && !repointing && !cleaned) {
-                return r; // already known — adopting twice must not accumulate duplicates
+            if (stored.equals(List.of(newHash)) && !repointing) {
+                return r; // already exactly this — adopting twice must be a no-op
             }
-            List<String> grown = new ArrayList<>(hashes);
-            if (!known) {
-                grown.add(newHash);
-            }
-            // The display follows the newest picture; the hash list keeps every version. `imageUrl` is dropped
-            // with it — it names the SUPERSEDED image, and a stale URL beats no URL only if you never look at it.
-            return new VettedProfile.TypedMarkerReference(r.markerType(), List.copyOf(grown), r.ocrText(),
+            // ⚠️ REPLACE. The reference ends up carrying the client's newest fingerprint and NOTHING else.
+            //
+            // This also CLEANS, without needing to check. A reference can be both corrupt and drifted — glow was
+            // exactly that — and a list still holding a non-hash would be refused by the ingest boundary (400),
+            // so the button would fail on the group that needed it most. Replacing the whole list drops any
+            // malformed value with the rest, so there is no separate well-formedness filter to keep in step.
+            List<String> adopted = List.of(newHash);
+            // The display follows the picture the hash describes. `imageUrl` is dropped with it — it names the
+            // SUPERSEDED image, and a stale URL beats no URL only if you never look at it.
+            return new VettedProfile.TypedMarkerReference(r.markerType(), adopted, r.ocrText(),
                     r.matchThreshold(), repointing ? SOURCE_CLIENT_DRIFT : r.source(), r.shortcode(),
                     repointing ? null : r.imageUrl(), repointing ? newImageLocator : r.imageLocator());
         }).toList();
@@ -163,11 +165,6 @@ final class VettedProfileHashAdopter {
      * fallback); otherwise the comparison ignores case and surrounding whitespace, because the text travels through
      * OCR on the client and an exact-bytes match would be brittle for no benefit.
      */
-    /** Same test the ingest boundary applies — exactly 64 binary digits. */
-    private static boolean wellFormed(String hash) {
-        return hash != null && hash.matches("[01]{64}");
-    }
-
     /** A blank wanted-role matches everything — the TEXT is then carrying the identification on its own. */
     private static boolean roleMatches(String wanted, String referenceRole) {
         return wanted == null || wanted.isBlank() || wanted.equalsIgnoreCase(referenceRole);

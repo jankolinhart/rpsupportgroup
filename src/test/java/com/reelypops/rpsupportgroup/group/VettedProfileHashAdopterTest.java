@@ -8,12 +8,18 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Adoption ADDS a banner's newer picture; it never replaces the older one.
+ * Adoption REPLACES a banner's picture with the newest one. A reference carries ONE fingerprint.
  *
- * <p>Measured on `glowbloggeragency` (16/08/2026): carrying both pictures is what lets the client's threshold
- * calibration see that Sunday's START and the ENDE banner are only 9 bits apart, dropping its floor from 10 to 8.
- * Replacing would have kept the floor at 10 and left the role misread possible — so "append, don't replace" is
- * load-bearing, not politeness to the old reference.</p>
+ * <p><strong>⚠️ This reversed on 18/08/2026, and the reversal came from watching it happen.</strong> The earlier
+ * design appended, on the reasoning that a second picture widens what can be recognised — it was even measured
+ * once as dropping glow's calibrated floor from 10 to 8. Live use showed the opposite effect dominates: a
+ * second, near-identical fingerprint of the same banner <em>degrades</em> the client's threshold calibration.
+ * Calibration reads a reference's tolerance from how far apart the roles sit, so two renditions of one banner
+ * compress that separation and force a tighter floor. On `glowbloggeragency` a duplicated START moved the signal
+ * enough to be obvious immediately, and removing it by hand restored it.</p>
+ *
+ * <p><strong>Known trade-off, accepted:</strong> a post still carrying the superseded banner stops matching. That
+ * is the intended exchange — the marker that has to be recognised is the one being posted now.</p>
  */
 class VettedProfileHashAdopterTest {
 
@@ -39,13 +45,13 @@ class VettedProfileHashAdopterTest {
     }
 
     @Test
-    void APPENDS_theNewPicture_keepingTheOldOne() {
+    void REPLACES_theOldPictureWithTheNewestOne() {
         VettedProfile out = VettedProfileHashAdopter.append(
                 profile(List.of(ref("start", "START Sonntag", OLD)), List.of(ref("start", "START Sonntag", OLD))),
                 "start", NEW);
 
-        assertThat(out.detector().references().get(0).dHashes()).containsExactly(OLD, NEW);
-        assertThat(out.weeklySchedule().days().get(0).references().get(0).dHashes()).containsExactly(OLD, NEW);
+        assertThat(out.detector().references().get(0).dHashes()).containsExactly(NEW);
+        assertThat(out.weeklySchedule().days().get(0).references().get(0).dHashes()).containsExactly(NEW);
     }
 
     @Test
@@ -54,18 +60,18 @@ class VettedProfileHashAdopterTest {
                 profile(null, List.of(ref("start", "START", OLD), ref("end", "ENDE", OLD))), "start", NEW);
 
         List<VettedProfile.TypedMarkerReference> refs = out.weeklySchedule().days().get(0).references();
-        assertThat(refs.get(0).dHashes()).containsExactly(OLD, NEW);
+        assertThat(refs.get(0).dHashes()).containsExactly(NEW);
         assertThat(refs.get(1).dHashes()).containsExactly(OLD); // the END banner did not change
     }
 
     @Test
-    void adoptingTwiceDoesNotAccumulateDuplicates() {
+    void adoptingTwiceIsANoOp() {
         // An administrator clicking again, or two clients reporting the same drift, must be harmless.
         VettedProfile once = VettedProfileHashAdopter.append(
                 profile(null, List.of(ref("start", "START", OLD))), "start", NEW);
         VettedProfile twice = VettedProfileHashAdopter.append(once, "start", NEW);
 
-        assertThat(twice.weeklySchedule().days().get(0).references().get(0).dHashes()).containsExactly(OLD, NEW);
+        assertThat(twice.weeklySchedule().days().get(0).references().get(0).dHashes()).containsExactly(NEW);
     }
 
     @Test
@@ -82,7 +88,7 @@ class VettedProfileHashAdopterTest {
     void roleMatchingIsCaseInsensitive() {
         VettedProfile out = VettedProfileHashAdopter.append(
                 profile(null, List.of(ref("START", "START", OLD))), "start", NEW);
-        assertThat(out.weeklySchedule().days().get(0).references().get(0).dHashes()).containsExactly(OLD, NEW);
+        assertThat(out.weeklySchedule().days().get(0).references().get(0).dHashes()).containsExactly(NEW);
     }
 
     @Test
@@ -127,7 +133,7 @@ class VettedProfileHashAdopterTest {
 
         List<VettedProfile.TypedMarkerReference> refs = out.weeklySchedule().days().get(0).references();
         assertThat(refs.get(0)).isNull();
-        assertThat(refs.get(1).dHashes()).containsExactly(OLD, NEW);
+        assertThat(refs.get(1).dHashes()).containsExactly(NEW);
     }
 
     @Test
@@ -142,7 +148,7 @@ class VettedProfileHashAdopterTest {
 
         List<VettedProfile.TypedMarkerReference> refs = out.weeklySchedule().days().get(0).references();
         assertThat(refs.get(0).dHashes()).containsExactly(OLD);       // the weekday banner did NOT change
-        assertThat(refs.get(1).dHashes()).containsExactly(OLD, NEW);  // Sunday's did
+        assertThat(refs.get(1).dHashes()).containsExactly(NEW);  // Sunday's did
     }
 
     @Test
@@ -152,7 +158,7 @@ class VettedProfileHashAdopterTest {
                 profile(null, List.of(ref("start", "  GB AGENCY START Sonntag  ", OLD))),
                 "start", "gb agency start sonntag", NEW);
 
-        assertThat(out.weeklySchedule().days().get(0).references().get(0).dHashes()).containsExactly(OLD, NEW);
+        assertThat(out.weeklySchedule().days().get(0).references().get(0).dHashes()).containsExactly(NEW);
     }
 
     @Test
@@ -162,8 +168,8 @@ class VettedProfileHashAdopterTest {
                 profile(null, List.of(ref("start", "A", OLD), ref("start", "B", OLD))), "start", "  ", NEW);
 
         List<VettedProfile.TypedMarkerReference> refs = out.weeklySchedule().days().get(0).references();
-        assertThat(refs.get(0).dHashes()).containsExactly(OLD, NEW);
-        assertThat(refs.get(1).dHashes()).containsExactly(OLD, NEW);
+        assertThat(refs.get(0).dHashes()).containsExactly(NEW);
+        assertThat(refs.get(1).dHashes()).containsExactly(NEW);
     }
 
     @Test
@@ -196,7 +202,7 @@ class VettedProfileHashAdopterTest {
                 profile(null, List.of(before)), "start", "START Sonntag", NEW, "new-loc");
 
         VettedProfile.TypedMarkerReference after = out.weeklySchedule().days().get(0).references().get(0);
-        assertThat(after.dHashes()).containsExactly(OLD, NEW);   // every version stays matchable
+        assertThat(after.dHashes()).containsExactly(NEW);   // every version stays matchable
         assertThat(after.imageLocator()).isEqualTo("new-loc");   // what a human sees is today's banner
         assertThat(after.imageUrl()).isNull();                   // it named the SUPERSEDED image
         assertThat(after.ocrText()).isEqualTo("START Sonntag");  // the banner's identity did not change
@@ -213,7 +219,7 @@ class VettedProfileHashAdopterTest {
         VettedProfile out = VettedProfileHashAdopter.append(profile(null, List.of(before)), "start", "START", NEW);
 
         VettedProfile.TypedMarkerReference after = out.weeklySchedule().days().get(0).references().get(0);
-        assertThat(after.dHashes()).containsExactly(OLD, NEW);
+        assertThat(after.dHashes()).containsExactly(NEW);
         assertThat(after.imageLocator()).isEqualTo("old-loc");
         assertThat(after.imageUrl()).isEqualTo("http://old.example/pic");
         assertThat(after.source()).isEqualTo("detected");
@@ -226,7 +232,7 @@ class VettedProfileHashAdopterTest {
         VettedProfile twice = VettedProfileHashAdopter.append(once, "start", "START", NEW, "new-loc");
 
         VettedProfile.TypedMarkerReference after = twice.weeklySchedule().days().get(0).references().get(0);
-        assertThat(after.dHashes()).containsExactly(OLD, NEW);
+        assertThat(after.dHashes()).containsExactly(NEW);
         assertThat(after.imageLocator()).isEqualTo("new-loc");
     }
 
@@ -240,7 +246,7 @@ class VettedProfileHashAdopterTest {
         VettedProfile out = VettedProfileHashAdopter.append(in, "start", "START", NEW, "new-loc");
 
         VettedProfile.TypedMarkerReference after = out.weeklySchedule().days().get(0).references().get(0);
-        assertThat(after.dHashes()).containsExactly(OLD, NEW); // no duplicate
+        assertThat(after.dHashes()).containsExactly(NEW); // no duplicate
         assertThat(after.imageLocator()).isEqualTo("new-loc");
     }
 
@@ -275,7 +281,7 @@ class VettedProfileHashAdopterTest {
                 null, "GB AGENCY START Sonntag", NEW);
 
         List<VettedProfile.TypedMarkerReference> refs = out.weeklySchedule().days().get(0).references();
-        assertThat(refs.get(0).dHashes()).containsExactly(OLD, NEW);
+        assertThat(refs.get(0).dHashes()).containsExactly(NEW);
         assertThat(refs.get(1).dHashes()).containsExactly(OLD); // the END banner is untouched
     }
 
