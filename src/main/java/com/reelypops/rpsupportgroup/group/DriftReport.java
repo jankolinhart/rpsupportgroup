@@ -47,5 +47,13 @@ public record DriftReport(
          * <p>Our {@code ImageDHash} lands 15–34 bits away for identical bytes (measured 16/08/2026), and clients
          * match at 4–10. A hash we computed would look healthy and never match. Store this verbatim.</p>
          */
-        String evidenceImageHash) {
+        String evidenceImageHash,
+        /**
+         * WHICH weekday slot (JS 0=Sun … 6=Sat) the drifting reference belongs to — resolved by the CLIENT from
+         * the marker's own postedOn through the schedule's day-offsets; {@code null} for a flat/legacy group or
+         * an old client. Adoption writes into exactly this day's slot: without it the only possible write was
+         * "every day sharing the role+text", which stamped all seven START slots with one day's banner
+         * (18/08/2026).
+         */
+        Integer markerWeekday) {
 }

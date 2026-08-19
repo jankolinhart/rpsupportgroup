@@ -1180,6 +1180,71 @@ class InternalGroupControllerTest {
                 .andExpect(jsonPath("$[0].occurrenceCount").value(3));
     }
 
+    @Test
+    void ACCEPTANCE_aTuesdayDriftAdoptsIntoTUESDAYS_slotAndNoOther() throws Exception {
+        // End-to-end version of the rule agreed 19/08/2026: "a drift found on a marker allocated to weekday X
+        // re-vets only weekday X's slot". Monday, Tuesday and Wednesday share role AND text — the exact shape
+        // under which the 18/08 adoption stamped every day with one banner.
+        createConfig("drift-weekday");
+        String old = "1010".repeat(16);
+        String day = "{\"weekday\":%d,\"open\":true,\"type\":\"TWO_MARKER\",\"startMarkerTime\":\"08:47\","
+                + "\"endMarkerTime\":\"20:31\",\"endMarkerDayOffset\":0,\"style\":\"TEXT_OVERLAY\","
+                + "\"references\":[{\"markerType\":\"start\",\"dHashes\":[\"" + old + "\"],"
+                + "\"ocrText\":\"G B AGENCY START\",\"matchThreshold\":4}]}";
+        String body = "{\"definition\":{\"type\":\"TWO_MARKER\",\"timezone\":\"Europe/Paris\",\"markerOwners\":[\"glow\"],"
+                + "\"startMarkerTime\":\"08:47\",\"endMarkerTime\":\"20:31\",\"endMarkerDayOffset\":0,\"openWeekdays\":[1,2,3]},"
+                + "\"description\":\"Glow.\","
+                + "\"weeklySchedule\":{\"days\":[" + day.formatted(1) + "," + day.formatted(2) + "," + day.formatted(3) + "]}}";
+        mockMvc.perform(put("/supportgroup/v1/internal/groups/{ig}/vetted-profile", "drift-weekday")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+
+        // The client reports the drift WITH its weekday slot — Tuesday (JS index 2).
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-weekday").header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kind\":\"MARKER_IMAGE_DRIFT\",\"reporterDeviceId\":\"dev-1\",\"markerRole\":\"start\","
+                                + "\"markerText\":\"G B AGENCY START\",\"markerWeekday\":2,"
+                                + "\"imageDistance\":24,\"imageThreshold\":8,\"evidencePostId\":\"DcLAPYku\","
+                                + "\"evidenceImageHash\":\"" + CLIENT_HASH + "\","
+                                + "\"evidenceImage\":\"" + pngBase64() + "\"}"))
+                .andExpect(status().isAccepted());
+
+        String obsId = JsonPath.read(mockMvc.perform(
+                        get("/supportgroup/v1/internal/groups/{ig}/drift", "drift-weekday").header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$[0].markerWeekday").value(2))
+                .andReturn().getResponse().getContentAsString(), "$[0].id");
+
+        mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift/{id}/adopt-image", "drift-weekday", obsId)
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk());
+
+        // THE CHECK THAT WOULD HAVE CAUGHT 18/08: dump the profile and assert per day. Monday and Wednesday hold
+        // the OLD hash untouched; Tuesday — and only Tuesday — holds the client's.
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}", "drift-weekday").header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.weeklySchedule.days[0].references[0].dHashes[0]").value(old))
+                .andExpect(jsonPath("$.weeklySchedule.days[1].references[0].dHashes[0]").value(CLIENT_HASH))
+                .andExpect(jsonPath("$.weeklySchedule.days[2].references[0].dHashes[0]").value(old));
+    }
+
+    @Test
+    void theSameRoleAndTextOnDIFFERENT_weekdaysAreDIFFERENT_observations() throws Exception {
+        // A Monday flower and a Tuesday monkey can both read "START" — one observation per day, upserted per day.
+        createConfig("drift-wd-key");
+        String base = "{\"kind\":\"MARKER_IMAGE_DRIFT\",\"reporterDeviceId\":\"dev-1\",\"markerRole\":\"start\","
+                + "\"markerText\":\"START\",\"imageDistance\":20,\"imageThreshold\":8,"
+                + "\"evidenceImageHash\":\"" + CLIENT_HASH + "\",\"markerWeekday\":";
+        for (String wd : new String[]{"1", "2", "2"}) { // Monday, Tuesday, Tuesday again (re-assert)
+            mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-wd-key").header(KEY_HEADER, KEY)
+                            .contentType(MediaType.APPLICATION_JSON).content(base + wd + "}"))
+                    .andExpect(status().isAccepted());
+        }
+
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/drift", "drift-wd-key").header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.length()").value(2))
+                // ...and the repeat UPSERTED rather than duplicating: Tuesday's row counts 2 occurrences.
+                .andExpect(jsonPath("$[?(@.markerWeekday == 2)].occurrenceCount").value(2));
+    }
+
     /** A fingerprint a CLIENT computed — the only dialect any repair or adoption may write. */
     private static final String CLIENT_HASH = "1100".repeat(16);
 

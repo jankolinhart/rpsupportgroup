@@ -99,6 +99,26 @@ final class VettedProfileHashAdopter {
      */
     static VettedProfile append(VettedProfile profile, String markerRole, String markerText, String newHash,
                                 String newImageLocator) {
+        return append(profile, null, markerRole, markerText, newHash, newImageLocator);
+    }
+
+    /**
+     * As above, targeted at ONE weekday's slot when {@code targetWeekday} is given (19/08/2026).
+     *
+     * <p><strong>With a weekday, exactly that day's references change and nothing else does</strong> — not the
+     * other days sharing the role+text, and not the detector block. The profile is per-weekday by design: an
+     * owner may post a flower on Monday and a monkey on Tuesday, both reading "START", and a Tuesday drift says
+     * nothing about Monday's banner. Weekday-blind adoption stamped all seven START slots with Wednesday's
+     * picture (observed 18/08/2026) and set the report/adopt loop oscillating between two banners fighting over
+     * one slot.</p>
+     *
+     * <p><strong>Without a weekday</strong> (a flat/legacy group, an old client, a corrupt-reference repair —
+     * kinds that carry no day) the pre-weekday behaviour stands: every day sharing the role+text, and the
+     * detector block with them. That path must survive unchanged, or legacy groups lose adoption entirely — their
+     * references live nowhere else.</p>
+     */
+    static VettedProfile append(VettedProfile profile, Integer targetWeekday, String markerRole, String markerText,
+                                String newHash, String newImageLocator) {
         boolean haveRole = markerRole != null && !markerRole.isBlank();
         boolean haveText = markerText != null && !markerText.isBlank();
         // A reference is identifiable by its ROLE, its TEXT, or both. Requiring the role made a missing one a
@@ -108,7 +128,8 @@ final class VettedProfileHashAdopter {
         if (profile == null || newHash == null || newHash.isBlank() || (!haveRole && !haveText)) {
             return profile;
         }
-        VettedProfile.DetectorArtifacts detector = profile.detector() == null ? null
+        VettedProfile.DetectorArtifacts detector = profile.detector() == null || targetWeekday != null
+                ? profile.detector()
                 : new VettedProfile.DetectorArtifacts(profile.detector().style(),
                         appendToAll(profile.detector().references(), markerRole, markerText, newHash,
                                 newImageLocator));
@@ -116,7 +137,8 @@ final class VettedProfileHashAdopter {
         WeeklyScheduleDefinition weekly = profile.weeklySchedule() == null
                 || profile.weeklySchedule().days() == null ? profile.weeklySchedule()
                 : new WeeklyScheduleDefinition(profile.weeklySchedule().days().stream()
-                        .map(d -> d == null || d.references() == null ? d
+                        .map(d -> d == null || d.references() == null
+                                || (targetWeekday != null && d.weekday() != targetWeekday) ? d
                                 : new DayDefinition(d.weekday(), d.open(), d.type(), d.startMarkerTime(),
                                         d.endMarkerTime(), d.endMarkerDayOffset(), d.startMarkerDayOffset(),
                                         d.singleMarkerTime(), d.likesUntilTime(), d.likesUntilDayOffset(),

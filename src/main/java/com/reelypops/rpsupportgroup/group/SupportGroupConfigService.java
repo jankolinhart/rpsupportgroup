@@ -434,6 +434,23 @@ public class SupportGroupConfigService {
                                         Integer persistenceCount, String markerRole, String markerText, String detail,
                                         Integer imageDistance, Integer imageThreshold, String evidencePostId,
                                         byte[] evidenceImage, String evidenceImageHash) {
+        return recordDrift(igAccount, kind, reporterDeviceId, reporterUserId, nominatedOwnerHandle, agreePass,
+                disagreePass, persistenceCount, markerRole, markerText, detail, imageDistance, imageThreshold,
+                evidencePostId, evidenceImage, evidenceImageHash, null);
+    }
+
+    /**
+     * As above, carrying the WEEKDAY SLOT the drifting reference belongs to (JS 0=Sun … 6=Sat) — resolved by the
+     * CLIENT from the marker's own postedOn through the schedule's day-offsets, and stored as part of the
+     * observation's identity. {@code null} = flat/legacy group or an old client; the client fails closed on an
+     * unresolvable slot, so a wrong value never arrives.
+     */
+    @Transactional
+    public DriftObservation recordDrift(String igAccount, DriftKind kind, String reporterDeviceId, UUID reporterUserId,
+                                        String nominatedOwnerHandle, Integer agreePass, Integer disagreePass,
+                                        Integer persistenceCount, String markerRole, String markerText, String detail,
+                                        Integer imageDistance, Integer imageThreshold, String evidencePostId,
+                                        byte[] evidenceImage, String evidenceImageHash, Integer markerWeekday) {
         if (kind == DriftKind.NEW_OWNER && (nominatedOwnerHandle == null || nominatedOwnerHandle.isBlank())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "nominatedOwnerHandle is required for a NEW_OWNER drift");
@@ -460,7 +477,8 @@ public class SupportGroupConfigService {
         // row and only the last reported survived (live, 18/08/2026: three drifting references arrived, one was
         // shown, and not the worst).
         Optional<DriftObservation> existing = handle == null
-                ? driftObservations.findForReference(c.getId(), kind, reporterDeviceId, markerRole, markerText)
+                ? driftObservations.findForReference(c.getId(), kind, reporterDeviceId, markerWeekday, markerRole,
+                        markerText)
                 : driftObservations.findByConfigIdAndKindAndReporterDeviceIdAndNominatedOwnerHandle(
                         c.getId(), kind, reporterDeviceId, handle);
         DriftObservation obs = existing
@@ -469,7 +487,7 @@ public class SupportGroupConfigService {
                     return o;
                 })
                 .orElseGet(() -> DriftObservation.first(c.getId(), kind, reporterDeviceId, reporterUserId, handle,
-                        agreePass, disagreePass, persistenceCount, now));
+                        markerWeekday, agreePass, disagreePass, persistenceCount, now));
         // Best-effort capture: a picture that cannot be stored must not reject the report. The measurement is the
         // signal; the picture is what makes it actionable in one click.
         String locator = evidenceImage == null || evidenceImage.length == 0
@@ -537,7 +555,8 @@ public class SupportGroupConfigService {
         // Repoints the DISPLAY image too: the hash list keeps every version, but what a human looks at should be
         // what the owner is posting today.
         VettedProfile updated = VettedProfileHashAdopter.append(
-                profile, obs.getMarkerRole(), obs.getMarkerText(), newHash, obs.getEvidenceImageLocator());
+                profile, obs.getMarkerWeekday(), obs.getMarkerRole(), obs.getMarkerText(), newHash,
+                obs.getEvidenceImageLocator());
         applyVettedProfile(igAccount, c, updated);
         SupportGroupConfig saved = configs.save(c);
         obs.resolve();

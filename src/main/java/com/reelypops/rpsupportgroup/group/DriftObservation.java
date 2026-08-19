@@ -64,6 +64,16 @@ public class DriftObservation {
     @Column(name = "marker_role", length = 20)
     private String markerRole;
 
+    /**
+     * WHICH weekday slot (JS 0=Sun … 6=Sat) the drifting reference belongs to — resolved by the CLIENT from the
+     * marker's own postedOn through the schedule's day-offsets, {@code null} for a flat/legacy group or an old
+     * client. Part of the natural key ({@code uq_drift_obs_natural}) and {@code updatable = false} like the rest
+     * of it: the same role+text on another day is a DIFFERENT observation, because the per-weekday profile makes
+     * it a different reference. Adoption writes into exactly this day's slot and no other.
+     */
+    @Column(name = "marker_weekday", updatable = false)
+    private Integer markerWeekday;
+
     @Column(name = "image_distance")
     private Integer imageDistance;
 
@@ -112,14 +122,15 @@ public class DriftObservation {
     private Instant lastSeenAt;
 
     private DriftObservation(UUID configId, DriftKind kind, String reporterDeviceId, UUID reporterUserId,
-                             String nominatedOwnerHandle, Integer agreePass, Integer disagreePass,
-                             Integer persistenceCount, Instant now) {
+                             String nominatedOwnerHandle, Integer markerWeekday, Integer agreePass,
+                             Integer disagreePass, Integer persistenceCount, Instant now) {
         this.id = UUID.randomUUID();
         this.configId = configId;
         this.kind = kind;
         this.reporterDeviceId = reporterDeviceId;
         this.reporterUserId = reporterUserId;
         this.nominatedOwnerHandle = nominatedOwnerHandle;
+        this.markerWeekday = markerWeekday;
         this.agreePass = agreePass;
         this.disagreePass = disagreePass;
         this.persistenceCount = persistenceCount;
@@ -133,8 +144,16 @@ public class DriftObservation {
     static DriftObservation first(UUID configId, DriftKind kind, String reporterDeviceId, UUID reporterUserId,
                                   String nominatedOwnerHandle, Integer agreePass, Integer disagreePass,
                                   Integer persistenceCount, Instant now) {
-        return new DriftObservation(configId, kind, reporterDeviceId, reporterUserId, nominatedOwnerHandle,
+        return first(configId, kind, reporterDeviceId, reporterUserId, nominatedOwnerHandle, null,
                 agreePass, disagreePass, persistenceCount, now);
+    }
+
+    /** As above, carrying the WEEKDAY SLOT the drifting reference belongs to (part of the natural key). */
+    static DriftObservation first(UUID configId, DriftKind kind, String reporterDeviceId, UUID reporterUserId,
+                                  String nominatedOwnerHandle, Integer markerWeekday, Integer agreePass,
+                                  Integer disagreePass, Integer persistenceCount, Instant now) {
+        return new DriftObservation(configId, kind, reporterDeviceId, reporterUserId, nominatedOwnerHandle,
+                markerWeekday, agreePass, disagreePass, persistenceCount, now);
     }
 
     /**
