@@ -133,6 +133,35 @@ public class MarkerCorpusService {
     }
 
     /**
+     * The representative thumbnail for a post, searched across the group's snapshots NEWEST-FIRST — the picture a
+     * vetted reference's {@code shortcode} actually refers to, wherever it lives.
+     *
+     * <p>⚠️ Exists because "the newest snapshot" is not "the snapshot the reference came from" (19/08/2026,
+     * observed live on the first clean-slate re-vet). The operator vetted from a SEALED 5229-item pass while an
+     * EMPTY, OPEN snapshot — a deep scrape cancelled seconds after starting — sat newer in the list. The enricher
+     * resolved every representative against that empty pass, found nothing, and stamped no display image on any
+     * reference: every picture surface in the product went dark, from the client's marker strip to the re-vet
+     * cards' "vetted picture" panels. Falling through per shortcode makes an empty or unrelated newer pass
+     * harmless while still preferring the freshest copy of the picture when several passes carry the post.</p>
+     *
+     * <p>OPEN passes are skipped (mid-write; the scrape may still be streaming) and REJECTED ones are poisoned by
+     * definition ({@link SnapshotStatus}). SEALED and INTERRUPTED both serve: an interrupted pass's
+     * already-shipped items are usable (take-what-we-get), and that includes its representatives.</p>
+     */
+    @Transactional(readOnly = true)
+    public Optional<CorpusRepresentative> findRepresentative(String igAccount, String shortcode) {
+        if (igAccount == null || shortcode == null || shortcode.isBlank()) {
+            return Optional.empty();
+        }
+        return snapshots.findByIgAccountOrderByCreatedAtDesc(igAccount).stream()
+                .filter(snap -> snap.getStatus() == SnapshotStatus.SEALED
+                        || snap.getStatus() == SnapshotStatus.INTERRUPTED)
+                .map(snap -> representatives.findBySnapshotIdAndShortcode(snap.getId(), shortcode))
+                .flatMap(Optional::stream)
+                .findFirst();
+    }
+
+    /**
      * The fingerprint a CLIENT computed for one of a group's posts, newest pass first — the only fingerprint that
      * may ever be written into a vetted profile for it.
      *

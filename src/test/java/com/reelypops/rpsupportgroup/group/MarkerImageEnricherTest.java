@@ -11,6 +11,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -36,13 +37,9 @@ class MarkerImageEnricherTest {
         // shortcode on EVERY save, and adoption goes through that same save path. A corpus snapshot predates a
         // drift by definition, so without this guard adopting today's banner would silently restore yesterday's —
         // the operator clicks "Add to vetted profile" and is still shown the picture they just replaced.
-        UUID snap = UUID.randomUUID();
-        MarkerCorpusSnapshot snapshot = mock(MarkerCorpusSnapshot.class);
-        when(snapshot.getId()).thenReturn(snap);
-        when(corpus.list("g")).thenReturn(List.of(snapshot));
         CorpusRepresentative rep = mock(CorpusRepresentative.class);
         when(rep.getImage()).thenReturn(new byte[]{9, 9, 9});
-        when(corpus.getRepresentative(any(), any())).thenReturn(Optional.of(rep));
+        when(corpus.findRepresentative(eq("g"), any())).thenReturn(Optional.of(rep));
         when(store.capture(any())).thenReturn(Optional.of("corpus-loc"));
 
         VettedProfile.TypedMarkerReference adopted = new VettedProfile.TypedMarkerReference(
@@ -64,14 +61,15 @@ class MarkerImageEnricherTest {
 
     @Test
     void stampsLocatorOnCorpusBackedRefsInDetectorAndWeekly() {
-        UUID snap = UUID.randomUUID();
-        MarkerCorpusSnapshot snapshot = mock(MarkerCorpusSnapshot.class);
-        when(snapshot.getId()).thenReturn(snap);
-        when(corpus.list("g")).thenReturn(List.of(snapshot));
         CorpusRepresentative rep = mock(CorpusRepresentative.class);
         when(rep.getImage()).thenReturn(new byte[]{1});
-        when(corpus.getRepresentative(snap, "SC1")).thenReturn(Optional.of(rep));
-        when(corpus.getRepresentative(snap, "SC2")).thenReturn(Optional.empty()); // no representative → unchanged
+        // ⚠️ The lookup is per SHORTCODE across all usable snapshots — never "the newest snapshot" alone. The
+        // newest is not necessarily the one the reference was vetted from: on 19/08/2026 an EMPTY, OPEN snapshot
+        // (a deep scrape cancelled seconds in) shadowed the sealed pass the operator actually used, and every
+        // reference lost its picture. The fall-through lives in MarkerCorpusService.findRepresentative; what THIS
+        // pass owes is to ask per shortcode and tolerate an empty answer.
+        when(corpus.findRepresentative("g", "SC1")).thenReturn(Optional.of(rep));
+        when(corpus.findRepresentative("g", "SC2")).thenReturn(Optional.empty()); // no representative → unchanged
         when(store.capture(any())).thenReturn(Optional.of("loc123"));
 
         VettedProfile.DetectorArtifacts detector = new VettedProfile.DetectorArtifacts(MarkerStyle.FLAT_BANNER,
@@ -90,7 +88,7 @@ class MarkerImageEnricherTest {
 
     @Test
     void preservesNullDetectorAndNullWeeklyAndToleratesNoSnapshot() {
-        when(corpus.list("g")).thenReturn(List.of()); // no snapshot → snapshotId resolves null
+        // No stubbing needed: a group with no snapshots simply answers empty per shortcode.
         VettedProfile out = enricher.enrich("g", new VettedProfile(definition(), null, "desc", null));
         assertThat(out.detector()).isNull();
         assertThat(out.weeklySchedule()).isNull();

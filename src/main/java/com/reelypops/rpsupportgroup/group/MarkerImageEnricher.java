@@ -1,11 +1,9 @@
 package com.reelypops.rpsupportgroup.group;
 
 import com.reelypops.rpsupportgroup.corpus.MarkerCorpusService;
-import com.reelypops.rpsupportgroup.corpus.MarkerCorpusSnapshot;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
-import java.util.UUID;
 
 /**
  * Stamps a durable, content-addressed display-image {@code imageLocator} onto a to-be-saved {@link VettedProfile}'s
@@ -32,24 +30,23 @@ public class MarkerImageEnricher {
         if (profile == null) {
             return null;
         }
-        UUID snapshotId = corpus.list(igAccount).stream().findFirst().map(MarkerCorpusSnapshot::getId).orElse(null);
         VettedProfile.DetectorArtifacts detector = profile.detector() == null ? null
                 : new VettedProfile.DetectorArtifacts(profile.detector().style(),
-                        enrichRefs(snapshotId, profile.detector().references()));
+                        enrichRefs(igAccount, profile.detector().references()));
         WeeklyScheduleDefinition weekly = profile.weeklySchedule() == null ? null
                 : new WeeklyScheduleDefinition(profile.weeklySchedule().days().stream()
-                        .map(day -> day.withReferences(enrichRefs(snapshotId, day.references())))
+                        .map(day -> day.withReferences(enrichRefs(igAccount, day.references())))
                         .toList());
         return new VettedProfile(profile.definition(), detector, profile.description(), weekly);
     }
 
     private List<VettedProfile.TypedMarkerReference> enrichRefs(
-            UUID snapshotId, List<VettedProfile.TypedMarkerReference> refs) {
-        return refs == null ? refs : refs.stream().map(ref -> enrichRef(snapshotId, ref)).toList();
+            String igAccount, List<VettedProfile.TypedMarkerReference> refs) {
+        return refs == null ? refs : refs.stream().map(ref -> enrichRef(igAccount, ref)).toList();
     }
 
-    private VettedProfile.TypedMarkerReference enrichRef(UUID snapshotId, VettedProfile.TypedMarkerReference ref) {
-        if (snapshotId == null || ref.shortcode() == null || ref.shortcode().isBlank()) {
+    private VettedProfile.TypedMarkerReference enrichRef(String igAccount, VettedProfile.TypedMarkerReference ref) {
+        if (ref.shortcode() == null || ref.shortcode().isBlank()) {
             return ref;
         }
         // A picture a CLIENT delivered (an adopted banner drift) is newer than anything the corpus holds — the
@@ -59,7 +56,11 @@ public class MarkerImageEnricher {
         if (VettedProfileHashAdopter.SOURCE_CLIENT_DRIFT.equals(ref.source())) {
             return ref;
         }
-        return corpus.getRepresentative(snapshotId, ref.shortcode())
+        // ⚠️ Searched ACROSS snapshots, newest-first — never "the newest snapshot" alone. The newest is not
+        // necessarily the one the reference was vetted from: on 19/08/2026 an EMPTY, OPEN snapshot (a deep
+        // scrape cancelled seconds in) shadowed the sealed 5229-item pass the operator actually used, and every
+        // reference lost its picture — grid-picked and AI-accepted alike, because the lookup universe was empty.
+        return corpus.findRepresentative(igAccount, ref.shortcode())
                 .flatMap(rep -> store.capture(rep.getImage()))
                 .map(ref::withImageLocator)
                 .orElse(ref);
