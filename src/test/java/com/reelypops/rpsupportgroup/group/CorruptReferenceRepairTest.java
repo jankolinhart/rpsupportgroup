@@ -563,6 +563,44 @@ class CorruptReferenceRepairTest {
     }
 
     @Test
+    void REGRESSION_aWeekdayKeyedCardShowsITS_daysStoredValue_notTheFirstMatchingDays() {
+        // THE THIRD DAY-BLIND SURFACE (19/08/2026 ~22:20, seen live). Tuesday's ENDE slot had just been adopted
+        // (held the live hash, verified in the client's own pulled profile) — and Tuesday's drift card displayed
+        // MONDAY's stored value, because the display resolver flattened every day and took the first role+text
+        // match. A ghost card thereby looked legitimate: "stored ≠ live" on screen while the slot was correct.
+        // The card's "what the profile holds today" must come from the SAME slot adoption writes to.
+        String corpusHash = "1010".repeat(16);
+        String liveHash = "0110".repeat(16);
+        SupportGroupConfig c = SupportGroupConfig.createRequested("glowbloggeragency");
+        GroupDefinition def = new GroupDefinition(SgType.TWO_MARKER, "Europe/Paris", List.of("glowbloggeragency"),
+                null, null, "20:31", "20:31", 0, null, null, null, null, null, null);
+        DayDefinition monday = new DayDefinition(1, true, SgType.TWO_MARKER, "20:31", "20:31", 0, -1, null,
+                "23:59", 0, "10:30", 1, 1, MarkerStyle.TEXT_OVERLAY,
+                List.of(new VettedProfile.TypedMarkerReference("end", List.of(corpusHash), "ENDE", 10,
+                        "detected", "SC-MON", null, "mon-loc")));
+        DayDefinition tuesday = new DayDefinition(2, true, SgType.TWO_MARKER, "20:31", "20:31", 0, -1, null,
+                "23:59", 0, "10:30", 1, 1, MarkerStyle.TEXT_OVERLAY,
+                List.of(new VettedProfile.TypedMarkerReference("end", List.of(liveHash), "ENDE", 10,
+                        "client-drift", "SC-TUE", null, "tue-loc")));
+        c.saveVettedProfile(new VettedProfile(def, null, "desc",
+                new WeeklyScheduleDefinition(List.of(monday, tuesday))), 1L);
+        when(configs.findByIgAccount("glowbloggeragency")).thenReturn(Optional.of(c));
+
+        DriftObservation tueDrift = DriftObservation.first(c.getId(), DriftKind.MARKER_IMAGE_DRIFT, "dev-1",
+                null, null, 2, null, null, 1, java.time.Instant.now());
+        tueDrift.measure("end", "ENDE", 17, 10, "P-TUE", "live-loc", null, liveHash);
+        when(drifts.findByConfigIdAndKindInAndResolvedFalseOrderByLastSeenAtDesc(any(), any()))
+                .thenReturn(List.of(tueDrift));
+
+        var v = service.markerReferenceDrifts("glowbloggeragency").get(0);
+
+        // TUESDAY's values — stored hash, picture — never Monday's, however identical the role and text.
+        assertThat(v.storedValue()).isEqualTo(liveHash);
+        assertThat(v.referenceImageHash()).isEqualTo(liveHash);
+        assertThat(v.referenceImageLocator()).isEqualTo("tue-loc");
+    }
+
+    @Test
     void BOTH_picturesAndBOTH_hashesAreSurfacedForComparison() {
         // What makes the fault self-evident rather than described: the vetted picture and the live one side by
         // side, each with the hash it really produces, and the value the reference stores today — 39 characters of
