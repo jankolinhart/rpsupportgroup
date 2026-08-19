@@ -19,7 +19,7 @@ class RpAiGatewayClientConfigTest {
         SimpleClientHttpRequestFactory factory = RpAiGatewayClientConfig.timeoutRequestFactory();
 
         assertThat(ReflectionTestUtils.getField(factory, "connectTimeout")).isEqualTo(10_000);
-        assertThat(ReflectionTestUtils.getField(factory, "readTimeout")).isEqualTo(240_000);
+        assertThat(ReflectionTestUtils.getField(factory, "readTimeout")).isEqualTo(570_000);
     }
 
     @Test

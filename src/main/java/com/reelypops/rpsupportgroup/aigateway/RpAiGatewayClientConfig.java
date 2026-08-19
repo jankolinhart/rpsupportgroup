@@ -24,12 +24,20 @@ public class RpAiGatewayClientConfig {
     static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
 
     /**
-     * Read timeout — just under the internal ALB's raised 300&nbsp;s idle timeout, so the client gives up cleanly first.
-     * Sized above the observed convergent metrics-pass latency (~163&nbsp;s of gpt-5 reasoning over the compound schema)
-     * with headroom, while leaving room for image prep + persistence so rpsupportgroup still returns before the outer
-     * ALB idle timer fires on the calling hop.
+     * Read timeout — just under the internal ALB's 600&nbsp;s idle timeout, so the client gives up cleanly first.
+     *
+     * <p>Raised from 240&nbsp;s on 19/08/2026, diagnosed live: on a large corpus (glowbloggeragency, 5229 items /
+     * 29 clusters) the compound vet pass ran ~6 minutes. The gateway <em>completed it successfully</em> at +6:00 —
+     * 72 seconds after this client had already given up at its timeout — and the verdict was thrown away, because
+     * this service is the one that stores it. The admin UI then showed a green tick and "AI discovery has not
+     * been run": three fail-opens deep, nothing anywhere said a thing. 570&nbsp;s nests under the ALB's 600 so a
+     * genuine hang still fails on THIS side, with a parseable timeout instead of the ALB's octet-stream body.</p>
+     *
+     * <p>⚠️ Stopgap. A synchronous chain wrapped around a multi-minute AI call is always one corpus-growth-spurt
+     * away from this failure — the real fix (urgent TODO, rpdocu) is an asynchronous pass: fire, persist
+     * server-side on completion, poll from the UI. Then no timeout chain exists to outrun.</p>
      */
-    static final Duration READ_TIMEOUT = Duration.ofSeconds(240);
+    static final Duration READ_TIMEOUT = Duration.ofSeconds(570);
 
     @Bean
     RestClientCustomizer aiGatewayRestClientTimeouts() {
