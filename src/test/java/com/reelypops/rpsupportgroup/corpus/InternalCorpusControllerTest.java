@@ -305,6 +305,41 @@ class InternalCorpusControllerTest {
     }
 
     @Test
+    void REGRESSION_anEmptyOPEN_snapshotDoesNotShadowTheSealedOneARepresentativeLivesIn() throws Exception {
+        // THE 19/08/2026 CLEAN-SLATE FAULT, end to end. Sequence exactly as it happened live: a group is vetted
+        // from an older SEALED pass while a NEWER, EMPTY, still-OPEN snapshot (a deep scrape cancelled seconds
+        // after starting) sits on top of the list. The enricher used to resolve every representative against "the
+        // newest snapshot" — the empty one — so no reference got a display image and every picture surface in the
+        // product went dark: the client's marker strip, the re-vet cards' "vetted picture" panels, all of it.
+        String sealed = openSnapshot("corp-shadow", "REQUEST");
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", sealed)
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
+                        .content(appendBody("AAA", "owner1", HASH_A, 0)))
+                .andExpect(status().isOk());
+        byte[] png = {9, 8, 7};
+        mockMvc.perform(put("/supportgroup/v1/internal/corpus/snapshots/{id}/representatives/{sc}", sealed, "AAA")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.IMAGE_PNG).content(png))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/seal", sealed).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk());
+
+        // The cancelled scrape: newer, OPEN, zero items, zero representatives.
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/groups/{ig}/snapshots", "corp-shadow")
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"source\":\"REQUEST\",\"capturedByAccount\":\"scraper\"}"))
+                .andExpect(status().isCreated());
+
+        // The cross-snapshot lookup falls straight through the empty OPEN pass to the sealed one.
+        assertThat(corpusService.findRepresentative("corp-shadow", "AAA"))
+                .hasValueSatisfying(rep -> assertThat(rep.getImage()).containsExactly(9, 8, 7));
+        // ...and a shortcode nobody ever captured stays honestly empty.
+        assertThat(corpusService.findRepresentative("corp-shadow", "NOPE")).isEmpty();
+        // Guards, not ceremony — same rule as burn(): a null/blank key must answer empty, never scan.
+        assertThat(corpusService.findRepresentative(null, "AAA")).isEmpty();
+        assertThat(corpusService.findRepresentative("corp-shadow", " ")).isEmpty();
+    }
+
+    @Test
     void putsAndServesARepresentative() throws Exception {
         String id = openSnapshot("corp-rep", "REQUEST");
         mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", id)
