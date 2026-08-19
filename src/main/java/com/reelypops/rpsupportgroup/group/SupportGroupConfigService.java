@@ -455,9 +455,12 @@ public class SupportGroupConfigService {
         }
         String handle = kind == DriftKind.NEW_OWNER ? nominatedOwnerHandle : null;
         Instant now = Instant.now();
+        // ⚠️ The REFERENCE is part of the natural key. A per-weekday group carries several banners per kind and
+        // they drift independently; keying on the reporter alone meant every one of them upserted into the same
+        // row and only the last reported survived (live, 18/08/2026: three drifting references arrived, one was
+        // shown, and not the worst).
         Optional<DriftObservation> existing = handle == null
-                ? driftObservations.findByConfigIdAndKindAndReporterDeviceIdAndNominatedOwnerHandleIsNull(
-                        c.getId(), kind, reporterDeviceId)
+                ? driftObservations.findForReference(c.getId(), kind, reporterDeviceId, markerRole, markerText)
                 : driftObservations.findByConfigIdAndKindAndReporterDeviceIdAndNominatedOwnerHandle(
                         c.getId(), kind, reporterDeviceId, handle);
         DriftObservation obs = existing

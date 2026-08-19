@@ -1124,6 +1124,62 @@ class InternalGroupControllerTest {
                 .andExpect(jsonPath("$[0].markerText").value("GB AGENCY START Sonntag"));
     }
 
+    @Test
+    void REGRESSION_threeDriftingREFERENCES_surviveAsThree_notCollapsedOntoTheLastOne() throws Exception {
+        // ⚠️ THE FAULT, measured live on `glowbloggeragency` 18/08/2026. One scan reported three drifting
+        // references — ENDE at 17 bits, the generic weekday START at 26, the Sunday START at 21 — and the
+        // administrator was shown exactly ONE of them. Not even the worst: the 26-bit weekday START, the most
+        // broken of the three, never reached the surface.
+        //
+        // The natural key was (config, kind, reporter) with no reference in it, so each report upserted into the
+        // same row and the last one won. A per-weekday group carries several banners per role by design, and they
+        // drift independently — one row per group could never represent that.
+        createConfig("drift-multi");
+        String[][] refs = {
+            {"end",   "ENDE",                    "17"},
+            {"start", "G B AGENCY START",        "26"},
+            {"start", "GB AGENCY START Sonntag", "21"},
+        };
+        for (String[] r : refs) {
+            mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-multi").header(KEY_HEADER, KEY)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"kind\":\"MARKER_IMAGE_DRIFT\",\"reporterDeviceId\":\"dev-1\","
+                                    + "\"markerRole\":\"" + r[0] + "\",\"markerText\":\"" + r[1] + "\","
+                                    + "\"imageDistance\":" + r[2] + ",\"imageThreshold\":10,"
+                                    + "\"evidencePostId\":\"P" + r[2] + "\","
+                                    + "\"evidenceImageHash\":\"" + CLIENT_HASH + "\"}"))
+                    .andExpect(status().isAccepted());
+        }
+
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/drift", "drift-multi").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(3))
+                // Every one of them, including the worst — which is the one that used to vanish.
+                .andExpect(jsonPath("$[?(@.markerText == 'G B AGENCY START')].imageDistance").value(26))
+                .andExpect(jsonPath("$[?(@.markerText == 'ENDE')].imageDistance").value(17))
+                .andExpect(jsonPath("$[?(@.markerText == 'GB AGENCY START Sonntag')].imageDistance").value(21));
+    }
+
+    @Test
+    void reportingTheSAME_referenceTwiceStillUPSERTS_ratherThanAccumulating() throws Exception {
+        // The reference is now in the key, so the key must still COLLAPSE repeats of the same reference — a client
+        // re-asserting an unresolved drift every 60 s must not grow a row per attempt.
+        createConfig("drift-repeat");
+        String body = "{\"kind\":\"MARKER_IMAGE_DRIFT\",\"reporterDeviceId\":\"dev-1\",\"markerRole\":\"end\","
+                + "\"markerText\":\"ENDE\",\"imageDistance\":17,\"imageThreshold\":10,"
+                + "\"evidencePostId\":\"P1\",\"evidenceImageHash\":\"" + CLIENT_HASH + "\"}";
+        for (int i = 0; i < 3; i++) {
+            mockMvc.perform(post("/supportgroup/v1/internal/groups/{ig}/drift", "drift-repeat").header(KEY_HEADER, KEY)
+                            .contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isAccepted());
+        }
+
+        mockMvc.perform(get("/supportgroup/v1/internal/groups/{ig}/drift", "drift-repeat").header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].occurrenceCount").value(3));
+    }
+
     /** A fingerprint a CLIENT computed — the only dialect any repair or adoption may write. */
     private static final String CLIENT_HASH = "1100".repeat(16);
 
