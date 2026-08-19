@@ -334,7 +334,7 @@ class CorruptReferenceRepairTest {
     @Test
     void aGENUINE_corruptionReportIsStillRaised() {
         SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, SHORTCODE));
-        when(drifts.findForReference(any(), any(), anyString(), any(), any()))
+        when(drifts.findForReference(any(), any(), anyString(), any(), any(), any()))
                 .thenReturn(Optional.empty());
         when(drifts.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(any(), any())).thenReturn(List.of());
         when(drifts.save(any())).thenAnswer(i -> i.getArgument(0));
@@ -352,7 +352,7 @@ class CorruptReferenceRepairTest {
         // We only contradict a client when we can positively see the fault is gone — never when we simply cannot
         // find what it is talking about.
         SupportGroupConfig c = groupWith(ref("start", "GB AGENCY START Sonntag", LOCATOR, GOOD));
-        when(drifts.findForReference(any(), any(), anyString(), any(), any()))
+        when(drifts.findForReference(any(), any(), anyString(), any(), any(), any()))
                 .thenReturn(Optional.empty());
         when(drifts.findByConfigIdAndKindAndResolvedFalseOrderByLastSeenAtDesc(any(), any())).thenReturn(List.of());
         when(drifts.save(any())).thenAnswer(i -> i.getArgument(0));
@@ -599,7 +599,7 @@ class CorruptReferenceRepairTest {
     @Test
     void recordingACorruptReferenceStoresTheFaultAndTheReferenceItBelongsTo() {
         SupportGroupConfig c = groupWith(ref("start", "START", LOCATOR, GOOD));
-        when(drifts.findForReference(any(), any(), anyString(), any(), any()))
+        when(drifts.findForReference(any(), any(), anyString(), any(), any(), any()))
                 .thenReturn(Optional.empty());
         when(drifts.save(any())).thenAnswer(i -> i.getArgument(0));
 

@@ -94,7 +94,7 @@ class DriftImageAdoptionTest {
     @Test
     void recordingDriftStoresThePictureAndTheMeasurement() {
         SupportGroupConfig c = vettedGroup();
-        when(drifts.findForReference(any(), any(), anyString(), any(), any()))
+        when(drifts.findForReference(any(), any(), anyString(), any(), any(), any()))
                 .thenReturn(Optional.empty());
         when(drifts.save(any())).thenAnswer(i -> i.getArgument(0));
         when(imageStore.capture(any())).thenReturn(Optional.of(LOCATOR));
@@ -114,7 +114,7 @@ class DriftImageAdoptionTest {
     void aDriftWithNoPictureIsStillRecorded() {
         // The measurement is the signal; the picture only makes it actionable in one click.
         vettedGroup();
-        when(drifts.findForReference(any(), any(), anyString(), any(), any()))
+        when(drifts.findForReference(any(), any(), anyString(), any(), any(), any()))
                 .thenReturn(Optional.empty());
         when(drifts.save(any())).thenAnswer(i -> i.getArgument(0));
 

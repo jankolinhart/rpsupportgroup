@@ -220,7 +220,7 @@ public class InternalGroupController {
         service.recordDrift(igAccount, req.kind(), req.reporterDeviceId(), req.reporterUserId(),
                 req.nominatedOwnerHandle(), req.agreePass(), req.disagreePass(), req.persistenceCount(),
                 req.markerRole(), req.markerText(), req.detail(), req.imageDistance(), req.imageThreshold(),
-                req.evidencePostId(), req.evidenceImage(), req.evidenceImageHash());
+                req.evidencePostId(), req.evidenceImage(), req.evidenceImageHash(), req.markerWeekday());
     }
 
     /**

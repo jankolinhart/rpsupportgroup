@@ -55,6 +55,44 @@ class VettedProfileHashAdopterTest {
     }
 
     @Test
+    void ACCEPTANCE_aWeekdayTargetedAdoptionWritesEXACTLY_thatDay_andNothingElse() {
+        // THE 18/08/2026 FAULT, inverted into the acceptance criterion agreed with the user: "if we find a drift
+        // on a Tuesday we should only stamp the vetted profile's Tuesday image/hash". Monday, Tuesday and
+        // Wednesday all carry the SAME role and text — the exact condition under which weekday-blind adoption
+        // stamped all of them with one day's banner. The detector block stays untouched too: it drives style
+        // detection, not per-day matching.
+        DayDefinition mon = new DayDefinition(1, true, SgType.TWO_MARKER, "20:31", "20:31", 0, -1, null,
+                "23:59", 0, "10:30", 1, 1, MarkerStyle.TEXT_OVERLAY, List.of(ref("start", "START", OLD)));
+        DayDefinition tue = new DayDefinition(2, true, SgType.TWO_MARKER, "20:31", "20:31", 0, -1, null,
+                "23:59", 0, "10:30", 1, 1, MarkerStyle.TEXT_OVERLAY, List.of(ref("start", "START", OLD)));
+        DayDefinition wed = new DayDefinition(3, true, SgType.TWO_MARKER, "20:31", "20:31", 0, -1, null,
+                "23:59", 0, "10:30", 1, 1, MarkerStyle.TEXT_OVERLAY, List.of(ref("start", "START", OLD)));
+        VettedProfile in = new VettedProfile(definition(),
+                new VettedProfile.DetectorArtifacts(MarkerStyle.TEXT_OVERLAY, List.of(ref("start", "START", OLD))),
+                "desc", new WeeklyScheduleDefinition(List.of(mon, tue, wed)));
+
+        VettedProfile out = VettedProfileHashAdopter.append(in, 2, "start", "START", NEW, null);
+
+        List<DayDefinition> days = out.weeklySchedule().days();
+        assertThat(days.get(0).references().get(0).dHashes()).containsExactly(OLD); // Monday untouched
+        assertThat(days.get(1).references().get(0).dHashes()).containsExactly(NEW); // Tuesday — and ONLY Tuesday
+        assertThat(days.get(2).references().get(0).dHashes()).containsExactly(OLD); // Wednesday untouched
+        assertThat(out.detector().references().get(0).dHashes()).containsExactly(OLD); // detector untouched
+    }
+
+    @Test
+    void aNullWeekdayKeepsTheLegacyBehaviour_everyMatchingDayAndTheDetector() {
+        // Flat/legacy groups and kinds that carry no day (a corrupt-reference repair) must keep working — their
+        // references live in the detector block and every day slice, and a targeted write would strand them.
+        VettedProfile out = VettedProfileHashAdopter.append(
+                profile(List.of(ref("start", "START Sonntag", OLD)), List.of(ref("start", "START Sonntag", OLD))),
+                null, "start", "START Sonntag", NEW, null);
+
+        assertThat(out.detector().references().get(0).dHashes()).containsExactly(NEW);
+        assertThat(out.weeklySchedule().days().get(0).references().get(0).dHashes()).containsExactly(NEW);
+    }
+
+    @Test
     void leavesOtherRolesAlone() {
         VettedProfile out = VettedProfileHashAdopter.append(
                 profile(null, List.of(ref("start", "START", OLD), ref("end", "ENDE", OLD))), "start", NEW);

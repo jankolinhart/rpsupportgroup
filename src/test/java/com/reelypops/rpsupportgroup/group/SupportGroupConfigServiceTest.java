@@ -92,7 +92,7 @@ class SupportGroupConfigServiceTest {
         when(configs.findByIgAccount("ig")).thenReturn(Optional.of(c));
         // A MARKER_DISAGREE tally carries no reference (null role/text), so it still keys to a single row per
         // group — the per-reference key only fans out for the kinds that actually name a reference.
-        when(driftObservations.findForReference(configId, DriftKind.MARKER_DISAGREE, "dev-1", null, null))
+        when(driftObservations.findForReference(configId, DriftKind.MARKER_DISAGREE, "dev-1", null, null, null))
                 .thenReturn(Optional.empty());
         when(driftObservations.save(any(DriftObservation.class))).thenAnswer(inv -> inv.getArgument(0));
 
@@ -118,7 +118,7 @@ class SupportGroupConfigServiceTest {
         DriftObservation existing = DriftObservation.first(configId, DriftKind.MARKER_DISAGREE, "dev-1", null, null,
                 5, 2, 4, Instant.parse("2026-01-01T00:00:00Z"));
         existing.resolve();                                             // a prior re-vet had resolved it
-        when(driftObservations.findForReference(configId, DriftKind.MARKER_DISAGREE, "dev-1", null, null))
+        when(driftObservations.findForReference(configId, DriftKind.MARKER_DISAGREE, "dev-1", null, null, null))
                 .thenReturn(Optional.of(existing));
         when(driftObservations.save(any(DriftObservation.class))).thenAnswer(inv -> inv.getArgument(0));
 

@@ -46,7 +46,13 @@ public record DriftObservationResponse(
          */
         String storedValue,
         /** Bits between the live banner and the vetted picture — 0 means adding the live one buys nothing. */
-        Integer liveDistance) {
+        Integer liveDistance,
+        /**
+         * WHICH weekday slot (JS 0=Sun … 6=Sat) the drifting reference belongs to — {@code null} for a
+         * flat/legacy group or an old client. The card names the day ("Tuesday's start marker") and adoption
+         * writes into exactly that day's references.
+         */
+        Integer markerWeekday) {
 
     static DriftObservationResponse of(SupportGroupConfigService.ReferenceDriftView v) {
         return of(v.observation(), v.referenceImageLocator(), v.referenceImageHash(), v.evidenceImageHash(),
@@ -64,6 +70,6 @@ public record DriftObservationResponse(
                 o.getOccurrenceCount(), o.isResolved(), o.getFirstSeenAt(), o.getLastSeenAt(),
                 o.getMarkerRole(), o.getMarkerText(), o.getDetail(), o.getImageDistance(), o.getImageThreshold(),
                 o.getEvidencePostId(), o.getEvidenceImageLocator(), referenceImageLocator, referenceImageHash,
-                evidenceImageHash, storedValue, liveDistance);
+                evidenceImageHash, storedValue, liveDistance, o.getMarkerWeekday());
     }
 }
