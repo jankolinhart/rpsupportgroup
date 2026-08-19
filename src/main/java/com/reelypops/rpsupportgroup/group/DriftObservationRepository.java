@@ -1,6 +1,8 @@
 package com.reelypops.rpsupportgroup.group;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.util.Collection;
 import java.util.List;
@@ -10,9 +12,29 @@ import java.util.UUID;
 /** The per-reporter drift ledger (M5 re-vet consumer). */
 public interface DriftObservationRepository extends JpaRepository<DriftObservation, UUID> {
 
-    /** The existing marker-disagree observation for a reporter (natural key: config + reporter, null handle). */
-    Optional<DriftObservation> findByConfigIdAndKindAndReporterDeviceIdAndNominatedOwnerHandleIsNull(
-            UUID configId, DriftKind kind, String reporterDeviceId);
+    /**
+     * The existing observation for a reporter and ONE REFERENCE — natural key: config + kind + reporter + the
+     * reference's role and text, with no nominated handle.
+     *
+     * <p>⚠️ <strong>The reference belongs in the key, and leaving it out lost data.</strong> A per-weekday group
+     * carries several banners per kind — `glowbloggeragency` has an ENDE, a generic weekday START and a distinct
+     * Sunday START — and they drift independently. Keyed on the reporter alone, all of them upserted into the SAME
+     * row and the last one reported won. Measured live 18/08/2026: one scan delivered three drifting references
+     * (ENDE 17 bits, weekday START 26, Sunday START 21) and the administrator was shown one of them — not the
+     * worst. It also bumped {@code persistenceCount} ("consecutive drifting scans") three times in a single scan.</p>
+     *
+     * <p>Role AND text, never role alone: one role covers several banners. Blank role/text match the rows that
+     * carry neither — a MARKER_DISAGREE tally, a NEW_OWNER nomination — so those keep their single-row behaviour.</p>
+     */
+    @Query("select o from DriftObservation o where o.configId = :configId and o.kind = :kind"
+            + " and o.reporterDeviceId = :reporterDeviceId and o.nominatedOwnerHandle is null"
+            + " and coalesce(o.markerRole, '') = coalesce(:markerRole, '')"
+            + " and coalesce(o.markerText, '') = coalesce(:markerText, '')")
+    Optional<DriftObservation> findForReference(@Param("configId") UUID configId,
+                                                @Param("kind") DriftKind kind,
+                                                @Param("reporterDeviceId") String reporterDeviceId,
+                                                @Param("markerRole") String markerRole,
+                                                @Param("markerText") String markerText);
 
     /** The existing new-owner nomination for a reporter + handle (natural key: config + reporter + handle). */
     Optional<DriftObservation> findByConfigIdAndKindAndReporterDeviceIdAndNominatedOwnerHandle(
