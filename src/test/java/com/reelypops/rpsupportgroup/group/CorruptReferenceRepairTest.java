@@ -598,6 +598,19 @@ class CorruptReferenceRepairTest {
         assertThat(v.storedValue()).isEqualTo(liveHash);
         assertThat(v.referenceImageHash()).isEqualTo(liveHash);
         assertThat(v.referenceImageLocator()).isEqualTo("tue-loc");
+
+        // ...and a weekday-keyed observation against a profile with NO weekly schedule resolves to nothing
+        // rather than falling back to the flattened view — the day the card names simply is not there.
+        SupportGroupConfig flat = SupportGroupConfig.createRequested("glowbloggeragency");
+        flat.saveVettedProfile(new VettedProfile(def,
+                new VettedProfile.DetectorArtifacts(MarkerStyle.TEXT_OVERLAY,
+                        List.of(new VettedProfile.TypedMarkerReference("end", List.of(corpusHash), "ENDE", 10,
+                                "detected", "SC", null, "det-loc"))),
+                "desc", null), 1L);
+        when(configs.findByIgAccount("glowbloggeragency")).thenReturn(Optional.of(flat));
+        var flatView = service.markerReferenceDrifts("glowbloggeragency").get(0);
+        assertThat(flatView.storedValue()).isNull();
+        assertThat(flatView.referenceImageLocator()).isNull();
     }
 
     @Test
