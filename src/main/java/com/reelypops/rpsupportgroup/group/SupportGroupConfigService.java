@@ -976,7 +976,7 @@ public class SupportGroupConfigService {
         if (c.getVettedProfile() == null) {
             return Optional.empty();
         }
-        return matchingReferences(c.getVettedProfile(), o.getMarkerRole(), o.getMarkerText())
+        return matchingReferences(c.getVettedProfile(), o)
                 .flatMap(r -> Stream.concat(
                         r.dHashes() == null ? Stream.<String>empty() : r.dHashes().stream(),
                         corpus.clientHashForPost(c.getIgAccount(), r.shortcode()).stream()))
@@ -1036,12 +1036,36 @@ public class SupportGroupConfigService {
     /** The references a drift NAMES — by role, and by text where the client reported one. */
     private static Stream<VettedProfile.TypedMarkerReference> matchingReferences(VettedProfile profile,
                                                                                 DriftObservation o) {
-        return matchingReferences(profile, o.getMarkerRole(), o.getMarkerText());
+        // ⚠️ Scoped to the observation's WEEKDAY when it carries one (19/08/2026) — the third day-blind surface
+        // of the same disease. Adoption writes one day's slot and the measurement judges against it, but this
+        // resolver flattened every day and showed the FIRST role+text match: Tuesday's card displayed MONDAY's
+        // stored value while Tuesday's slot verifiably held the freshly-adopted hash, making a ghost card look
+        // legitimate. What the card claims the profile holds must come from the same slot the remedy writes to.
+        // No weekday (legacy row, corrupt-reference kind, flat group) keeps the flattened behaviour.
+        Stream<VettedProfile.TypedMarkerReference> candidates = o.getMarkerWeekday() == null
+                ? allReferences(profile)
+                : dayReferences(profile, o.getMarkerWeekday());
+        return filterByRoleAndText(candidates, o.getMarkerRole(), o.getMarkerText());
+    }
+
+    /** ONE weekday slice's references — the slot adoption writes to and the drift card must therefore describe. */
+    private static Stream<VettedProfile.TypedMarkerReference> dayReferences(VettedProfile profile, int weekday) {
+        if (profile.weeklySchedule() == null || profile.weeklySchedule().days() == null) {
+            return Stream.empty();
+        }
+        return profile.weeklySchedule().days().stream()
+                .filter(d -> d != null && d.weekday() == weekday && d.references() != null)
+                .flatMap(d -> d.references().stream());
     }
 
     private static Stream<VettedProfile.TypedMarkerReference> matchingReferences(VettedProfile profile,
                                                                                 String markerRole, String markerText) {
-        return allReferences(profile)
+        return filterByRoleAndText(allReferences(profile), markerRole, markerText);
+    }
+
+    private static Stream<VettedProfile.TypedMarkerReference> filterByRoleAndText(
+            Stream<VettedProfile.TypedMarkerReference> candidates, String markerRole, String markerText) {
+        return candidates
                 .filter(java.util.Objects::nonNull)
                 .filter(r -> markerRole == null || markerRole.isBlank()
                         || markerRole.equalsIgnoreCase(r.markerType()))
