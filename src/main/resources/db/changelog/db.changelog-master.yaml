@@ -68,3 +68,9 @@ databaseChangeLog:
   - include:
       file: changes/023-sg-membership.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/024-sg-membership-release.sql
+      relativeToChangelogFile: true
+  - include:
+      file: changes/025-sg-membership-tombstone.sql
+      relativeToChangelogFile: true
