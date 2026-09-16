@@ -244,6 +244,24 @@ public class SgMembershipService {
 
     /** Every membership row for a user (internal READ). */
     @Transactional(readOnly = true)
+    /**
+     * Every membership this user has RELEASED and not re-taken — the list a client catches up on.
+     *
+     * <p>Operator, 16/09/2026: "if I did reject one — then next time the user logs into reelypops on the
+     * desktop app it should be removed there too. so desktop app needs to catch up on the deletion that was
+     * made in the cloud."
+     *
+     * <p><strong>Tombstones, never a diff.</strong> A client could compare what it holds against
+     * {@link #byUser} and delete whatever is missing, and it would be wrong the first time somebody
+     * configured a group while this service was unreachable: absent is not released. A tombstone is written
+     * only by an explicit release and removed only by an explicit re-claim, so it says what the USER DID
+     * rather than what a reader happened to see — the same rule that made these rows necessary in the first
+     * place, applied to the other direction of travel.
+     */
+    public List<SgMembershipTombstone> releasedBy(UUID userId) {
+        return tombstones.findByUserId(userId);
+    }
+
     public List<SgMembership> byUser(UUID userId) {
         return memberships.findByUserId(userId);
     }

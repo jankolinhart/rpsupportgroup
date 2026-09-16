@@ -247,4 +247,94 @@ class InternalMembershipControllerTest {
                 .andExpect(jsonPath("$.length()").value(1))
                 .andExpect(jsonPath("$[0].status").value("FOLLOWING"));
     }
+
+    // ── what a client catches up on ───────────────────────────────────────────────────────────────────
+
+    /**
+     * <strong>A CLIENT LEARNS WHAT TO UNDO FROM TOMBSTONES, NEVER FROM ABSENCE</strong> (operator,
+     * 16/09/2026: "if I did reject one — then next time the user logs into reelypops on the desktop app it
+     * should be removed there too. so desktop app needs to catch up on the deletion that was made in the
+     * cloud").
+     *
+     * <p>A client could diff what it holds against the membership list and delete whatever is missing. That
+     * is wrong the first time somebody configures a group while this service is unreachable: absent is not
+     * released. A tombstone is written only by an explicit release and lifted only by an explicit re-claim,
+     * so it records what the USER DID — the same rule that made these rows necessary, pointing the other way.
+     */
+    @Test
+    void releasedListsWhatTheUserGaveBack() throws Exception {
+        UUID user = UUID.randomUUID();
+        write(user, "[{\"igHandle\":\"Owner\",\"igAccount\":\"AcctA\",\"followingStatus\":\"following\"}]");
+        // The pair travels in the QUERY, never a body: a DELETE body is dropped by enough of the stack that
+        // it cannot carry the half of the key deciding WHICH row goes. See the route's own comment.
+        mockMvc.perform(delete(PATH, user).header(KEY_HEADER, KEY)
+                        .param("igHandle", "Owner").param("igAccount", "AcctA"))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(get(PATH + "/released", user).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].igHandle").value("owner"))
+                .andExpect(jsonPath("$[0].igAccount").value("accta"))
+                // WHEN they did it: the client's notice has to be able to say so rather than "just now"
+                // about a decision made last Tuesday.
+                .andExpect(jsonPath("$[0].releasedAt").isNotEmpty());
+    }
+
+    /** Nothing to undo is the ordinary answer, and a client must be able to tell it from a failure. */
+    @Test
+    void releasedIsAnEmptyListWhenNothingWasGivenBack() throws Exception {
+        mockMvc.perform(get(PATH + "/released", UUID.randomUUID()).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    /**
+     * A MEMBERSHIP THE USER STILL HOLDS IS NOT IN IT. Reporting one does not release it — only a release
+     * does — so a client catching up must not be told to undo something nobody gave back.
+     */
+    @Test
+    void releasedDoesNotListAMembershipThatIsStillHeld() throws Exception {
+        UUID user = UUID.randomUUID();
+        write(user, "[{\"igHandle\":\"Owner\",\"igAccount\":\"AcctA\",\"followingStatus\":\"following\"}]");
+
+        mockMvc.perform(get(PATH + "/released", user).header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    /** RE-JOINING LIFTS THE MARK, so a client is never told to undo something the user has taken back. */
+    @Test
+    void releasedDropsAMembershipTheUserHasReClaimed() throws Exception {
+        UUID user = UUID.randomUUID();
+        write(user, "[{\"igHandle\":\"Owner\",\"igAccount\":\"AcctA\",\"followingStatus\":\"following\"}]");
+        mockMvc.perform(delete(PATH, user).header(KEY_HEADER, KEY)
+                .param("igHandle", "Owner").param("igAccount", "AcctA"));
+
+        mockMvc.perform(post(CLAIM_PATH, user).header(KEY_HEADER, KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"igHandle\":\"Owner\",\"igAccount\":\"AcctA\"}"))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(get(PATH + "/released", user).header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    /** One customer's releases are their own — a client catching up must never act on somebody else's. */
+    @Test
+    void releasedKeepsOneUsersReleasesOutOfAnothers() throws Exception {
+        UUID mine = UUID.randomUUID();
+        UUID theirs = UUID.randomUUID();
+        write(mine, "[{\"igHandle\":\"Owner\",\"igAccount\":\"AcctA\",\"followingStatus\":\"following\"}]");
+        mockMvc.perform(delete(PATH, mine).header(KEY_HEADER, KEY)
+                .param("igHandle", "Owner").param("igAccount", "AcctA"));
+
+        mockMvc.perform(get(PATH + "/released", theirs).header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    @Test
+    void releasedWithoutKeyIsUnauthorized() throws Exception {
+        mockMvc.perform(get(PATH + "/released", UUID.randomUUID()))
+                .andExpect(status().isUnauthorized());
+    }
 }
