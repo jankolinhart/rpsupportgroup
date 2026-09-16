@@ -96,4 +96,20 @@ public class InternalMembershipController {
     public List<MembershipResponse> list(@PathVariable UUID userId) {
         return service.byUser(userId).stream().map(MembershipResponse::of).toList();
     }
+
+    /**
+     * READ every membership this user has RELEASED and not re-taken — what a client catches up on.
+     *
+     * <p>A client that has been away must be able to learn what to undo. It cannot learn it by comparing
+     * what it holds against {@link #list}: a membership missing from there might have been released, and
+     * might equally be one this service has never been told about. Absence is not a release, which is the
+     * rule these rows exist to enforce; this route is the same rule pointing the other way.
+     *
+     * <p>200 with an empty array when there is nothing to undo — the ordinary answer, and one a client must
+     * be able to tell apart from a failure.
+     */
+    @GetMapping("/released")
+    public List<ReleasedMembership> released(@PathVariable UUID userId) {
+        return service.releasedBy(userId).stream().map(ReleasedMembership::of).toList();
+    }
 }
