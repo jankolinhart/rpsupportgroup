@@ -37,6 +37,9 @@ public class SgMembership {
     @Id
     private UUID id;
 
+    /* Readable since the registry gained a GROUP-first read: "who holds this group" has the user as its
+       answer, where every user-first caller already knew it and never needed it back. */
+    @Getter
     @Column(name = "user_id", nullable = false, updatable = false)
     private UUID userId;
 
