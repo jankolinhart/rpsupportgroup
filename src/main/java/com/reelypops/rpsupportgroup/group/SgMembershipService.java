@@ -262,6 +262,17 @@ public class SgMembershipService {
         return tombstones.findByUserId(userId);
     }
 
+    /**
+     * WHO HOLDS THIS GROUP — the registry read group-first, for the admin deep-scrape trigger.
+     *
+     * <p>Returns one row per (user, handle) that currently holds {@code igAccount}. Released memberships are
+     * gone from this table by definition — a release deletes the row and leaves a tombstone — so anything
+     * returned here is live.</p>
+     */
+    public List<SgMembership> byIgAccount(String igAccount) {
+        return memberships.findByIgAccount(igAccount == null ? "" : igAccount.trim().toLowerCase(Locale.ROOT));
+    }
+
     public List<SgMembership> byUser(UUID userId) {
         return memberships.findByUserId(userId);
     }

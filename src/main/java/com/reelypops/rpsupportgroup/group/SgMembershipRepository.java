@@ -15,4 +15,16 @@ public interface SgMembershipRepository extends JpaRepository<SgMembership, UUID
 
     /** Every membership row for a user — the internal read surface. */
     List<SgMembership> findByUserId(UUID userId);
+
+    /**
+     * Every membership row FOR ONE GROUP — the registry read in the other direction.
+     *
+     * <p>Everything here has been user-first: given a customer, what do they hold. An operator asking to
+     * deep-scrape a group needs the inverse — given a group, WHO holds it — because a scrape duty has to be
+     * sent to a machine that actually runs it, and a duty sent anywhere else is silently ignored by the
+     * client that receives it.</p>
+     *
+     * <p>Handles and accounts are stored lower-cased, so the caller passes a normalised value.</p>
+     */
+    List<SgMembership> findByIgAccount(String igAccount);
 }
