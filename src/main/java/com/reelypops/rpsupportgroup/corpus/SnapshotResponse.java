@@ -11,6 +11,9 @@ public record SnapshotResponse(
         SnapshotStatus status,
         int itemCount,
         String capturedByAccount,
+        /** The machine that ran it, and the customer it ran for — null on a pass that predates provenance. */
+        String capturedByDevice,
+        UUID capturedForUser,
         Instant createdAt,
         Instant sealedAt,
         /** Why this pass was voided whole — {@code null} unless {@code status} is {@code REJECTED}. */
@@ -18,6 +21,7 @@ public record SnapshotResponse(
 
     public static SnapshotResponse of(MarkerCorpusSnapshot s) {
         return new SnapshotResponse(s.getId(), s.getIgAccount(), s.getSource(), s.getStatus(), s.getItemCount(),
-                s.getCapturedByAccount(), s.getCreatedAt(), s.getSealedAt(), s.getRejectedReason());
+                s.getCapturedByAccount(), s.getCapturedByDevice(), s.getCapturedForUser(),
+                s.getCreatedAt(), s.getSealedAt(), s.getRejectedReason());
     }
 }

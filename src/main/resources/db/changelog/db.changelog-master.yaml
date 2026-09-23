@@ -74,3 +74,6 @@ databaseChangeLog:
   - include:
       file: changes/025-sg-membership-tombstone.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/026-snapshot-provenance.sql
+      relativeToChangelogFile: true

@@ -44,6 +44,20 @@ public class MarkerCorpusSnapshot {
     @Column(name = "captured_by_account")
     private String capturedByAccount;
 
+    /**
+     * The machine fingerprint that ran this pass, as the client reported it. A label on the evidence, never an
+     * authorisation — nothing is granted on the strength of it, so a client naming itself is no risk.
+     */
+    @Column(name = "captured_by_device")
+    private String capturedByDevice;
+
+    /**
+     * The customer whose machine ran it, taken from the validated token by rpserver and never from the request
+     * body: provenance a caller could choose would not be provenance.
+     */
+    @Column(name = "captured_for_user")
+    private UUID capturedForUser;
+
     @Column(name = "item_count", nullable = false)
     private int itemCount;
 
@@ -57,18 +71,37 @@ public class MarkerCorpusSnapshot {
     @Column(name = "sealed_at")
     private Instant sealedAt;
 
-    private MarkerCorpusSnapshot(String igAccount, CorpusSource source, String capturedByAccount) {
+    private MarkerCorpusSnapshot(String igAccount, CorpusSource source, String capturedByAccount,
+                                 String capturedByDevice, UUID capturedForUser) {
         this.id = UUID.randomUUID();
         this.igAccount = igAccount;
         this.source = source;
         this.capturedByAccount = capturedByAccount;
+        this.capturedByDevice = capturedByDevice;
+        this.capturedForUser = capturedForUser;
         this.status = SnapshotStatus.OPEN;
         this.itemCount = 0;
     }
 
-    /** Open a new snapshot to stream a deep pass into. */
+    /**
+     * Open a new snapshot to stream a deep pass into.
+     *
+     * <p>All three provenance fields are optional and stay that way. A snapshot from before they were recorded,
+     * or from a client too old to send them, is still perfectly good evidence — null says "not recorded", which
+     * is honest, where a default would invent a machine that never ran anything.</p>
+     */
+    public static MarkerCorpusSnapshot open(String igAccount, CorpusSource source, String capturedByAccount,
+                                            String capturedByDevice, UUID capturedForUser) {
+        return new MarkerCorpusSnapshot(igAccount, source, capturedByAccount, capturedByDevice, capturedForUser);
+    }
+
+    /**
+     * A pass with no machine or customer recorded — which is what every snapshot opened before 23/09/2026 is,
+     * and what one from a client too old to report them still is. Kept as its own door rather than making
+     * callers write two nulls, because "not recorded" is a real state here and deserves to read like one.
+     */
     public static MarkerCorpusSnapshot open(String igAccount, CorpusSource source, String capturedByAccount) {
-        return new MarkerCorpusSnapshot(igAccount, source, capturedByAccount);
+        return open(igAccount, source, capturedByAccount, null, null);
     }
 
     /** Record that {@code count} items were appended this scroll (keeps the denormalized {@link #itemCount} current). */
