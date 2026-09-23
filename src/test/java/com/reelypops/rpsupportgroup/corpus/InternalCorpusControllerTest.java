@@ -488,11 +488,16 @@ class InternalCorpusControllerTest {
         mockMvc.perform(get("/supportgroup/v1/internal/corpus/snapshots/{id}", id).header(KEY_HEADER, KEY))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.snapshot.status").value("INTERRUPTED"));
-        // a swept (terminal) snapshot rejects further appends
+        // A swept pass is NO LONGER terminal, and that is the point of the change above it: the sweep is a
+        // guess, and an arriving item is proof the guess was wrong. This used to answer 409, which on
+        // 23/09/2026 threw away 1429 posts of a live six-hour scrape the sweeper had written off four hours
+        // in. The pass reopens and keeps what it is given.
         mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", id)
                         .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
                         .content(appendBody("X", "a", HASH_A, 0)))
-                .andExpect(status().isConflict());
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/supportgroup/v1/internal/corpus/snapshots/{id}", id).header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.snapshot.status").value("OPEN"));
     }
 
     @Test
@@ -607,5 +612,61 @@ class InternalCorpusControllerTest {
         mockMvc.perform(delete("/supportgroup/v1/internal/corpus/snapshots/{id}",
                         java.util.UUID.randomUUID()).header(KEY_HEADER, KEY))
                 .andExpect(status().isNotFound());
+    }
+
+    // ── An inference yields to evidence (23/09/2026) ────────────────────────────────────────────────
+
+    /**
+     * <strong>A SWEEP IS A GUESS. AN ARRIVING ITEM IS PROOF.</strong>
+     *
+     * <p>The sweeper concluded a live six-hour scrape had died four hours in, because a pause outlasted the
+     * silence timer. Every page after that was refused with a 409, the final seal was a no-op, and 712 posts
+     * of real work were discarded — all on an inference that nothing was allowed to correct.</p>
+     */
+    @Test
+    void anAppendREOPENSaPassTheSweeperHadGivenUpOn() throws Exception {
+        String id = openSnapshot("corp-revive", "ADMIN");
+        corpusService.sweepStale(Instant.now().plusSeconds(60));
+        mockMvc.perform(get("/supportgroup/v1/internal/corpus/snapshots/{id}", id).header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.snapshot.status").value("INTERRUPTED"));
+
+        // The scrape was alive all along, and says so the only way it can.
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", id)
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
+                        .content(appendBody("AAA", "a", HASH_A, 0)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/supportgroup/v1/internal/corpus/snapshots/{id}", id).header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.snapshot.status").value("OPEN"))
+                .andExpect(jsonPath("$.snapshot.itemCount").value(1))
+                // and it can finish properly, which a swept pass never could
+                .andExpect(jsonPath("$.snapshot.sealedAt").doesNotExist());
+
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/seal", id).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SEALED"));
+    }
+
+    /**
+     * Only the GUESS gives way. A pass somebody stopped, one the client finished, and one voided for a bad
+     * fingerprint were all DECIDED — a late arrival must not overturn a decision.
+     */
+    @Test
+    void anAppendDoesNotREOPENaPassThatSomebodyENDED() throws Exception {
+        String cancelled = openSnapshot("corp-revive-cancelled", "ADMIN");
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/cancel", cancelled)
+                .header(KEY_HEADER, KEY)).andExpect(status().isOk());
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", cancelled)
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
+                        .content(appendBody("AAA", "a", HASH_A, 0)))
+                .andExpect(status().isConflict());
+
+        String sealed = openSnapshot("corp-revive-sealed", "ADMIN");
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/seal", sealed)
+                .header(KEY_HEADER, KEY)).andExpect(status().isOk());
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", sealed)
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
+                        .content(appendBody("BBB", "a", HASH_A, 0)))
+                .andExpect(status().isConflict());
     }
 }

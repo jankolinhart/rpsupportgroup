@@ -145,6 +145,27 @@ public class MarkerCorpusSnapshot {
         this.sealedAt = Instant.now();
     }
 
+    /**
+     * An item arrived for a pass the sweeper had given up on — so it was never abandoned.
+     *
+     * <p><strong>An inference must yield to evidence.</strong> INTERRUPTED is a GUESS: nobody said the pass
+     * ended, a sweeper noticed it had gone quiet and drew a conclusion. An append is proof of the opposite,
+     * and proof beats a guess. On 23/09/2026 the guess was terminal instead, and a live six-hour scrape was
+     * swept four hours in — every page after that refused with a 409, its final seal a no-op, and 712 posts
+     * of real work discarded because a pause outlasted a timer.</p>
+     *
+     * <p>Only INTERRUPTED reopens. SEALED, CANCELLED and REJECTED were all DECIDED — by the client finishing,
+     * by a person stopping it, by a fingerprint that failed validation — and a late arrival must not overturn
+     * somebody's decision. It is only the guess that gives way.</p>
+     */
+    void reopenBecauseItIsStillAlive() {
+        if (status != SnapshotStatus.INTERRUPTED) {
+            return;
+        }
+        this.status = SnapshotStatus.OPEN;
+        this.sealedAt = null;
+    }
+
     /** GC sweep (P1): abandon an orphaned OPEN pass. Only ever called on OPEN snapshots (the sweeper filters them). */
     public void interrupt() {
         this.status = SnapshotStatus.INTERRUPTED;

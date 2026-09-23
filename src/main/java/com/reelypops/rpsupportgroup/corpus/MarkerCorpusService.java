@@ -52,10 +52,23 @@ public class MarkerCorpusService {
                 capturedByDevice, capturedForUser));
     }
 
-    /** Append a per-scroll batch to an OPEN snapshot (409 if already sealed, 404 if unknown). */
+    /**
+     * Append a per-scroll batch to an OPEN snapshot (409 if it has ENDED, 404 if unknown).
+     *
+     * <p>A pass the sweeper had called INTERRUPTED is reopened rather than refused. That status is a GUESS —
+     * nobody said the pass ended, a sweeper noticed silence and concluded — and an arriving item is proof of
+     * the opposite. On 23/09/2026 the guess was terminal: a live six-hour scrape was swept four hours in, and
+     * every page after that was refused, its seal a no-op, 712 posts of real work discarded because a pause
+     * outlasted a timer. An inference must yield to evidence.</p>
+     *
+     * <p>The other three endings still refuse. SEALED, CANCELLED and REJECTED were DECIDED — by the client
+     * finishing, by a person stopping it, by a fingerprint that failed validation — and a late arrival must
+     * not overturn somebody's decision.</p>
+     */
     @Transactional
     public MarkerCorpusSnapshot append(UUID snapshotId, List<CorpusItemPayload> payloads) {
         MarkerCorpusSnapshot snapshot = require(snapshotId);
+        snapshot.reopenBecauseItIsStillAlive();
         if (snapshot.getStatus() != SnapshotStatus.OPEN) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "snapshot " + snapshotId + " is sealed");
         }
