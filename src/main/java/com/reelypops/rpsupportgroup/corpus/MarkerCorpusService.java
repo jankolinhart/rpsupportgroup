@@ -129,6 +129,29 @@ public class MarkerCorpusService {
         return snapshots.save(snapshot);
     }
 
+    /**
+     * Remove one snapshot and everything it holds — an operator clearing evidence they no longer want.
+     *
+     * <p>Retention already deletes passes, but only the excess over the window and only when a pass SEALS. A
+     * group whose scrapes keep being interrupted or cancelled therefore accumulates them forever, and there
+     * was no way to clear one by hand (operator, 23/09/2026: "old snapshots seem to build up. we need a way
+     * for me to remove them manually").</p>
+     *
+     * <p>The items and representatives go with it, by the cascade the schema already declares — the same one
+     * {@link #prune} relies on. This is deliberately the identical operation to a prune, so it carries no risk
+     * that automatic retention was not already taking: a reference cut from a pass that later went away is a
+     * case this store has always had to tolerate, and does.</p>
+     *
+     * <p><strong>Any status, including OPEN.</strong> Refusing an open pass would sound careful and would
+     * strand somebody: a machine killed mid-scrape leaves one OPEN for six hours until the stale sweeper
+     * reaches it, and that is exactly the row an operator wants rid of. The console asks before it calls this,
+     * and says plainly when the pass it is about to remove is still being written to.</p>
+     */
+    @Transactional
+    public void delete(UUID snapshotId) {
+        snapshots.delete(require(snapshotId));
+    }
+
     /** Upsert a representative thumbnail for a post in a snapshot (404 if the snapshot is unknown, 400 if no bytes). */
     @Transactional
     public void putRepresentative(UUID snapshotId, String shortcode, byte[] image, String contentType) {

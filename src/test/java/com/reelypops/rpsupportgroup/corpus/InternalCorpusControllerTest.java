@@ -19,6 +19,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -517,6 +518,57 @@ class InternalCorpusControllerTest {
     @Test
     void CANCELLING_anUnknownSnapshotIs404() throws Exception {
         mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/cancel",
+                        java.util.UUID.randomUUID()).header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+    }
+
+    // ── DELETING one by hand (23/09/2026) ───────────────────────────────────────────────────────────
+
+    /**
+     * <strong>RETENTION ONLY RUNS ON A SEAL.</strong>
+     *
+     * <p>A group whose passes keep being interrupted or cancelled never prunes, so they pile up with no way
+     * to clear one (operator: "old snapshots seem to build up. we need a way for me to remove them
+     * manually"). The items go with the snapshot by the cascade the schema already declares — the same one
+     * automatic retention relies on, so this carries no risk that prune was not already taking.</p>
+     */
+    @Test
+    void DELETING_removesTheSnapshotAndEverythingItHolds() throws Exception {
+        String id = openSnapshot("corp-delete", "ADMIN");
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", id)
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
+                        .content(appendBody("AAA", "member1", "1010".repeat(16), 0)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(delete("/supportgroup/v1/internal/corpus/snapshots/{id}", id).header(KEY_HEADER, KEY))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(get("/supportgroup/v1/internal/corpus/snapshots/{id}", id).header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+        // ...and it is gone from the group's evidence list, not merely unreachable by id.
+        mockMvc.perform(get("/supportgroup/v1/internal/corpus/groups/{ig}/snapshots", "corp-delete")
+                        .header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    /**
+     * An OPEN pass can go too, and that is the point rather than an oversight: a machine killed mid-scrape
+     * leaves one open for six hours until the stale sweeper reaches it, and that is exactly the row somebody
+     * wants rid of. Refusing would sound careful and would strand them.
+     */
+    @Test
+    void DELETING_worksOnAPassThatIsStillOpen() throws Exception {
+        String id = openSnapshot("corp-delete-open", "ADMIN");
+
+        mockMvc.perform(delete("/supportgroup/v1/internal/corpus/snapshots/{id}", id).header(KEY_HEADER, KEY))
+                .andExpect(status().isNoContent());
+    }
+
+    /** Already gone is 404 — a second click is not a new kind of failure, and the wish is granted either way. */
+    @Test
+    void DELETING_somethingAlreadyGoneIs404() throws Exception {
+        mockMvc.perform(delete("/supportgroup/v1/internal/corpus/snapshots/{id}",
                         java.util.UUID.randomUUID()).header(KEY_HEADER, KEY))
                 .andExpect(status().isNotFound());
     }

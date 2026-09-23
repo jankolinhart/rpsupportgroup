@@ -5,6 +5,7 @@ import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -64,6 +65,16 @@ public class InternalCorpusController {
     @PostMapping("/snapshots/{snapshotId}/cancel")
     public SnapshotResponse cancel(@PathVariable UUID snapshotId) {
         return SnapshotResponse.of(service.cancel(snapshotId));
+    }
+
+    /**
+     * Remove one snapshot and everything it holds. 404 if it is already gone, so a double-click is not an
+     * error — the operator wanted it absent, and it is.
+     */
+    @DeleteMapping("/snapshots/{snapshotId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void delete(@PathVariable UUID snapshotId) {
+        service.delete(snapshotId);
     }
 
     /** List a group's snapshots (newest first) — the admin vetting-evidence list. */
