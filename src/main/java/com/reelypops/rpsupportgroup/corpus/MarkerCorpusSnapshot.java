@@ -71,6 +71,17 @@ public class MarkerCorpusSnapshot {
     @Column(name = "sealed_at")
     private Instant sealedAt;
 
+    /**
+     * When this pass last had items appended, or null until the first one arrives.
+     *
+     * <p>What the stale sweep measures. Age never could: a deep scrape legitimately runs for hours, so a
+     * window wide enough not to cut a live pass short was six of them — and a pass whose machine died two
+     * minutes in looked open for the rest of that. A live pass appends the whole time it is alive, so silence
+     * says what age cannot.</p>
+     */
+    @Column(name = "last_item_at")
+    private Instant lastItemAt;
+
     private MarkerCorpusSnapshot(String igAccount, CorpusSource source, String capturedByAccount,
                                  String capturedByDevice, UUID capturedForUser) {
         this.id = UUID.randomUUID();
@@ -107,6 +118,7 @@ public class MarkerCorpusSnapshot {
     /** Record that {@code count} items were appended this scroll (keeps the denormalized {@link #itemCount} current). */
     public void addItems(int count) {
         this.itemCount += count;
+        this.lastItemAt = Instant.now();
     }
 
     /** Mark the pass complete. Only an OPEN snapshot seals — a re-seal or a sealed/interrupted snapshot is a no-op. */
