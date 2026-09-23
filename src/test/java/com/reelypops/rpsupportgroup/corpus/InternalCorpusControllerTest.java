@@ -466,4 +466,58 @@ class InternalCorpusControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.snapshot.status").value("OPEN"));
     }
+
+    // ── CANCELLED: a person stopped it (23/09/2026) ─────────────────────────────────────────────────
+
+    /**
+     * <strong>A CANCELLATION IS REPORTED, NOT INFERRED.</strong>
+     *
+     * <p>Before this, a scrape a person stopped left its pass at OPEN until the stale sweeper reached it six
+     * hours later and called it INTERRUPTED — which reads as "the client stopped talking", and is not what
+     * happened. For those six hours an abandoned pass looked exactly like one still streaming, so an operator
+     * who had pressed Stop could not see their own decision anywhere.</p>
+     */
+    @Test
+    void CANCELLING_recordsThatAPersonStoppedIt_ratherThanLeavingItOpen() throws Exception {
+        String id = openSnapshot("corp-cancel", "ADMIN");
+
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/cancel", id).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"));
+
+        mockMvc.perform(get("/supportgroup/v1/internal/corpus/snapshots/{id}", id).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.snapshot.status").value("CANCELLED"));
+    }
+
+    /**
+     * The inbox that carries a stop is at-least-once, so a repeat must not rewrite the outcome — and a stop
+     * that lost its race to the seal has nothing to cancel. Neither is an error: the scrape ended either way.
+     */
+    @Test
+    void CANCELLING_neverRewritesAPassThatAlreadyEnded() throws Exception {
+        String sealed = openSnapshot("corp-cancel-late", "ADMIN");
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/seal", sealed).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk());
+
+        // The stop arrives after the pass finished: it finds nothing to cancel and says so by leaving it alone.
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/cancel", sealed).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SEALED"));
+
+        String cancelled = openSnapshot("corp-cancel-twice", "ADMIN");
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/cancel", cancelled).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/cancel", cancelled).header(KEY_HEADER, KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"));
+    }
+
+    /** An unknown snapshot is a 404 here as everywhere else on this surface. */
+    @Test
+    void CANCELLING_anUnknownSnapshotIs404() throws Exception {
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/cancel",
+                        java.util.UUID.randomUUID()).header(KEY_HEADER, KEY))
+                .andExpect(status().isNotFound());
+    }
 }

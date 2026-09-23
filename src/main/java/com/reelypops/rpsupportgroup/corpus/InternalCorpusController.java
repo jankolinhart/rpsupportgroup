@@ -55,6 +55,16 @@ public class InternalCorpusController {
         return SnapshotResponse.of(service.seal(snapshotId));
     }
 
+    /**
+     * A person stopped the scrape filling this pass. Reported by the machine that was running it, the moment
+     * it stopped — so the console can show a cancellation as a cancellation instead of leaving an abandoned
+     * pass at OPEN until the stale sweeper calls it INTERRUPTED six hours later.
+     */
+    @PostMapping("/snapshots/{snapshotId}/cancel")
+    public SnapshotResponse cancel(@PathVariable UUID snapshotId) {
+        return SnapshotResponse.of(service.cancel(snapshotId));
+    }
+
     /** List a group's snapshots (newest first) — the admin vetting-evidence list. */
     @GetMapping("/groups/{igAccount}/snapshots")
     public List<SnapshotResponse> list(@PathVariable String igAccount) {

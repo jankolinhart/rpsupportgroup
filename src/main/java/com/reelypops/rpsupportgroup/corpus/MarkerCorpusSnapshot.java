@@ -85,6 +85,21 @@ public class MarkerCorpusSnapshot {
         this.sealedAt = Instant.now();
     }
 
+    /**
+     * A person stopped the scrape that was filling this pass.
+     *
+     * <p>Only an OPEN pass can be cancelled: one already sealed finished before the stop arrived, and saying
+     * otherwise would rewrite a completed pass as an abandoned one on the strength of a message that lost a
+     * race. A stop that arrives too late has nothing to cancel, which is the right outcome.</p>
+     */
+    public void cancel() {
+        if (status != SnapshotStatus.OPEN) {
+            return;
+        }
+        this.status = SnapshotStatus.CANCELLED;
+        this.sealedAt = Instant.now();
+    }
+
     /** GC sweep (P1): abandon an orphaned OPEN pass. Only ever called on OPEN snapshots (the sweeper filters them). */
     public void interrupt() {
         this.status = SnapshotStatus.INTERRUPTED;
