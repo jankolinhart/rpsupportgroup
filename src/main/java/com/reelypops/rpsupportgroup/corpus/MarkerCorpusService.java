@@ -266,10 +266,17 @@ public class MarkerCorpusService {
         return excess.size();
     }
 
-    /** GC sweep: mark OPEN snapshots opened before {@code cutoff} as INTERRUPTED (orphaned streams). Returns the count. */
+    /**
+     * GC sweep: mark OPEN snapshots that have gone QUIET since {@code cutoff} as INTERRUPTED. Returns the count.
+     *
+     * <p>Silence, not age. A deep scrape legitimately runs for hours, so a window wide enough not to cut a live
+     * pass short had to be six of them — which meant a pass whose machine died two minutes in stayed OPEN for
+     * the rest of that window, indistinguishable from one still streaming. A live pass appends the whole time
+     * it is alive, so the absence of an append says what its age never could.</p>
+     */
     @Transactional
     public int sweepStale(Instant cutoff) {
-        List<MarkerCorpusSnapshot> stale = snapshots.findByStatusAndCreatedAtBefore(SnapshotStatus.OPEN, cutoff);
+        List<MarkerCorpusSnapshot> stale = snapshots.findSilentSince(SnapshotStatus.OPEN, cutoff);
         stale.forEach(MarkerCorpusSnapshot::interrupt);
         snapshots.saveAll(stale);
         return stale.size();

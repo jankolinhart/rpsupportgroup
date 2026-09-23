@@ -444,6 +444,42 @@ class InternalCorpusControllerTest {
                 .andExpect(jsonPath("$.length()").value(3));
     }
 
+    /**
+     * <strong>QUIET, NOT OLD.</strong>
+     *
+     * <p>The sweep measured from when a pass was OPENED, which forced a six-hour window — a deep scrape
+     * legitimately runs that long, and cutting a live one short would void real work. So a pass whose machine
+     * died two minutes in stayed OPEN for the rest of those six hours, looking exactly like one still
+     * streaming, while the console beside it already knew the machine had stopped reporting (operator,
+     * 23/09/2026). A live pass appends the whole time it is alive, so silence decides where age cannot.</p>
+     */
+    @Test
+    void sweepLeavesAPassThatIsSTILLBEINGWRITTENTO_howeverOldItIs() throws Exception {
+        String id = openSnapshot("corp-sweep-live", "ADMIN");
+        mockMvc.perform(post("/supportgroup/v1/internal/corpus/snapshots/{id}/items", id)
+                        .header(KEY_HEADER, KEY).contentType(MediaType.APPLICATION_JSON)
+                        .content(appendBody("AAA", "a", HASH_A, 0)))
+                .andExpect(status().isOk());
+
+        // A cutoff a minute in the PAST: the pass was opened before it, but written to after — so it is alive.
+        // Under the old age-based rule this pass would have been swept out from under a running scrape.
+        corpusService.sweepStale(Instant.now().minusSeconds(60));
+
+        mockMvc.perform(get("/supportgroup/v1/internal/corpus/snapshots/{id}", id).header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.snapshot.status").value("OPEN"));
+    }
+
+    /** And one that never received a single item is swept on the same rule, not left needing a second one. */
+    @Test
+    void sweepCatchesAPassThatNeverReceivedAnything() throws Exception {
+        String id = openSnapshot("corp-sweep-empty", "ADMIN");
+
+        corpusService.sweepStale(Instant.now().plusSeconds(60));
+
+        mockMvc.perform(get("/supportgroup/v1/internal/corpus/snapshots/{id}", id).header(KEY_HEADER, KEY))
+                .andExpect(jsonPath("$.snapshot.status").value("INTERRUPTED"));
+    }
+
     @Test
     void sweepStaleMarksOrphanedOpenSnapshotsInterrupted() throws Exception {
         String id = openSnapshot("corp-sweep", "REQUEST");

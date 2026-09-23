@@ -77,3 +77,6 @@ databaseChangeLog:
   - include:
       file: changes/026-snapshot-provenance.sql
       relativeToChangelogFile: true
+  - include:
+      file: changes/027-snapshot-last-item.sql
+      relativeToChangelogFile: true
