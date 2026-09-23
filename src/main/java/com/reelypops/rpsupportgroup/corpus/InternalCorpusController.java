@@ -40,7 +40,8 @@ public class InternalCorpusController {
     @PostMapping("/groups/{igAccount}/snapshots")
     @ResponseStatus(HttpStatus.CREATED)
     public SnapshotResponse open(@PathVariable String igAccount, @Valid @RequestBody OpenSnapshotRequest req) {
-        return SnapshotResponse.of(service.open(igAccount, req.source(), req.capturedByAccount()));
+        return SnapshotResponse.of(service.open(igAccount, req.source(), req.capturedByAccount(),
+                req.capturedByDevice(), req.capturedForUser()));
     }
 
     /** Append a per-scroll batch of items to an open snapshot. */

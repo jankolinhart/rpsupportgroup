@@ -43,11 +43,13 @@ public class MarkerCorpusService {
 
     /** Open a new snapshot for a known group (404 if no config exists for {@code igAccount}). */
     @Transactional
-    public MarkerCorpusSnapshot open(String igAccount, CorpusSource source, String capturedByAccount) {
+    public MarkerCorpusSnapshot open(String igAccount, CorpusSource source, String capturedByAccount,
+                                     String capturedByDevice, UUID capturedForUser) {
         if (!configs.existsByIgAccount(igAccount)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "no support group config for " + igAccount);
         }
-        return snapshots.save(MarkerCorpusSnapshot.open(igAccount, source, capturedByAccount));
+        return snapshots.save(MarkerCorpusSnapshot.open(igAccount, source, capturedByAccount,
+                capturedByDevice, capturedForUser));
     }
 
     /** Append a per-scroll batch to an OPEN snapshot (409 if already sealed, 404 if unknown). */
