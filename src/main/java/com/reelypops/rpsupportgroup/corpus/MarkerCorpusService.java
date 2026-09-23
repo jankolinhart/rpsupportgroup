@@ -109,6 +109,24 @@ public class MarkerCorpusService {
         return saved;
     }
 
+    /**
+     * A person stopped the scrape filling this pass — record that, now, rather than leave it to be inferred.
+     *
+     * <p>Without this the pass sat at OPEN until the stale sweeper reached it six hours later and called it
+     * INTERRUPTED, which reads as "the client stopped talking". For those six hours an abandoned snapshot was
+     * indistinguishable from one still streaming, and the operator who had pressed Stop had no way to see
+     * their own decision anywhere.</p>
+     *
+     * <p>Idempotent, and silently so: only an OPEN pass changes. A stop that lost a race to the seal has
+     * nothing to cancel, and a repeat delivery — this inbox is at-least-once — must not rewrite the outcome.</p>
+     */
+    @Transactional
+    public MarkerCorpusSnapshot cancel(UUID snapshotId) {
+        MarkerCorpusSnapshot snapshot = require(snapshotId);
+        snapshot.cancel();
+        return snapshots.save(snapshot);
+    }
+
     /** Upsert a representative thumbnail for a post in a snapshot (404 if the snapshot is unknown, 400 if no bytes). */
     @Transactional
     public void putRepresentative(UUID snapshotId, String shortcode, byte[] image, String contentType) {
@@ -145,8 +163,11 @@ public class MarkerCorpusService {
      * harmless while still preferring the freshest copy of the picture when several passes carry the post.</p>
      *
      * <p>OPEN passes are skipped (mid-write; the scrape may still be streaming) and REJECTED ones are poisoned by
-     * definition ({@link SnapshotStatus}). SEALED and INTERRUPTED both serve: an interrupted pass's
-     * already-shipped items are usable (take-what-we-get), and that includes its representatives.</p>
+     * definition ({@link SnapshotStatus}). SEALED, CANCELLED and INTERRUPTED all serve: a partial pass's
+     * already-shipped items are usable however it ended (take-what-we-get), and that includes its
+     * representatives. A cancellation says a person stopped the scrape, not that what it had already sent is
+     * suspect — those images are as real as any other pass's, and discarding them would make pressing Stop
+     * throw away work already done and already paid for in Instagram requests.</p>
      */
     @Transactional(readOnly = true)
     public Optional<CorpusRepresentative> findRepresentative(String igAccount, String shortcode) {
@@ -155,6 +176,7 @@ public class MarkerCorpusService {
         }
         return snapshots.findByIgAccountOrderByCreatedAtDesc(igAccount).stream()
                 .filter(snap -> snap.getStatus() == SnapshotStatus.SEALED
+                        || snap.getStatus() == SnapshotStatus.CANCELLED
                         || snap.getStatus() == SnapshotStatus.INTERRUPTED)
                 .map(snap -> representatives.findBySnapshotIdAndShortcode(snap.getId(), shortcode))
                 .flatMap(Optional::stream)
